@@ -60,10 +60,16 @@ def main():
             if path=='/playback-info':
                 info=plistlib.loads(payload)
                 print({key:info.get(key) for key in ('readyToPlay','position','duration','rate')})
+                return info
         finally: conn.close()
     try:
         command('POST','/play',f'Content-Location: {args.source}\r\nStart-Position: 0\r\n'.encode())
-        for _ in range(3): time.sleep(1);command('GET','/playback-info')
+        for _ in range(20):
+            time.sleep(1)
+            info=command('GET','/playback-info')
+            if info.get('readyToPlay') and info.get('rate')==1: break
+        else: raise RuntimeError('native playback did not become ready within 20 seconds')
+        time.sleep(1);command('GET','/playback-info')
         command('POST','/rate?value=0');time.sleep(1);command('GET','/playback-info')
         command('POST','/rate?value=1');time.sleep(1)
         command('POST','/scrub?position=5');time.sleep(1);command('GET','/playback-info')

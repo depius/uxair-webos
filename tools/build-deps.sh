@@ -40,7 +40,9 @@ if [ "$build_stamp" != "$previous_stamp" ] || [ ! -f "$prefix/lib/libavcodec.a" 
 fi
 if [ "$build_stamp" != "$previous_stamp" ] || [ ! -f "$prefix/lib/libcurl.a" ]; then
     (cd .cache/curl-8.23.0
-     ./configure --host=arm-webos-linux-gnueabi --prefix="$prefix" --disable-shared --enable-static \
+     # The SDK pkg-config wrapper prepends its sysroot to absolute private
+     # prefixes. Use the pinned OpenSSL headers/libraries directly here.
+     PKG_CONFIG=false CPPFLAGS="-I$prefix/include" LDFLAGS="$LDFLAGS -L$prefix/lib" ./configure --host=arm-webos-linux-gnueabi --prefix="$prefix" --disable-shared --enable-static \
        --with-openssl="$prefix" --without-libpsl --without-zlib --without-brotli --without-zstd \
        --without-libidn2 --without-libssh2 --without-librtmp --without-nghttp2 --without-ngtcp2 --without-nghttp3 --disable-ldap --disable-ldaps \
        --disable-ftp --disable-file --disable-dict --disable-telnet --disable-tftp --disable-pop3 \
