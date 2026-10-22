@@ -47,6 +47,20 @@ PROBE = '''        int probe_body_length = -1;
                                 probe_body_length, probe_session);
 '''
 
+DIRECT_GATE = r'''    if (!cseq && getenv("UXAIR_DIRECT_VIDEO") && !strcmp(getenv("UXAIR_DIRECT_VIDEO"), "1") &&
+        (!strcmp(url,"/play") || !strncmp(url,"/scrub",6) || !strncmp(url,"/rate",5) ||
+         !strcmp(url,"/stop") || !strcmp(url,"/playback-info") || !strcmp(url,"/reverse") || !strcmp(url,"/action"))) {
+        int direct_length=0,output_length=0;char *output=NULL;const char *mime="text/parameters";
+        const char *data=http_request_get_data(request,&direct_length);
+        int status=uxair_direct_request(raop->callbacks.cls,http_request_get_header(request,"X-Apple-Session-ID"),
+            method,url,http_request_get_header(request,"Content-Type"),data,direct_length,&output,&output_length,&mime);
+        *response=http_response_create();
+        http_response_init(*response,"HTTP/1.1",status,status==200?"OK":"Direct Video Request Failed");
+        http_response_add_header(*response,"Content-Type",mime);
+        http_response_finish(*response,output,output_length);free(output);return;
+    }
+'''
+
 
 def replace_region(source, start, end, replacement):
     if source.count(start) != 1 or source.count(end) != 1:
@@ -59,8 +73,8 @@ def replace_region(source, start, end, replacement):
 def instrument_raop(source):
     if source.count(INCLUDE) != 1 or source.count(GATE) != 1:
         raise ValueError('pinned UxPlay request gate changed; refuse to instrument')
-    return source.replace(INCLUDE, INCLUDE + '#include "direct_request_diag.h"\n', 1).replace(
-        GATE, GATE + PROBE, 1)
+    return source.replace(INCLUDE, INCLUDE + '#include "direct_request_diag.h"\n#include "direct_bridge.h"\n', 1).replace(
+        GATE, DIRECT_GATE + GATE + PROBE, 1)
 
 
 def instrument_http_request(source):

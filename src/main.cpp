@@ -1,3 +1,4 @@
+#include "direct_player.h"
 #include "audio.h"
 #include "h264.h"
 #include "hevc_stream.h"
@@ -415,6 +416,9 @@ int main() {
             "HEVC enabled; iOS chooses codec. Check actual codec after reconnect.":
             "H.264 active. Reconnect sender.");
     };
+    DirectPlayer direct_player;
+    bool direct_open=false;int64_t direct_started=0,direct_tick=0;uint64_t direct_started_utc=0,direct_play_ms=0;
+    DirectState direct_previous=DirectState::Idle;
     bool running=true;
     while(running) {
         int64_t now=now_ns();
@@ -423,6 +427,37 @@ int main() {
         Action action=shell.action();
         if(shell.take_pointer_motion()&&ui_visible&&page==UiPage::History)last_ui=0;
         if(action==Action::Exit)break;
+#ifdef UXAIR_DEV_BUILD
+        receiver.direct_busy=opened||receiver.mirror.load()||receiver.has_audio.load();
+        DirectCommand direct_command;
+        if(receiver.direct.take(direct_command)) {
+            if(direct_command.kind==DirectCommandKind::Play) {
+                if(receiver.direct_busy||direct_open){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);}
+                else {direct_open=direct_player.open(direct_command.uri,direct_command.position,now);
+                    direct_started=direct_tick=now;direct_play_ms=0;direct_previous=DirectState::Idle;direct_started_utc=uint64_t(time(nullptr));receiver.direct_active=direct_open;
+                    if(!direct_open){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);}}
+            } else if(direct_open&&!direct_player.control(direct_command)){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);direct_player.close();direct_open=false;}
+            if(direct_command.kind==DirectCommandKind::Stop)direct_open=false;
+        }
+        if(receiver.direct_active) {
+            auto status=direct_player.tick(now);
+            if(direct_previous==DirectState::Playing&&now>direct_tick)direct_play_ms+=uint64_t(now-direct_tick)/1000000;
+            direct_tick=now;
+            if(action==Action::Back||!direct_open||status.state==DirectState::Error||status.state==DirectState::Ended) {
+                direct_player.close();receiver.direct_active=false;direct_open=false;
+                if(now>direct_started&&status.state!=DirectState::Error){SessionSummary summary;summary.kind=SessionKind::Direct;
+                    summary.started_utc=direct_started_utc;summary.duration_ms=direct_play_ms;
+                    usage.record(summary);save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;}
+                receiver.direct.reset();last_ui=0;receiver.show("Direct Video stopped");
+            } else {
+                receiver.direct.publish(status);
+                if(status.state==DirectState::Playing&&direct_previous!=status.state)shell.transparent();
+                else if(now-last_ui>1000000000LL){shell.screen(status.state==DirectState::Paused?"Direct Video paused":"Direct Video loading","");last_ui=now;}
+                direct_previous=status.state;SDL_Delay(10);continue;
+            }
+        }
+#endif
+
         std::string pairing_pin=receiver.pin();
         const bool pairing_changed=pairing_pin!=last_rendered_pin;
         if(pairing_changed) {

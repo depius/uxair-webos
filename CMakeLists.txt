@@ -63,7 +63,7 @@ if(BUILD_RECEIVER)
     target_compile_definitions(airplay PRIVATE PLIST_210 PLIST_230 OPENSSL_API_COMPAT=0x10101000L _REENTRANT _LARGEFILE64_SOURCE _FILE_OFFSET_BITS=64)
     target_include_directories(airplay PUBLIC "${UX}/lib" PRIVATE "${UX}/lib/llhttp" "${UX}/lib/playfair" "${DEPS}/include")
     target_link_libraries(airplay PUBLIC playfair dnssd llhttp "${DEPS}/lib/libplist-2.0.a" "${DEPS}/lib/libcrypto.a" pthread dl m)
-    add_executable(uxair src/main.cpp src/receiver.cpp src/audio.cpp src/h264.cpp
+    add_executable(uxair src/main.cpp src/receiver.cpp src/direct_video.cpp src/direct_player.cpp src/audio.cpp src/h264.cpp
         src/hevc_sample.cpp src/hevc_stream.cpp)
     target_include_directories(uxair PRIVATE "${DEPS}/include")
     target_link_libraries(uxair PRIVATE lg_media airplay "${DEPS}/lib/libavcodec.a" "${DEPS}/lib/libswresample.a" "${DEPS}/lib/libavutil.a")

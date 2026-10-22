@@ -90,3 +90,9 @@ c++ -std=c++11 -g -fsanitize=address,undefined -Isrc $ffmpeg_cflags \
   tests/media_test.cpp src/h264.cpp src/audio.cpp \
   $ffmpeg_libs -o build/tests/media-test
 build/tests/media-test build/tests/landscape.h264 build/tests/portrait.h264 build/tests/audio.aac build/tests/full-hd.h264 build/tests/full-hd-portrait.h264 build/tests/unsupported.h264
+
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc $(pkg-config --cflags libplist-2.0) tests/direct_video_test.cpp src/direct_video.cpp $(pkg-config --libs libplist-2.0) -o build/tests/direct-video-test
+timeout 30s build/tests/direct-video-test
+
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc -Itests/direct_stubs $(pkg-config --cflags libplist-2.0) tests/direct_player_test.cpp src/direct_player.cpp src/direct_video.cpp $(pkg-config --libs libplist-2.0) -o build/tests/direct-player-test
+timeout 30s build/tests/direct-player-test

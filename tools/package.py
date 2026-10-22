@@ -26,7 +26,7 @@ def main():
     if args.development:
         app['id'] += '.dev'
         app['title'] += ' Dev'
-        app['version'] = '1.1.0'
+        app['version'] = '1.2.0'
     (stage / 'appinfo.json').write_text(json.dumps(app, indent=2) + '\n')
     source_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     (stage / 'build-info.txt').write_text(f'version={app["version"]}\ncommit={source_commit}\n')

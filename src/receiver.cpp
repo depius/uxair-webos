@@ -21,7 +21,7 @@ std::string Receiver::status() { std::lock_guard<std::mutex> l(mutex);return mes
 std::string Receiver::pin() { std::lock_guard<std::mutex> l(mutex);return pairing.pin(); }
 bool Receiver::idle_for_profile_change() {
     std::lock_guard<std::mutex> l(mutex);
-    return client.empty() && !pairing.visible() && !mirror.load();
+    return !direct_active && client.empty() && !pairing.visible() && !mirror.load();
 }
 ReceiverDiagnostics Receiver::diagnostics() {
     std::lock_guard<std::mutex> l(mutex);
@@ -150,10 +150,10 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
     dnssd_set_airplay_features(dnssd,0,int(capabilities.direct_video));dnssd_set_airplay_features(dnssd,4,int(capabilities.hls));
     dnssd_set_airplay_features(dnssd,42,int(capabilities.hevc));dnssd_set_airplay_features(dnssd,27,int(capabilities.legacy_pairing));
     raop_callbacks_t cb={};cb.cls=this;
-    cb.audio_process=[](void *p,raop_ntp_t *,audio_decode_struct *d){self(p).enqueue(false,d->ct,d->ntp_time_remote,d->data,d->data_len);};
+    cb.audio_process=[](void *p,raop_ntp_t *,audio_decode_struct *d){if(!self(p).direct_active)self(p).enqueue(false,d->ct,d->ntp_time_remote,d->data,d->data_len);};
     cb.video_process=[](void *p,raop_ntp_t *,video_decode_struct *d){
         Receiver& r=self(p);
-        if(!d->is_h265 || r.active_profile.codec==MirrorCodec::ExperimentalHevc)
+        if(!r.direct_active&&(!d->is_h265 || r.active_profile.codec==MirrorCodec::ExperimentalHevc))
             r.enqueue(true,d->is_h265?2:0,d->ntp_time_remote,d->data,d->data_len);
     };
     cb.conn_feedback=[](void *p){self(p).activity=now_ns();};
@@ -208,7 +208,7 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
     cb.mirror_video_running=[](void *p,bool running){self(p).mirror=running;};
     cb.report_client_request=[](void *p,char *id,char *model,char *name,bool *admit){
         Receiver& r=self(p);std::lock_guard<std::mutex> l(r.mutex);
-        *admit=id && (r.client.empty()||r.client==id);
+        *admit=!r.direct_active && id && (r.client.empty()||r.client==id);
         fprintf(stderr,"[client] model=%.80s admitted=%d\n",model?model:"unknown",int(*admit));
         if(*admit) {r.client=id;r.message=std::string("Connecting: ")+(name?std::string(name).substr(0,80):"device");r.activity=now_ns();}
     };
@@ -276,3 +276,16 @@ void Receiver::stop() {
     if(dnssd) {dnssd_destroy(dnssd);dnssd=nullptr;}
 }
 Receiver::~Receiver() {stop();}
+
+#ifdef UXAIR_DEV_BUILD
+extern "C" int uxair_direct_request(void *context,const char *owner,const char *method,const char *target,const char *type,const char *body,int length,char **output,int *size,const char **mime) {
+    Receiver& r=self(context);
+    if(length<0||length>16384)return 413;
+    auto response=r.direct.request(owner?owner:"",method?method:"",target?target:"",type?type:"",body?std::string(body,size_t(length)):"",r.direct_busy.load());
+    *size=int(response.body.size());*output=nullptr;
+    if(*size){*output=static_cast<char*>(malloc(size_t(*size)));if(!*output){*size=0;return 500;}memcpy(*output,response.body.data(),size_t(*size));}
+    *mime=response.type=="text/parameters"?"text/parameters":"text/x-apple-plist+xml";
+    fprintf(stderr,"[direct-protocol] response=%d body-bytes=%d\n",response.status,length);
+    return response.status;
+}
+#endif

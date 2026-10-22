@@ -47,7 +47,7 @@ def main():
     if args.development:
         app['id'] += '.dev'
         app['title'] += ' Dev'
-        app['version'] = '1.1.0'
+        app['version'] = '1.2.0'
     stage = ROOT / 'build/app'
     staged = json.loads((stage / 'appinfo.json').read_text())
     if staged != app:
