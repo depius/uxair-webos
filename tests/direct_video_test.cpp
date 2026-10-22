@@ -15,6 +15,7 @@ int main(){
     DirectSession session;
     auto send=[&](const char *method,const char *url,const std::string& data=""){return session.request("session-A",method,url,"text/parameters",data).status;};
     assert(send("POST","/play",body)==200);DirectCommand c;assert(session.take(c)&&c.kind==DirectCommandKind::Play);
+    assert(send("POST","/play",body)==409);
     assert(send("POST","/rate?value=nan")==400);assert(send("POST","/scrub?position=-1")==400);
     assert(send("POST","/scrub?position=inf")==400);assert(send("POST","/scrub?position=7")==200);
     assert(session.take(c)&&c.position==7);

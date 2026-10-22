@@ -451,7 +451,7 @@ int main() {
                 receiver.direct.reset();last_ui=0;receiver.show("Direct Video stopped");
             } else {
                 receiver.direct.publish(status);
-                if(status.state==DirectState::Playing&&direct_previous!=status.state)shell.transparent();
+                if(status.state==DirectState::Playing){if(direct_previous!=status.state)shell.transparent();}
                 else if(now-last_ui>1000000000LL){shell.screen(status.state==DirectState::Paused?"Direct Video paused":"Direct Video loading","");last_ui=now;}
                 direct_previous=status.state;SDL_Delay(10);continue;
             }

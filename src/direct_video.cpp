@@ -63,7 +63,7 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
     if(!owner_.empty()&&owner_!=owner){reply.status=409;return reply;}
     DirectCommand command;command.kind=DirectCommandKind::Stop;
     if(method=="POST"&&target=="/play") {
-        if(busy){reply.status=409;return reply;}
+        if(busy||snapshot_.state==DirectState::Loading||snapshot_.state==DirectState::Playing||snapshot_.state==DirectState::Paused){reply.status=409;return reply;}
         if(!play_body(type,body,command.uri,command.position))return reply;
         if(!commands_.empty()){reply.status=503;return reply;}
         command.kind=DirectCommandKind::Play;owner_=owner;snapshot_=DirectSnapshot();snapshot_.state=DirectState::Loading;
