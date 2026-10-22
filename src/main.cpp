@@ -437,7 +437,7 @@ int main() {
         previous_loop=now;
         Action action=shell.action();
         if(shell.take_pointer_motion()&&ui_visible&&page==UiPage::History)last_ui=0;
-        if(action==Action::Exit)break;
+        if(action==Action::Exit&&!receiver.direct_active)break;
 #ifdef UXAIR_DEV_BUILD
         receiver.direct_busy=opened||receiver.mirror.load()||receiver.has_audio.load();
         receiver.direct.check_timeout(now/1000000);
@@ -451,7 +451,7 @@ int main() {
                     if(!direct_open){direct_player.close();ui_visible=true;last_ui=0;
                         DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);
                         ++usage.session_errors;save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;receiver.show("Direct Video failed (experimental)");}}
-            } else if(direct_open&&!direct_player.control(direct_command)){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);direct_player.close();direct_open=false;}
+            } else if(direct_open&&direct_command.kind!=DirectCommandKind::Stop&&!direct_player.control(direct_command)){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);direct_player.close();direct_open=false;}
             if(direct_command.kind==DirectCommandKind::Stop)direct_open=false;
         }
         if(receiver.direct_active) {
@@ -463,7 +463,7 @@ int main() {
                 while(duration&&direct_days.size()<365){const uint32_t day=uint32_t(stamp/86400000);const uint64_t part=std::min<uint64_t>(duration,86400000-stamp%86400000);direct_days[day]+=part;stamp+=part;duration-=part;}
             }
             direct_tick=now;
-            if(action==Action::Back||!direct_open||status.state==DirectState::Error||status.state==DirectState::Ended) {
+            if(action==Action::Back||action==Action::Exit||!direct_open||status.state==DirectState::Error||status.state==DirectState::Ended) {
                 const bool direct_failed=status.state==DirectState::Error||receiver.direct.snapshot().state==DirectState::Error;
                 direct_player.close();receiver.direct_active=false;direct_open=false;
                 if(direct_play_ms>0&&now>direct_started&&!direct_failed){SessionSummary summary;summary.kind=SessionKind::Direct;
@@ -473,6 +473,8 @@ int main() {
                 DirectSnapshot terminal;terminal.state=direct_failed?DirectState::Error:DirectState::Ended;receiver.direct.publish(terminal); // Publish once; do not erase a subsequent sender play command.
                 if(direct_failed){++usage.session_errors;save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;}
                 page=direct_return_page;nav.page=page;ui_visible=true;last_ui=0;receiver.show(direct_failed?"Direct Video failed (experimental)":"Direct Video stopped");
+                if(action==Action::Exit)break;
+                action=Action::None; // Direct owns this input; never navigate the restored page with it.
             } else {
                 receiver.direct.publish(status);
                 if(action==Action::Select){ui_visible=!ui_visible;last_ui=0;if(!ui_visible)shell.transparent();}
