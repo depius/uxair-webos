@@ -433,6 +433,7 @@ int main() {
     std::map<uint32_t,uint64_t> direct_days;
     UiPage direct_return_page=page;
     DirectState direct_previous=DirectState::Idle;int64_t direct_maintenance=0;
+    unsigned direct_command_records=0;
     bool running=true;
     while(running) {
         int64_t now=now_ns();
@@ -447,7 +448,7 @@ int main() {
         DirectCommand direct_command;
         if(receiver.direct.take(direct_command)) {
             const char *commands[]={"play","pause","resume","seek","stop"};
-            fprintf(stderr,"[direct-player] dequeued command=%s\n",commands[int(direct_command.kind)]);
+            if(direct_command_records<192){++direct_command_records;fprintf(stderr,"[direct-player] dequeued command=%s\n",commands[int(direct_command.kind)]);}
             if(direct_command.kind==DirectCommandKind::Play) {
                 if(receiver.direct_busy||direct_open){DirectSnapshot failure;failure.state=DirectState::Error;failure.stage=DirectStage::Dequeued;failure.error=DirectError::Busy;receiver.direct.publish(failure);}
                 else {DirectSnapshot starting;starting.state=DirectState::Loading;starting.stage=DirectStage::Dequeued;receiver.direct.publish(starting);

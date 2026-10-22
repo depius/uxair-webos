@@ -138,8 +138,8 @@ DirectSnapshot DirectPlayer::tick(int64_t now){
 void DirectPlayer::cleanup(){
     {std::lock_guard<std::mutex> lock(context_mutex);contexts.erase(context_id_);context_id_=0;}
     if(session_)session_->cancel_fetch();relay_.stop();session_=nullptr;
-    if(api_){auto began=clock_ms();fprintf(stderr,"[direct-player] unload begin\n");const bool value=api_->Unload();fprintf(stderr,"[direct-player] unload end result=%d ms=%lld\n",int(value),(long long)(clock_ms()-began));delete api_;api_=nullptr;}
-    if(acb_){AcbAPI_setState(acb_,APPSTATE_FOREGROUND,PLAYSTATE_UNLOADED,&task_);auto began=clock_ms();fprintf(stderr,"[direct-player] acb-finalize begin\n");const auto value=AcbAPI_finalize(acb_);fprintf(stderr,"[direct-player] acb-finalize end result=%d ms=%lld\n",value,(long long)(clock_ms()-began));AcbAPI_destroy(acb_);acb_=0;}
+    if(api_){auto began=clock_ms();fprintf(stderr,"[direct-player] unload begin\n");const bool value=api_->Unload();fprintf(stderr,"[direct-player] unload end result=%d ms=%lld\n",int(value),(long long)(clock_ms()-began));fprintf(stderr,"[direct-player] destroy begin\n");began=clock_ms();delete api_;api_=nullptr;fprintf(stderr,"[direct-player] destroy end ms=%lld\n",(long long)(clock_ms()-began));}
+    if(acb_){auto began=clock_ms();fprintf(stderr,"[direct-player] acb-unloaded begin\n");const auto unloaded=AcbAPI_setState(acb_,APPSTATE_FOREGROUND,PLAYSTATE_UNLOADED,&task_);fprintf(stderr,"[direct-player] acb-unloaded end result=%d ms=%lld\n",unloaded,(long long)(clock_ms()-began));began=clock_ms();fprintf(stderr,"[direct-player] acb-finalize begin\n");const auto value=AcbAPI_finalize(acb_);fprintf(stderr,"[direct-player] acb-finalize end result=%d ms=%lld\n",value,(long long)(clock_ms()-began));AcbAPI_destroy(acb_);acb_=0;}
     {std::lock_guard<std::mutex> lock(info_mutex_);video_info_.clear();info_pending_=false;}
     loaded_=false;started_=acb_playing_=sink_attached_=false;
 }
