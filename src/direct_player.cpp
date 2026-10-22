@@ -17,8 +17,9 @@ void DirectPlayer::event(int type,int64_t value,const char*,void *user){
     fprintf(stderr,"[direct-player] event=0x%x value=%lld\n",type,(long long)value);
 }
 DirectPlayer::~DirectPlayer(){close();}
-bool DirectPlayer::open(const std::string& uri,double fraction,int64_t now){
-    close();const auto payload=direct_load_payload(uri,"com.github.depius.uxair.dev");if(payload.empty())return false;
+bool DirectPlayer::open(const std::string& uri,double fraction,int64_t now,DirectSession *session){
+    close();relay_.sender_manifest=session?[session](const std::string& url){return session->sender_manifest(url);}:std::function<std::string(const std::string&)>();
+    const auto local=relay_.start(uri);const auto payload=direct_load_payload(local,"com.github.depius.uxair.dev",true);if(payload.empty())return false;
     start_fraction_=fraction;opened_ns_=now;state_=int(DirectState::Loading);
     acb_=AcbAPI_create();if(!acb_||!AcbAPI_initialize(acb_,PLAYER_TYPE_MSE,"com.github.depius.uxair.dev",direct_acb)){close();return false;}
     api_=new StarfishMediaAPIs(nullptr);
@@ -47,5 +48,6 @@ DirectSnapshot DirectPlayer::tick(int64_t now){
 void DirectPlayer::close(){
     if(api_){api_->Unload();delete api_;api_=nullptr;}
     if(acb_){AcbAPI_setState(acb_,APPSTATE_FOREGROUND,PLAYSTATE_UNLOADED,&task_);AcbAPI_finalize(acb_);AcbAPI_destroy(acb_);acb_=0;}
+    relay_.stop();
     loaded_=false;started_=acb_playing_=false;duration_ms_=0;state_=int(DirectState::Idle);
 }

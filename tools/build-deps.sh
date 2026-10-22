@@ -38,5 +38,17 @@ if [ "$build_stamp" != "$previous_stamp" ] || [ ! -f "$prefix/lib/libavcodec.a" 
      make -j6
      make install) >build/logs/ffmpeg.log 2>&1
 fi
+if [ "$build_stamp" != "$previous_stamp" ] || [ ! -f "$prefix/lib/libcurl.a" ]; then
+    (cd .cache/curl-8.23.0
+     ./configure --host=arm-webos-linux-gnueabi --prefix="$prefix" --disable-shared --enable-static \
+       --with-openssl="$prefix" --without-libpsl --without-zlib --without-brotli --without-zstd \
+       --without-libidn2 --without-nghttp2 --without-ngtcp2 --without-nghttp3 --disable-ldap --disable-ldaps \
+       --disable-ftp --disable-file --disable-dict --disable-telnet --disable-tftp --disable-pop3 \
+       --disable-imap --disable-smtp --disable-gopher --disable-mqtt --disable-rtsp --disable-smb \
+       --enable-threaded-resolver --disable-manual --disable-docs --disable-libcurl-option \
+       --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt
+     make -j6
+     make install) >build/logs/curl.log 2>&1
+fi
 printf '%s\n' "$build_stamp" > "$prefix/build-config.sha256"
 echo "Dependencies ready in $prefix"

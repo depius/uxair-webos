@@ -49,7 +49,16 @@ PROBE = '''        int probe_body_length = -1;
 
 DIRECT_GATE = r'''    if (!cseq && getenv("UXAIR_DIRECT_VIDEO") && !strcmp(getenv("UXAIR_DIRECT_VIDEO"), "1") &&
         (!strcmp(url,"/play") || !strncmp(url,"/scrub",6) || !strncmp(url,"/rate",5) ||
-         !strcmp(url,"/stop") || !strcmp(url,"/playback-info") || !strcmp(url,"/reverse") || !strcmp(url,"/action"))) {
+         !strcmp(url,"/stop") || !strcmp(url,"/playback-info") || !strcmp(url,"/reverse") || !strcmp(url,"/action") || !strncmp(url,"/getProperty?",13) || !strncmp(url,"/setProperty?",13))) {
+        if (!strcmp(url,"/reverse")) {
+            const char *upgrade=http_request_get_header(request,"Upgrade");
+            const char *owner=http_request_get_header(request,"X-Apple-Session-ID");
+            int accepted=!strcmp(method,"POST") && upgrade && !strcmp(upgrade,"PTTH/1.0") &&
+                uxair_direct_reverse(raop->callbacks.cls,owner,httpd_get_connection_socket(raop->httpd,conn),(unsigned long)conn);
+            *response=http_response_create();http_response_init(*response,"HTTP/1.1",accepted?101:409,accepted?"Switching Protocols":"Conflict");
+            if(accepted){httpd_set_connection_type(raop->httpd,conn,CONNECTION_TYPE_EVENT);http_response_add_header(*response,"Connection","Upgrade");http_response_add_header(*response,"Upgrade","PTTH/1.0");}
+            http_response_finish(*response,NULL,0);return;
+        }
         int direct_length=0,output_length=0;char *output=NULL;const char *mime="text/parameters";
         const char *data=http_request_get_data(request,&direct_length);
         int status=uxair_direct_request(raop->callbacks.cls,http_request_get_header(request,"X-Apple-Session-ID"),
@@ -73,6 +82,8 @@ def replace_region(source, start, end, replacement):
 def instrument_raop(source):
     if source.count(INCLUDE) != 1 or source.count(GATE) != 1:
         raise ValueError('pinned UxPlay request gate changed; refuse to instrument')
+    source=source.replace('    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");',
+        '    uxair_direct_lost(raop->callbacks.cls,(unsigned long)conn);\n    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");',1)
     return source.replace(INCLUDE, INCLUDE + '#include "direct_request_diag.h"\n#include "direct_bridge.h"\n', 1).replace(
         GATE, DIRECT_GATE + GATE + PROBE, 1)
 

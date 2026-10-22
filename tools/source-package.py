@@ -22,7 +22,7 @@ def main():
     with tarfile.open(destination,'w:gz') as archive:
         for name in ['src','tools','tests','assets','packaging','docs','CMakeLists.txt','dependencies.lock.json','README.md','CHANGELOG.md','THIRD_PARTY.md','LICENSE','.github']:
             archive.add(ROOT/name,arcname='uxair-webos/'+name,filter=lambda info:None if '__pycache__' in info.name or info.name.endswith('.pyc') else info)
-        for name in ['openssl','libplist','ffmpeg']:
+        for name in ['openssl','libplist','ffmpeg','curl']:
             filename=lock[name]['archive']
             archive.add(ROOT/'.cache'/filename,arcname='uxair-webos/.cache/'+filename)
         archive.add(upstream,arcname='uxair-webos/upstream-uxplay-source.tar')

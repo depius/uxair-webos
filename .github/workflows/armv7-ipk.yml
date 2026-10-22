@@ -23,7 +23,7 @@ jobs:
       - name: Install native test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes build-essential ffmpeg pkg-config libplist-dev libsdl2-dev libsdl2-ttf-dev fonts-dejavu-core libavcodec-dev libavutil-dev libswresample-dev
+          sudo apt-get install --yes build-essential ffmpeg pkg-config libssl-dev libcurl4-openssl-dev libplist-dev libsdl2-dev libsdl2-ttf-dev fonts-dejavu-core libavcodec-dev libavutil-dev libswresample-dev
       - name: Validate source and run sanitizer-backed tests
         run: |
           python3 tools/validate-metadata.py

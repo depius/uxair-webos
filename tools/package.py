@@ -38,6 +38,7 @@ def main():
     shutil.copy2(SDK / 'arm-webos-linux-gnueabi/sysroot/usr/lib/libstdc++.so.6', stage / 'lib/libstdc++.so.6')
     for source, dest in [
         ('LICENSE', 'GPL-3.0.txt'),
+        ('.cache/curl-8.23.0/COPYING', 'curl.txt'),
         ('.cache/openssl-3.5.8/LICENSE.txt', 'OpenSSL.txt'),
         ('.cache/libplist-2.7.0/COPYING', 'libplist.txt'),
         ('.cache/ffmpeg-8.1.2/COPYING.LGPLv2.1', 'FFmpeg.txt'),

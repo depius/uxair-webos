@@ -135,8 +135,16 @@ int main() {
     assert(save_usage_stats(path,migrated));UsageStats portrait;assert(load_usage_stats(path,portrait));
     assert(portrait.recent.front().width==2160&&portrait.recent.front().height==3840);
     assert(save_usage_stats(path,migrated));
-    {std::ifstream v2(path.c_str());std::string header;std::getline(v2,header);assert(header=="UXAIR_USAGE_V2");}
+    {std::ifstream v2(path.c_str());std::string header;std::getline(v2,header);assert(header=="UXAIR_USAGE_V3");}
 
+    UsageStats direct;direct.daily_from_day=usage_utc_day(1700000000);
+    direct.record(session(1700000000,15000,SessionKind::Direct));
+    assert(direct.daily.size()==1&&direct.daily[0].direct_ms==15000&&direct.daily[0].mirror_ms==0);
+    assert(save_usage_stats(path,direct));UsageStats direct_loaded;assert(load_usage_stats(path,direct_loaded));
+    auto direct_summary=summarize_usage(direct_loaded,UsagePeriod::Days7,usage_utc_day(1700000000));
+    assert(direct_summary.direct_ms==15000&&direct_loaded.direct_sessions==1);
+    {std::ofstream legacy(path.c_str());legacy<<"UXAIR_USAGE_V2\ntotals 0 0 0 0 0 0 0 0 0 0 0\ncoverage 19675\nsessions 0\ndaily 1\nday 19675 1000 2000 1 1\n";}
+    UsageStats old;assert(load_usage_stats(path,old)&&old.daily[0].direct_ms==0&&old.daily[0].mirror_ms==1000);
     // Invalid and oversized files are bounded, preserved, and require explicit reset.
     {std::ofstream bad(path.c_str(),std::ios::binary);bad<<"UXAIR_USAGE_V2\ntotals 1";}
     UsageStats corrupt;assert(!load_usage_stats(path,corrupt)&&corrupt.storage_corrupt);

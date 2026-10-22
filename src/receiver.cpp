@@ -278,9 +278,11 @@ void Receiver::stop() {
 Receiver::~Receiver() {stop();}
 
 #ifdef UXAIR_DEV_BUILD
+extern "C" int uxair_direct_reverse(void *context,const char *owner,int fd,unsigned long token){return self(context).direct.bind_reverse(owner?owner:"",fd,uintptr_t(token))?1:0;}
+extern "C" void uxair_direct_lost(void *context,unsigned long token){self(context).direct.connection_lost(uintptr_t(token));}
 extern "C" int uxair_direct_request(void *context,const char *owner,const char *method,const char *target,const char *type,const char *body,int length,char **output,int *size,const char **mime) {
     Receiver& r=self(context);
-    if(length<0||length>16384)return 413;
+    if(length<0||length>524288)return 413;
     auto response=r.direct.request(owner?owner:"",method?method:"",target?target:"",type?type:"",body?std::string(body,size_t(length)):"",r.direct_busy.load());
     *size=int(response.body.size());*output=nullptr;
     if(*size){*output=static_cast<char*>(malloc(size_t(*size)));if(!*output){*size=0;return 500;}memcpy(*output,response.body.data(),size_t(*size));}

@@ -12,8 +12,8 @@ struct SessionSummary {
 };
 struct DailyUsage {
     uint32_t utc_day=0;
-    uint64_t mirror_ms=0,audio_ms=0;
-    uint32_t mirror_sessions=0,audio_sessions=0;
+    uint64_t mirror_ms=0,audio_ms=0,direct_ms=0;
+    uint32_t mirror_sessions=0,audio_sessions=0,direct_sessions=0;
 };
 struct UsageStats {
     static const size_t MaxRecentSessions=100,MaxDailyRecords=365,MaxSerializedBytes=65536;
@@ -27,10 +27,10 @@ struct UsageStats {
     void reset();
 };
 enum class UsagePeriod { Days7=0,Days30=1,Months12=2,ThisMonth=3,ThisYear=4 };
-struct UsageBar { std::string label; uint64_t mirror_ms=0,audio_ms=0; bool available=false,partial=false,future=false,current=false; };
+struct UsageBar { std::string label; uint64_t mirror_ms=0,audio_ms=0,direct_ms=0; bool available=false,partial=false,future=false,current=false; };
 struct UsageSummary {
     std::string title;
-    uint64_t mirror_ms=0,audio_ms=0,mirror_sessions=0,audio_sessions=0;
+    uint64_t mirror_ms=0,audio_ms=0,direct_ms=0,mirror_sessions=0,audio_sessions=0,direct_sessions=0;
     std::vector<UsageBar> bars;
 };
 bool load_usage_stats(const std::string& path,UsageStats& stats);

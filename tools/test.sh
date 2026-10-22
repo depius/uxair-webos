@@ -94,5 +94,8 @@ build/tests/media-test build/tests/landscape.h264 build/tests/portrait.h264 buil
 c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc $(pkg-config --cflags libplist-2.0) tests/direct_video_test.cpp src/direct_video.cpp $(pkg-config --libs libplist-2.0) -o build/tests/direct-video-test
 timeout 30s build/tests/direct-video-test
 
-c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc -Itests/direct_stubs $(pkg-config --cflags libplist-2.0) tests/direct_player_test.cpp src/direct_player.cpp src/direct_video.cpp $(pkg-config --libs libplist-2.0) -o build/tests/direct-player-test
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc -Itests/direct_stubs $(pkg-config --cflags libplist-2.0) tests/direct_player_test.cpp src/direct_player.cpp src/direct_video.cpp src/hls_relay.cpp $(pkg-config --libs libplist-2.0 libcurl) -lcrypto -o build/tests/direct-player-test
 timeout 30s build/tests/direct-player-test
+
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc $(pkg-config --cflags libplist-2.0 libcurl) tests/hls_relay_test.cpp src/hls_relay.cpp src/direct_video.cpp $(pkg-config --libs libplist-2.0 libcurl) -lcrypto -o build/tests/hls-relay-test
+timeout 30s build/tests/hls-relay-test

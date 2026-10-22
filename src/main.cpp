@@ -261,6 +261,11 @@ int main() {
             rows.push_back(UiRow("Audio delay",std::to_string(receiver.audio_delay_ms.load())+" ms","Set before connecting; step size 25 ms",receiver.idle_for_profile_change()));
 
         } else if(which==UiPage::Diagnostics) {
+            const auto direct_status=receiver.direct.snapshot();
+            const char *direct_states[]={"Idle","Loading","Playing","Paused","Ended","Error"};
+            rows.push_back(UiRow("Direct Video",direct_states[int(direct_status.state)],
+                "Native HLS / "+duration_text(uint64_t(std::max(0.0,direct_status.position)*1000))+" of "+duration_text(uint64_t(std::max(0.0,direct_status.duration)*1000))+"; discovery disabled; hardware verification required"));
+
             rows.push_back(UiRow("On-screen overlay",diagnostics_mode_name(settings.diagnostics),"Off, Compact or Detailed"));
             std::string resolution=observed_width?std::to_string(observed_width)+" x "+std::to_string(observed_height):"Awaiting SPS";
             rows.push_back(UiRow("Negotiated codec / SPS",std::string(receiver.incoming_video_codec==2?"HEVC":receiver.incoming_video_codec==1?"H.264":"Awaiting codec")+"  "+resolution,
@@ -351,9 +356,11 @@ int main() {
             history_data.total_time=duration_text(usage.playback_ms);
             history_data.average=sessions?duration_text(usage.playback_ms/sessions):"No usage";
             history_data.mirror_time=duration_text(thirty.mirror_ms);
-            history_data.music_time=duration_text(thirty.audio_ms);
-            history_data.mirror_percent=usage_mirror_percent(thirty.mirror_ms,thirty.audio_ms);
-            history_data.audio_percent=(thirty.mirror_ms||thirty.audio_ms)?100-history_data.mirror_percent:0;
+            history_data.music_time=duration_text(thirty.audio_ms);history_data.direct_time=duration_text(thirty.direct_ms);
+            const long double total=static_cast<long double>(thirty.mirror_ms)+thirty.audio_ms+thirty.direct_ms;
+            history_data.mirror_percent=total?unsigned(thirty.mirror_ms*100.0L/total+0.5L):0;
+            history_data.audio_percent=total?std::min(100-history_data.mirror_percent,unsigned(thirty.audio_ms*100.0L/total+0.5L)):0;
+            history_data.direct_percent=total?100-history_data.mirror_percent-history_data.audio_percent:0;
             history_data.storage=usage.storage_corrupt?"History file unreadable; reset to restart":"History storage "+std::to_string((history_storage+1023)/1024)+" KB | "+std::to_string(usage.recent.size())+"/100 sessions | 365d";
             history_data.daily_title=days.title;history_data.monthly_title=months.title;
             history_data.daily_bars=days.bars;history_data.monthly_bars=months.bars;
@@ -433,7 +440,7 @@ int main() {
         if(receiver.direct.take(direct_command)) {
             if(direct_command.kind==DirectCommandKind::Play) {
                 if(receiver.direct_busy||direct_open){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);}
-                else {direct_open=direct_player.open(direct_command.uri,direct_command.position,now);
+                else {direct_open=direct_player.open(direct_command.uri,direct_command.position,now,&receiver.direct);
                     direct_started=direct_tick=now;direct_play_ms=0;direct_previous=DirectState::Idle;direct_started_utc=uint64_t(time(nullptr));receiver.direct_active=direct_open;
                     if(!direct_open){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);}}
             } else if(direct_open&&!direct_player.control(direct_command)){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);direct_player.close();direct_open=false;}
@@ -449,7 +456,7 @@ int main() {
                 if(direct_play_ms>0&&now>direct_started&&!direct_failed){SessionSummary summary;summary.kind=SessionKind::Direct;
                     summary.started_utc=direct_started_utc;summary.duration_ms=direct_play_ms;
                     usage.record(summary);save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;}
-                receiver.direct.reset();if(direct_failed){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);}
+                DirectSnapshot terminal;terminal.state=direct_failed?DirectState::Error:DirectState::Ended;receiver.direct.publish(terminal);receiver.direct.reset(true);if(direct_failed){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);}
                 last_ui=0;receiver.show(direct_failed?"Direct Video failed (experimental)":"Direct Video stopped");
             } else {
                 receiver.direct.publish(status);
