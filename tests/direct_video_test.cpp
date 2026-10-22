@@ -27,7 +27,7 @@ int main(){
     DirectSnapshot playing;playing.state=DirectState::Playing;playing.position=12;playing.duration=120;session.publish(playing);
     assert(send("GET","/playback-info")==200);assert(send("POST","/rate?value=0")==200);assert(session.take(c)&&c.kind==DirectCommandKind::Pause);
     assert(send("POST","/rate?value=1")==200);assert(session.take(c)&&c.kind==DirectCommandKind::Resume);
-    assert(send("POST","/reverse")==501);assert(send("POST","/action")==501);
+    assert(send("POST","/reverse")==501);assert(send("POST","/action")==400);
     assert(send("POST","/stop")==200);assert(session.take(c)&&c.kind==DirectCommandKind::Stop);session.reset();
     assert(send("POST","/play","Content-Location: file:///bad\r\n")==400);
     assert(send("POST","/play",std::string(16385,'a'))==400);

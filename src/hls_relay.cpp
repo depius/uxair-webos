@@ -33,14 +33,16 @@ std::string HlsRelay::resolve(const std::string& base,const std::string& relativ
     if(curl_url_set(u,CURLUPART_URL,base.c_str(),0)==CURLUE_OK&&curl_url_set(u,CURLUPART_URL,relative.c_str(),0)==CURLUE_OK){char *p=nullptr;if(curl_url_get(u,CURLUPART_URL,&p,0)==CURLUE_OK){out=p;curl_free(p);}}
     curl_url_cleanup(u);return direct_uri_valid(out)?out:std::string();
 }
-HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit){
-    HlsFetch result;std::string current=uri;
+HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest){
+    HlsFetch result;std::string current=uri;const auto began=std::chrono::steady_clock::now();
     for(int redirect=0;redirect<=3&&running_;++redirect){
+        const long remaining=12000-long(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-began).count());
+        if(remaining<=0){result.status=504;break;}
         if(!direct_uri_valid(current))break;
         CURL *curl=curl_easy_init();if(!curl)break;WriteBuffer buffer;buffer.limit=std::min(limit,segment_limit);
         curl_easy_setopt(curl,CURLOPT_URL,current.c_str());curl_easy_setopt(curl,CURLOPT_PROTOCOLS_STR,"http,https");
         curl_easy_setopt(curl,CURLOPT_PROXY,"");curl_easy_setopt(curl,CURLOPT_NETRC,CURL_NETRC_IGNORED);
-        curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,0L);curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT_MS,3000L);curl_easy_setopt(curl,CURLOPT_TIMEOUT_MS,12000L);
+        curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,0L);curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT_MS,3000L);curl_easy_setopt(curl,CURLOPT_TIMEOUT_MS,remaining);
         curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);curl_easy_setopt(curl,CURLOPT_IPRESOLVE,CURL_IPRESOLVE_V4);
         char executable[4096];auto executable_length=readlink("/proc/self/exe",executable,sizeof(executable)-1);
         std::string ca;
@@ -60,25 +62,27 @@ HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit){
         if(status!=200){result.status=status==404?404:502;break;}
         result.status=200;result.data.swap(buffer.data);result.url=current;bytes+=result.data.size();return result;
     }
-    if(sender_manifest&&uri.find(".m3u8")!=std::string::npos&&running_){auto playlist=sender_manifest(uri);if(!playlist.empty()&&playlist.size()<=manifest_limit){result.status=200;result.data=playlist;result.url=uri;result.type="application/vnd.apple.mpegurl";return result;}}
+    if(sender_manifest&&manifest&&running_){auto playlist=sender_manifest(uri);if(!playlist.empty()&&playlist.size()<=manifest_limit){result.status=200;result.data=playlist;result.url=uri;result.type="application/vnd.apple.mpegurl";return result;}}
     ++failures;return result;
 }
-std::string HlsRelay::register_url(const std::string& uri){
+std::string HlsRelay::register_url(const std::string& uri,bool manifest){
     if(!direct_uri_valid(uri))return {};
     std::lock_guard<std::mutex> lock(mutex_);auto i=std::find(resources_.begin(),resources_.end(),uri);
-    if(i==resources_.end()){size_t total=uri.size();for(const auto& item:resources_)total+=item.size();if(resources_.size()>=4096||total>2097152)return {};resources_.push_back(uri);i=resources_.end()-1;}
+    if(i==resources_.end()){size_t total=uri.size();for(const auto& item:resources_)total+=item.size();if(resources_.size()>=4096||total>2097152)return {};resources_.push_back(uri);manifests_.push_back(manifest);i=resources_.end()-1;}
+    if(manifest)manifests_[size_t(i-resources_.begin())]=true;
     return "http://127.0.0.1:"+std::to_string(port_)+"/"+token_+"/"+std::to_string(i-resources_.begin());
 }
 std::string HlsRelay::rewrite(const std::string& input,const std::string& base){
     if(input.size()>manifest_limit||input.compare(0,7,"#EXTM3U")!=0)return {};
-    std::istringstream in(input);std::string line,out;
+    std::istringstream in(input);std::string line,out;bool variant=false;
     while(std::getline(in,line)){
         if(!line.empty()&&line.back()=='\r')line.pop_back();if(line.size()>8192||line.find("BYTERANGE")!=std::string::npos||line.find("CONTENT-STEERING")!=std::string::npos)return {};
         if(line.compare(0,10,"#EXT-X-KEY")==0&&line.find("METHOD=NONE")==std::string::npos)return {}; // no DRM/key relay
         if(line.compare(0,18,"#EXT-X-SESSION-KEY")==0)return {};
-        if(!line.empty()&&line[0]!='#'){line=register_url(resolve(base,line));if(line.empty())return {};}
+        if(!line.empty()&&line[0]!='#'){line=register_url(resolve(base,line),variant);variant=false;if(line.empty())return {};}
         else {size_t pos=0;while((pos=line.find("URI=\"",pos))!=std::string::npos){const size_t first=pos+5,last=line.find('"',first);if(last==std::string::npos)return {};
-            const auto local=register_url(resolve(base,line.substr(first,last-first)));if(local.empty())return {};line.replace(first,last-first,local);pos=first+local.size()+1;}}
+            const auto local=register_url(resolve(base,line.substr(first,last-first)),line.find("#EXT-X-MEDIA:")==0||line.find("#EXT-X-I-FRAME-STREAM-INF:")==0);if(local.empty())return {};line.replace(first,last-first,local);pos=first+local.size()+1;}}
+        if(line.find("#EXT-X-STREAM-INF:")==0)variant=true;
         out+=line+"\n";if(out.size()>manifest_limit)return {};
     }
     return out;
@@ -90,9 +94,9 @@ void HlsRelay::serve(){
         HlsFetch response;std::string target;std::istringstream header(request);std::string method;header>>method>>target;
         const std::string prefix="/"+token_+"/";
         if(method=="GET"&&target.compare(0,prefix.size(),prefix)==0&&target.size()<=prefix.size()+4){
-            auto id=target.substr(prefix.size());if(!id.empty()&&id.find_first_not_of("0123456789")==std::string::npos){size_t index=size_t(strtoul(id.c_str(),nullptr,10));std::string url;
-                {std::lock_guard<std::mutex> lock(mutex_);if(index<resources_.size())url=resources_[index];}
-                if(!url.empty()){response=fetch(url,segment_limit);if(response.status==200&&(response.data.compare(0,7,"#EXTM3U")==0||response.type.find("mpegurl")!=std::string::npos)){response.data=rewrite(response.data,response.url);response.type="application/vnd.apple.mpegurl";if(response.data.empty())response.status=422;}}
+            auto id=target.substr(prefix.size());if(!id.empty()&&id.find_first_not_of("0123456789")==std::string::npos){size_t index=size_t(strtoul(id.c_str(),nullptr,10));std::string url;bool manifest=false;
+                {std::lock_guard<std::mutex> lock(mutex_);if(index<resources_.size()){url=resources_[index];manifest=manifests_[index];}}
+                if(!url.empty()){response=fetch(url,manifest?manifest_limit:segment_limit,manifest);if(response.status==200&&(response.data.compare(0,7,"#EXTM3U")==0||response.type.find("mpegurl")!=std::string::npos)){response.data=rewrite(response.data,response.url);response.type="application/vnd.apple.mpegurl";if(response.data.empty())response.status=422;}}
             }
         }else response.status=404;
         if(response.status!=200)response.data.clear();
@@ -108,6 +112,6 @@ std::string HlsRelay::start(const std::string& uri){
     listener_=socket(AF_INET,SOCK_STREAM,0);if(listener_<0)return {};sockaddr_in a={};a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
     if(bind(listener_,reinterpret_cast<sockaddr*>(&a),sizeof(a))||listen(listener_,4)){stop();return {};}
     socklen_t length=sizeof(a);getsockname(listener_,reinterpret_cast<sockaddr*>(&a),&length);port_=ntohs(a.sin_port);
-    running_=true;bytes=requests=failures=0;const auto local=register_url(uri);thread_=std::thread(&HlsRelay::serve,this);return local;
+    running_=true;bytes=requests=failures=0;const auto local=register_url(uri,true);thread_=std::thread(&HlsRelay::serve,this);return local;
 }
-void HlsRelay::stop(){running_=false;int fd=listener_.exchange(-1);if(fd>=0){shutdown(fd,SHUT_RDWR);close(fd);}fd=client_.load();if(fd>=0)shutdown(fd,SHUT_RDWR);if(thread_.joinable())thread_.join();std::lock_guard<std::mutex> lock(mutex_);resources_.clear();}
+void HlsRelay::stop(){running_=false;int fd=listener_.exchange(-1);if(fd>=0){shutdown(fd,SHUT_RDWR);close(fd);}fd=client_.load();if(fd>=0)shutdown(fd,SHUT_RDWR);if(thread_.joinable())thread_.join();std::lock_guard<std::mutex> lock(mutex_);resources_.clear();manifests_.clear();}
