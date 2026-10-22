@@ -6,5 +6,6 @@ enum class DirectLoadContract { ArgsHls, UriHls, UriAuto };
 const char *direct_contract_name(DirectLoadContract);
 DirectLoadContract direct_configured_contract();
 const char *direct_native_event_name(int);
+bool direct_native_event_has_text(int);
 std::string direct_native_json_summary(const char *message);
 bool direct_fixture_uri_valid(const std::string& uri,const std::string& lan);

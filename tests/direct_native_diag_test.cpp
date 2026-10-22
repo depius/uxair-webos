@@ -7,6 +7,8 @@
 #include <cstdio>
 int main(){
  assert(!strcmp(direct_native_event_name(0xd),"program-count"));assert(!strcmp(direct_native_event_name(2),"buffer-range-info"));assert(!strcmp(direct_native_event_name(1),"streaming-info-periodic"));assert(!strcmp(direct_native_event_name(0x13),"str-error"));
+ assert(!direct_native_event_has_text(0xd)&&!direct_native_event_has_text(2)&&!direct_native_event_has_text(0x7fff)&&direct_native_event_has_text(1)&&direct_native_event_has_text(0x13));
+ assert(direct_native_json_summary("{\"error\":{\"errorCode\":-7}}").find("root.error.errorCode:integer=-7")!=std::string::npos);
  assert(direct_native_json_summary(nullptr)=="absent");assert(direct_native_json_summary("not JSON PRIVATE")=="non-json");
  assert(direct_native_json_summary(std::string(8193,'x').c_str())=="oversize");
  assert(direct_native_json_summary((std::string(17,'[')+std::string(17,']')).c_str())=="depth-limit");

@@ -35,7 +35,7 @@ void DirectPlayer::event(int type,int64_t value,const char* message,void *user){
     // the first of each event type (including previously ignored source/resource events).
     const bool first=type>=0&&type<64&&!(p.event_types_&(uint64_t(1)<<type));
     if(type>=0&&type<64)p.event_types_|=uint64_t(1)<<type;
-    if(first&&p.event_records_++<32)fprintf(stderr,"[direct-player] event=0x%x raw_value=%lld name=%s json=%s\n",type,(long long)value,direct_native_event_name(type),direct_native_json_summary(message).c_str());
+    if(first&&p.event_records_++<32)fprintf(stderr,"[direct-player] event=0x%x raw_value=%lld name=%s json=%s\n",type,(long long)value,direct_native_event_name(type),direct_native_json_summary(direct_native_event_has_text(type)?message:nullptr).c_str());
     if(p.state_==int(DirectState::Error))return;
     switch(type){
     case PF_EVENT_TYPE_STR_STATE_UPDATE__LOADCOMPLETED:p.loaded_=true;break;

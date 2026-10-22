@@ -25,6 +25,13 @@ const char *direct_native_event_name(int type){
     case 39:return "enough-data";case 43:return "vdec-ready";case 44:return "buffer-low-int";case 45:return "buffer-full";
     case 46:return "buffer-low";case 48:return "dropped-frame";default:return "unknown";}
 }
+bool direct_native_event_has_text(int type){
+    // numValue and strValue are distinct API payloads. Do not dereference an
+    // unspecified strValue on INT/unknown events, even when it is non-null.
+    switch(type){case 1:case 4:case 5:case 7:case 8:case 9:case 10:case 11:case 17:case 19:
+    case 21:case 22:case 23:case 24:case 25:case 26:case 27:case 28:case 29:case 45:case 46:return true;
+    default:return false;}
+}
 static const char *node_type(plist_t n){
     if(!n)return "absent";switch(plist_get_node_type(n)){case PLIST_DICT:return "object";case PLIST_ARRAY:return "array";
     case PLIST_STRING:return "string";case PLIST_UINT:return "integer";case PLIST_REAL:return "real";case PLIST_BOOLEAN:return "boolean";default:return "other";}
@@ -36,7 +43,7 @@ static void describe(plist_t n,const std::string& prefix,std::ostringstream& out
     if(plist_get_node_type(n)==PLIST_ARRAY)out<<"("<<plist_array_get_size(n)<<")";
     // Only errorCode may carry a scalar value. Unknown field names and all string
     // contents, including errorText, URI, mediaId, tokens and appId, are never copied.
-    if(prefix=="root.errorCode"||prefix=="root.error.code"){
+    if(prefix=="root.errorCode"||prefix=="root.error.code"||prefix=="root.error.errorCode"){
         if(plist_get_node_type(n)==PLIST_UINT){uint64_t v=0;plist_get_uint_val(n,&v);out<<"="<<static_cast<int64_t>(v);}
     }
     out<<" ";

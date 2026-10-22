@@ -40,8 +40,8 @@ int main(){
  assert(acb_player_type==PLAYER_TYPE_VIDEO);
  // Reproduce the exact B7 callbacks. None is an error or evidence of fetched data.
  assert(p.open("https://media.example/vod.m3u8",0,1));
- StarfishMediaAPIs::callback(0xd,1,nullptr,StarfishMediaAPIs::context);
- for(int i=0;i<73;++i){StarfishMediaAPIs::callback(2,0,"{\"bufferRange\":[],\"uri\":\"https://SECRET.invalid/?token=PRIVATE\"}",StarfishMediaAPIs::context);
+ StarfishMediaAPIs::callback(0xd,1,reinterpret_cast<const char*>(1),StarfishMediaAPIs::context);
+ for(int i=0;i<73;++i){StarfishMediaAPIs::callback(2,0,reinterpret_cast<const char*>(1),StarfishMediaAPIs::context);
      StarfishMediaAPIs::callback(1,0,"{\"state\":\"PRIVATE\",\"uri\":\"https://SECRET.invalid\"}",StarfishMediaAPIs::context);}
  auto b7=p.tick(5002000001LL);assert(b7.state==DirectState::Loading&&b7.callbacks==147&&b7.relay_requests==0&&b7.upstream_fetches==0);
  assert(p.tick(15001000001LL).error==DirectError::LoadTimeout);p.close();
