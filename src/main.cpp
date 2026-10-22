@@ -444,11 +444,13 @@ int main() {
             if(direct_previous==DirectState::Playing&&now>direct_tick)direct_play_ms+=uint64_t(now-direct_tick)/1000000;
             direct_tick=now;
             if(action==Action::Back||!direct_open||status.state==DirectState::Error||status.state==DirectState::Ended) {
+                const bool direct_failed=status.state==DirectState::Error||receiver.direct.snapshot().state==DirectState::Error;
                 direct_player.close();receiver.direct_active=false;direct_open=false;
-                if(direct_play_ms>0&&now>direct_started&&status.state!=DirectState::Error){SessionSummary summary;summary.kind=SessionKind::Direct;
+                if(direct_play_ms>0&&now>direct_started&&!direct_failed){SessionSummary summary;summary.kind=SessionKind::Direct;
                     summary.started_utc=direct_started_utc;summary.duration_ms=direct_play_ms;
                     usage.record(summary);save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;}
-                receiver.direct.reset();last_ui=0;receiver.show("Direct Video stopped");
+                receiver.direct.reset();if(direct_failed){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);}
+                last_ui=0;receiver.show(direct_failed?"Direct Video failed (experimental)":"Direct Video stopped");
             } else {
                 receiver.direct.publish(status);
                 if(status.state==DirectState::Playing){if(direct_previous!=status.state)shell.transparent();}

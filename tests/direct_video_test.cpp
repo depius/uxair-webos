@@ -37,6 +37,7 @@ int main(){
         assert(session.take(c)&&c.position==.25);free(data);plist_free(dict);session.reset();
     }
     assert(session.request("session-A","POST","/play","application/x-apple-binary-plist","bplistBAD").status==400);
+    DirectSnapshot error;error.state=DirectState::Error;session.publish(error);assert(send("GET","/playback-info")==503);session.reset();
     // Callback/main-thread publication and cancellation have finite CI timeouts.
     std::thread callback([&]{for(int i=0;i<1000;++i)send("GET","/playback-info");});
     for(int i=0;i<1000;++i){session.publish(playing);session.snapshot();}callback.join();
