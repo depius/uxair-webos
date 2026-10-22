@@ -42,6 +42,9 @@ HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit){
         curl_easy_setopt(curl,CURLOPT_PROXY,"");curl_easy_setopt(curl,CURLOPT_NETRC,CURL_NETRC_IGNORED);
         curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,0L);curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT_MS,3000L);curl_easy_setopt(curl,CURLOPT_TIMEOUT_MS,12000L);
         curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);curl_easy_setopt(curl,CURLOPT_IPRESOLVE,CURL_IPRESOLVE_V4);
+        char executable[4096];auto executable_length=readlink("/proc/self/exe",executable,sizeof(executable)-1);
+        std::string ca;
+        if(executable_length>0){executable[executable_length]=0;ca=executable;ca=ca.substr(0,ca.find_last_of('/'))+"/hls-ca.pem";if(access(ca.c_str(),R_OK)==0)curl_easy_setopt(curl,CURLOPT_CAINFO,ca.c_str());}
         curl_easy_setopt(curl,CURLOPT_SSL_VERIFYPEER,1L);curl_easy_setopt(curl,CURLOPT_SSL_VERIFYHOST,2L);
         curl_easy_setopt(curl,CURLOPT_OPENSOCKETFUNCTION,open_socket);curl_easy_setopt(curl,CURLOPT_OPENSOCKETDATA,this);
         curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,write_data);curl_easy_setopt(curl,CURLOPT_WRITEDATA,&buffer);
@@ -52,7 +55,7 @@ HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit){
         char *location=nullptr,*type=nullptr;curl_easy_getinfo(curl,CURLINFO_REDIRECT_URL,&location);curl_easy_getinfo(curl,CURLINFO_CONTENT_TYPE,&type);
         std::string next=location?location:"";result.type=type?type:"application/octet-stream";
         curl_easy_cleanup(curl);++requests;
-        if(code!=CURLE_OK){result.status=code==CURLE_OPERATION_TIMEDOUT?504:502;break;}
+        if(code!=CURLE_OK){fprintf(stderr,"[hls-relay] fetch error=%d http=%ld\n",int(code),status);result.status=code==CURLE_OPERATION_TIMEDOUT?504:502;break;}
         if(status>=300&&status<400&&!next.empty()){current=resolve(current,next);continue;}
         if(status!=200){result.status=status==404?404:502;break;}
         result.status=200;result.data.swap(buffer.data);result.url=current;bytes+=result.data.size();return result;

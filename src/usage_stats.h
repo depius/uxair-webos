@@ -23,7 +23,8 @@ struct UsageStats {
     std::vector<DailyUsage> daily;
     uint32_t daily_from_day=0;
     bool storage_corrupt=false;
-    void record(const SessionSummary& session);
+    void record(const SessionSummary& session,bool aggregate=true);
+    void record_direct_day(uint32_t day,uint64_t duration_ms);
     void reset();
 };
 enum class UsagePeriod { Days7=0,Days30=1,Months12=2,ThisMonth=3,ThisYear=4 };

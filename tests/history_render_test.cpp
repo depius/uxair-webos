@@ -24,14 +24,14 @@ struct HistoryRenderTest {
     }
     static void render(Shell& shell,SDL_Surface *surface,bool empty,uint32_t today=20747) {
         UsageStats stats;stats.daily_from_day=20736; // 2026-10-10 UTC
-        if(!empty){DailyUsage d;d.utc_day=20747;d.mirror_ms=100000;d.audio_ms=51000;stats.daily.push_back(d);}
+        if(!empty){DailyUsage d;d.utc_day=20747;d.mirror_ms=100000;d.audio_ms=51000;d.direct_ms=30000;stats.daily.push_back(d);}
         auto days=summarize_usage(stats,UsagePeriod::ThisMonth,today);
         auto months=summarize_usage(stats,UsagePeriod::ThisYear,today);
         assert(days.title=="This month — October 2026");
         UiHistoryData data;data.daily_title=days.title;data.monthly_title=months.title;
         data.daily_bars=days.bars;data.monthly_bars=months.bars;
         data.summary=empty?"0 completed":"5 completed";data.total_time="2 min 31 s";data.average="30 s";
-        data.mirror_time="1 min 40 s";data.direct_time="0 s";data.music_time="51 s";data.mirror_percent=empty?0:66;data.audio_percent=empty?0:34;
+        data.mirror_time="1 min 40 s";data.direct_time="30 s";data.music_time="51 s";data.mirror_percent=empty?0:66;data.audio_percent=empty?0:34;
         data.storage="History storage 1 KB | 5/100 sessions | 365d";
         std::vector<UiRow> rows;
         if(!empty)for(int i=0;i<5;++i)rows.emplace_back("2026-10-21 12:30","30 s","Mirror / HEVC / 3840x2160");

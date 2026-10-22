@@ -6,6 +6,7 @@ import http.server
 import pathlib
 import subprocess
 import tempfile
+import time
 
 
 def main():
@@ -33,9 +34,18 @@ def main():
                     self.send_header('Location', '/master.m3u8')
                     self.end_headers()
                     return
+                if self.path == '/loop':
+                    self.send_response(302); self.send_header('Location','/loop'); self.end_headers(); return
+                if self.path == '/slow.m3u8':
+                    time.sleep(13); self.path='/master.m3u8'
+                if self.path == '/bad.m3u8':
+                    data=b'not a playlist'; self.send_response(200); self.end_headers(); self.wfile.write(data); return
+                if self.path == '/missing-segment.m3u8':
+                    data=b'#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nmissing.ts\n#EXT-X-ENDLIST\n'
+                    self.send_response(200); self.end_headers(); self.wfile.write(data); return
                 super().do_GET()
         handler = functools.partial(Handler, directory=folder)
-        with http.server.HTTPServer((args.bind, args.port), handler) as server:
+        with http.server.ThreadingHTTPServer((args.bind, args.port), handler) as server:
             print('Serving 12-second HLS fixture; /redirect tests a relative redirect; /missing.ts returns 404.')
             try:
                 server.serve_forever()

@@ -267,10 +267,12 @@ void Shell::draw_history(const UiHistoryData& data,const std::vector<UiRow>& row
     draw_chart(month_x,chart_y,content-layout.daily_width-layout.chart_gap,chart_h,data.monthly_bars,data.monthly_title,true);
     text_at("UTC · Blue label: current · * Partial history · — Unavailable · • Known zero · Blank: future",panel,chart_y+chart_h+7,content,small_,{157,178,194,255});
     text_at("30-day distribution",panel,layout.distribution_y,content/4,small_,uxair_text);
+    const int total_pct=data.mirror_percent+data.audio_percent+data.direct_percent;
+    if(total_pct){
     text_at("Mirroring "+std::to_string(data.mirror_percent)+"%",panel+content/4,layout.distribution_y,content/4,small_,uxair_accent);
     text_at("Music "+std::to_string(data.audio_percent)+"%",panel+content/2,layout.distribution_y,content/4,small_,{145,211,181,255});
     text_at("Direct Video "+std::to_string(data.direct_percent)+"%",panel+content*3/4,layout.distribution_y,content/4,small_,{187,145,239,255});
-    const int total_pct=data.mirror_percent+data.audio_percent+data.direct_percent;
+    }
     SDL_SetRenderDrawColor(renderer,47,65,85,255);SDL_Rect track={panel,layout.distribution_bar_y,content,20};SDL_RenderFillRect(renderer,&track);
     int offset=panel;
     const int widths[]={content*int(data.mirror_percent)/100,content*int(data.audio_percent)/100,content-content*int(data.mirror_percent)/100-content*int(data.audio_percent)/100};

@@ -35,10 +35,12 @@ def main():
     shutil.copy2(ROOT / 'build/uxair', stage / 'uxair')
     shutil.copy2(ROOT / 'assets/bmc-qr.bmp', stage / 'bmc-qr.bmp')
     shutil.copy2(ROOT / 'assets/bmc-icon.bmp', stage / 'bmc-icon.bmp')
+    shutil.copy2(ROOT / 'assets/hls-ca.pem', stage / 'hls-ca.pem')
     shutil.copy2(SDK / 'arm-webos-linux-gnueabi/sysroot/usr/lib/libstdc++.so.6', stage / 'lib/libstdc++.so.6')
     for source, dest in [
         ('LICENSE', 'GPL-3.0.txt'),
         ('.cache/curl-8.23.0/COPYING', 'curl.txt'),
+        ('packaging/Mozilla-MPL-2.0.txt', 'Mozilla-MPL-2.0.txt'),
         ('.cache/openssl-3.5.8/LICENSE.txt', 'OpenSSL.txt'),
         ('.cache/libplist-2.7.0/COPYING', 'libplist.txt'),
         ('.cache/ffmpeg-8.1.2/COPYING.LGPLv2.1', 'FFmpeg.txt'),

@@ -1,31 +1,84 @@
-# UxAir 1.2 Direct Video development status
+# UxAir 1.2 Direct Video: implementation and B7 acceptance
 
-This branch implements an experimental native HLS URI backend and a bounded AirPlay command adapter. It is **not complete Safari support**. DNS-SD direct-video/HLS bits remain disabled. No stable release is published.
+PR #9 implements a separate native Starfish HLS URI player, PTTH event transport, a bounded HLS relay, and Direct Video History/Diagnostics. Hardware playback and contemporary Safari compatibility are **not yet verified**. Default discovery and the production 1.1.0 application are unchanged. No stable release or merge is authorized.
 
-## Source evidence and architecture
+## Protocol and lifecycle
 
-The pinned UxPlay 1.74 commit 9f3c2bbc exposes on_video_play/scrub/rate/stop/acquire_playback_info callbacks, HTTP handlers and FCUP/reverse playlist infrastructure. UxAir previously supplied none of these callbacks and disabled HLS routing. Current upstream HEAD inspected: 0477d47; no dependency pins were changed. Upstream README documents YouTube HLS rather than general Safari compatibility: https://github.com/FDH2/UxPlay . Its subsequent changes span HTTP parsing, playlists and RTP; wholesale upgrade would also change the stable mirroring path.
+The development-only pinned-source transform routes `/play`, `/reverse`, `/action`, `/playback-info`, `/scrub`, `/rate`, `/stop`, `/info`, `/server-info` and property operations. Binary/XML dictionaries and legacy play bodies use pinned libplist; play bodies are capped at 16 KiB, action envelopes at 512 KiB, URLs at 4096 bytes, commands at eight and pending reverse messages at sixteen. PTTH returns 101 using the existing UxPlay EVENT connection type. A separate bounded writer sends loading/playing/paused/stopped/error events without firmware calls from RAOP threads. The connection destruction hook stops its owning session; short-lived control sockets do not stop playback. Legacy clients without a reverse connection have a 30-second control lease.
 
-The development source transform intercepts selected direct commands before the disabled HLS gate, only with UXAIR_DIRECT_VIDEO=1. The adapter uses pinned libplist for binary/XML dictionaries and parses legacy text parameters. A mutex-protected queue caps pending commands at eight; bodies at 16 KiB and URLs at 4096 bytes. Only the main loop calls Starfish/ACB. It rejects starts while mirroring/audio owns the decoder, and rejects a different session owner. BUFFERSTREAM is untouched. Unsupported reverse/action commands return 501 rather than success.
+FCUP `unhandledURLRequest` follows the pinned UxPlay schema. `/action` accepts only correlated request ID + owner + URL responses, validates status and limits decoded manifest data to 256 KiB. It provides a three-second manifest fallback for eligible failed m3u8 retrievals; segments remain subject to the relay policy. Playlist removal stops playback. Unknown action/property mutations return 501 instead of fake acknowledgments. Read-only position/duration/rate properties and playback feedback are implemented; loaded ranges are deliberately empty when unmeasured. Unknown playlistInsert variants, subtitles, DRM and property features require concrete sender evidence before extension.
 
-DirectPlayer uses a separate Starfish instance with HLS mediaTransportType, URI and the development app ID. ACB owns the main video plane. The native player is responsible for demuxing, audio/video sync, variants and downloads. Seek uses milliseconds; initial Start-Position is a fraction and waits for duration. Loading has a 15-second state deadline. Back stops and releases native resources. Playing time (excluding paused/loading intervals) records an existing Direct recent-session/lifetime entry. Daily charts still have only mirror/music aggregates: a bounded V3 history extension and three-category charts remain outstanding.
+Callbacks carry generation IDs in a bounded live registry; an unloaded player's callbacks cannot change its successor. No firmware API runs while a callback-state mutex is held. Only the SDL main loop owns native player operations. Relay cancellation precedes native unload. Stop, EOF, native errors, reverse connection loss and lease expiry release Direct ownership. Concurrent mirror/audio starts are rejected while Direct owns the decoder. Stop Direct before switching modes. Back stops; OK toggles live Diagnostics. Native video-info is forwarded to ACB and display windows preserve aspect ratio.
 
-Primary native API evidence: https://www.webosbrew.org/webos-userland/d3/dda/StarfishMediaAPIs_8h_source.html . LG documents native HLS on webOS 3 at https://webostv.developer.lge.com/develop/guides/mediaoption-parameter . Neither establishes B7 payload compatibility or Safari interoperability.
+## Native HLS and network policy
 
-## Explicit blockers / unfinished acceptance items
+Starfish receives only a random-token loopback relay URL, never a signed upstream URL. The relay rewrites master/media playlist entries and URI attributes, including separate fMP4 initialization files. HTTP/HTTPS, relative URLs and up to three redirects are supported. Each connection checks the actual destination IPv4: loopback, link-local, multicast and private networks are denied. A single explicit `UXAIR_DIRECT_LAN=PC-IP` exception enables the local fixture. Redirects and DNS changes cannot bypass that connection policy. IPv6, URI credentials and non-HTTP schemes are rejected. Proxy environment settings and netrc credentials are ignored.
 
-- Safari /reverse events, FCUP /action and property exchanges are not implemented in this adapter. Exact current iOS requests require capture on the B7; synthetic plist tests cannot establish Safari compatibility. Receiver advertisement stays disabled.
-- Native HLS URI Load, callback duration/playtime units, aspect ratio, HTTPS trust and MPEG-TS/fMP4 handling are hardware-unverified. Native redirect/DNS/response/segment limits cannot be enforced by this adapter. No HTTP downloader, manifest sanitizer or TLS override was added. Native memory use and cleanup blocking must be measured before enabling discovery.
-- URL validation rejects non-HTTP schemes, credentials, control bytes, loopback literals, link-local literals, IPv6 and malformed ports. It does not prevent DNS rebinding or redirects to local services; private IPv4 is intentionally allowed for lab media. Opt-in testing must use a trusted isolated LAN. Signed URLs, bodies and native callback text are not logged.
-- Sender socket-loss notifications are not yet mapped to direct session ownership. Diagnostics, network timeout recovery, master/segment error fixtures, three-category daily history and automatic mode switching are incomplete. There is no claim that all HLS formats, 4K or DRM work.
+The new pinned curl 8.23.0 uses pinned OpenSSL with certificate/hostname verification. A committed Mozilla CA bundle (2026-10-20, SHA-256 796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe) is packaged with MPL notices. Downloads have three-second connect and twelve-second total deadlines, an eight-MiB segment cap, 256-KiB manifest cap and a catalog bounded to 4096 resources / two MiB of URLs. The relay is loopback-only with one active fetch and bounded client read/write timeouts. No media is written to app storage. Encryption/key playlists, byte-range HLS and content steering are explicitly rejected; TLS is never disabled. H.264/AAC SDR up to 1080p is the initial target. No 4K, all-profile HLS or DRM claim is made.
 
-## Reproducible first B7 gate
+The native firmware still performs demuxing, decoding and A/V sync; its memory use and URI/Load behavior require B7 measurement. Actual duration/playtime event units and MPEG-TS/fMP4 playback require hardware verification. No host test proves these properties.
 
-1. Install only com.github.depius.uxair.dev_1.2.0_arm.ipk. Stop that development receiver, then launch its binary manually with UXAIR_DIRECT_VIDEO=1. Keep the production app stopped during this experiment; its state is never touched. Read the ephemeral HTTP port from the receiver log.
-2. On a trusted LAN computer generate unprotected H.264/AAC HLS using FFmpeg (testsrc + sine, 20 seconds, libx264 yuv420p, AAC, -f hls -hls_time 4 -hls_list_size 0), and serve the output with python3 -m http.server 8080 --bind the computer's LAN IPv4. A Safari page can use <video controls playsinline x-webkit-airplay="allow" src="stream.m3u8"></video>. Fullscreen alone is not a direct-route test.
-3. POST /play to the receiver port with X-Apple-Session-ID: lab-session, Content-Type: text/parameters and CRLF body Content-Location: http://LAN-IP:8080/stream.m3u8. Verify picture/audio, LOADCOMPLETED/PLAYING/EOS and bounded memory. POST /rate?value=0 then value=1; /scrub?position=5; GET /playback-info; POST /stop. Repeat, then check normal mirroring/music and pairing.
-4. If native playback passes, capture a genuine Safari AirPlay Video exchange with a separate known compatible receiver on the trusted LAN. Record request methods/content types, redacted structure and event order, never PINs, credentials or signed URLs. Use this evidence to implement reverse/FCUP/session teardown before enabling advertisement on this B7.
+## History and Diagnostics
 
-Host tests use real libplist and simulated firmware; they validate parsing, command/state ownership, queue bounds and native adapter calls, not HLS network playback. ARM build and ELF/IPK validation establish binary/package compatibility only.
+V3 adds Direct daily milliseconds/session counts and reads V1/V2 without erasing data or inventing prior Direct daily usage. Storage remains 64 KiB, 100 recent sessions and 365 daily entries. Played intervals are assigned to UTC day buckets across pauses, rather than incorrectly treating paused time as contiguous playback. Recent sessions, lifetime counters, three-color stacked charts, three-category duration percentages and Direct Diagnostics are integrated. Unknown codec remains unknown; no URL/credentials are stored in History.
 
-A ready-to-run fixture is included: `python3 tools/direct-hls-fixture.py --bind LAN-IP`. It generates 12 seconds of 720p H.264/AAC MPEG-TS HLS into a temporary directory, serves relative master/media/segment URLs and a Safari HTML5 page, then deletes all generated media when stopped. Open `http://LAN-IP:8080/` on the iPhone. `/redirect` exercises a relative HTTP redirect and `/missing.ts` a 404. This does not validate firmware playback automatically.
+## Source evidence / upstream comparison
+
+Pinned UxPlay remains 9f3c2bbc (1.74). Its reverse EVENT ownership, FCUP schema and controls were inspected alongside upstream 0477d47; its YouTube/GStreamer playlist implementation is not wholesale imported into this native receiver. Source: https://github.com/FDH2/UxPlay . Native API declarations: https://www.webosbrew.org/webos-userland/d3/dda/StarfishMediaAPIs_8h_source.html . LG HLS options: https://webostv.developer.lge.com/develop/guides/mediaoption-parameter . These establish API/protocol evidence, not Safari/B7 acceptance.
+
+## Reproducible B7 test (only remaining physical evidence)
+
+Install the new `.dev_1.2.0_arm.ipk` with the configured `b7` ares device. Do not uninstall it or reset state. Keep production UxAir idle while testing the shared TV decoder.
+
+On the PC, in the PR checkout (replace 192.168.1.10 and 192.168.1.20 with PC and TV addresses):
+
+```sh
+python3 tools/direct-hls-fixture.py --bind 192.168.1.10 --port 8080
+# In another terminal:
+ares-install -d b7 com.github.depius.uxair.dev_1.2.0_arm.ipk
+ares-launch -d b7 --close com.github.depius.uxair.dev
+ssh root@192.168.1.20 'sh -s -- 192.168.1.10' < tools/run-direct-b7.sh
+```
+
+On Windows use `python` if `python3` is unavailable. For PowerShell without input redirection, copy the launcher to `/tmp/uxair-direct-test.sh` with `scp`, then run `ssh root@TV-IP 'sh /tmp/uxair-direct-test.sh PC-IP'`. This writes only a temporary test script, not firmware or production state. The foreground SSH terminal may stay quiet because the app writes its own log. Ctrl-C ends the test receiver.
+
+Read the ephemeral port with this safe command (pick the application root found by the launcher):
+
+```sh
+ssh root@192.168.1.20 'grep "UxAir ready port=" /media/developer/apps/usr/palm/applications/com.github.depius.uxair.dev/uxair.log | tail -1'
+```
+
+If installed under `/media/cryptofs/apps`, substitute that root. With the reported port, run:
+
+```sh
+python3 tools/direct-control-test.py --receiver http://192.168.1.20:PORT --source http://192.168.1.10:8080/master.m3u8
+```
+
+Expected: reverse upgrade 101; play/control requests 200; loading/playing/paused/stopped events; moving 12-second colored video with a 440-Hz tone; duration about 12 seconds and increasing position; pause holds position, resume advances, seek moves near five seconds, stop returns to the UI. OK toggles Diagnostics and Back stops. Repeat twice, then check saved pairing, H.264/HEVC mirroring and AirPlay Music without restarting or clearing state. Exercise `/redirect`, `/missing-segment.m3u8`, `/bad.m3u8`, `/slow.m3u8` and `/loop` as source paths; failures must return an error and allow a subsequent good session.
+
+Safe numeric diagnostics on the TV:
+
+```sh
+APP=/media/developer/apps/usr/palm/applications/com.github.depius.uxair.dev
+grep -E '^\[(direct-player|direct-protocol|hls-relay)\]' "$APP/uxair.log" | tail -80
+for p in $(pidof uxair); do
+  if [ "$(readlink /proc/$p/exe)" = "$APP/uxair" ]; then
+    grep -E '^(VmRSS|VmSize|Threads):' /proc/$p/status
+    ls /proc/$p/fd | wc -l
+  fi
+done
+```
+
+Do not send full logs, pairing files, URLs or packet captures containing stream credentials. Minimal first report: picture/tone yes/no; sanitized control-client output; numeric event lines (especially duration 0x3); RSS and FD counts before/after two sessions; whether stop and subsequent mirroring/music recover. If SDL/ACB fails at launch, report only its bounded error stage.
+
+**Only after the native fixture passes**, stop the dev receiver and relaunch explicitly with the second launcher argument:
+
+```sh
+ssh root@192.168.1.20 'sh -s -- 192.168.1.10 --safari-after-native-test' < tools/run-direct-b7.sh
+```
+
+This explicitly enables experimental direct discovery for that process; it is never the default. On iPhone Safari open `http://192.168.1.10:8080/`, use the video's AirPlay output control and choose UxAir Dev. Fullscreen alone is not a route switch. Report events, sanitized method/response sequence and any unsupported action/property names as structure/types only. If an unknown schema blocks playback, that exact redacted request structure is the only additional protocol evidence needed; no separate Apple TV is required for this experiment.
+
+## Automated evidence
+
+Tests use actual libplist, socketpair reverse traffic, correlated FCUP responses, finite concurrency tests, real local HTTP redirects/404/oversize/timeouts/recovery and untrusted HTTPS certificates, plus simulated native callbacks (including stale generations). Existing full mirroring/audio/pairing/settings/History/UI regressions remain enabled. Native firmware video/audio, A/V sync, TLS on the B7 and Safari interoperability remain physical acceptance gates.

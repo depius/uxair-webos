@@ -87,7 +87,7 @@ static void daily_add(UsageStats& stats,const SessionSummary& s) {
     if(!stats.daily_from_day||stats.daily_from_day>usage_utc_day(s.started_utc))stats.daily_from_day=usage_utc_day(s.started_utc);
     if(stats.daily_from_day<cutoff)stats.daily_from_day=cutoff;
 }
-void UsageStats::record(const SessionSummary& s) {
+void UsageStats::record(const SessionSummary& s,bool aggregate) {
     if(successful_sessions<UINT64_MAX)++successful_sessions;
     if(s.kind==SessionKind::Audio){if(audio_sessions<UINT64_MAX)++audio_sessions;}
     else if(s.kind==SessionKind::Direct){if(direct_sessions<UINT64_MAX)++direct_sessions;}
@@ -96,8 +96,9 @@ void UsageStats::record(const SessionSummary& s) {
     feed_frames=sat_add(feed_frames,s.feed_frames);packet_drops=sat_add(packet_drops,s.packet_drops);
     video_frame_drops=sat_add(video_frame_drops,s.video_frame_drops);decoder_errors=sat_add(decoder_errors,s.decoder_errors);
     session_errors=sat_add(session_errors,s.session_errors);
-    recent.push_front(s);while(recent.size()>MaxRecentSessions)recent.pop_back();daily_add(*this,s);
+    recent.push_front(s);while(recent.size()>MaxRecentSessions)recent.pop_back();if(aggregate)daily_add(*this,s);
 }
+void UsageStats::record_direct_day(uint32_t day,uint64_t duration){SessionSummary s;s.kind=SessionKind::Direct;s.started_utc=uint64_t(day)*86400;s.duration_ms=std::min<uint64_t>(duration,86400000);daily_add(*this,s);}
 void UsageStats::reset(){*this=UsageStats();}
 static bool read_summary(const std::string& line,SessionSummary& s) {
     std::istringstream in(line);std::string tag,extra;unsigned kind=0;

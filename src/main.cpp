@@ -1,4 +1,5 @@
 #include "direct_player.h"
+#include <map>
 #include "audio.h"
 #include "h264.h"
 #include "hevc_stream.h"
@@ -264,7 +265,7 @@ int main() {
             const auto direct_status=receiver.direct.snapshot();
             const char *direct_states[]={"Idle","Loading","Playing","Paused","Ended","Error"};
             rows.push_back(UiRow("Direct Video",direct_states[int(direct_status.state)],
-                "Native HLS / "+duration_text(uint64_t(std::max(0.0,direct_status.position)*1000))+" of "+duration_text(uint64_t(std::max(0.0,direct_status.duration)*1000))+"; discovery disabled; hardware verification required"));
+                "Native HLS "+std::to_string(direct_status.width)+"x"+std::to_string(direct_status.height)+" / "+duration_text(uint64_t(std::max(0.0,direct_status.position)*1000))+" of "+duration_text(uint64_t(std::max(0.0,direct_status.duration)*1000))+"; discovery disabled; hardware verification required"));
 
             rows.push_back(UiRow("On-screen overlay",diagnostics_mode_name(settings.diagnostics),"Off, Compact or Detailed"));
             std::string resolution=observed_width?std::to_string(observed_width)+" x "+std::to_string(observed_height):"Awaiting SPS";
@@ -425,6 +426,8 @@ int main() {
     };
     DirectPlayer direct_player;
     bool direct_open=false;int64_t direct_started=0,direct_tick=0;uint64_t direct_started_utc=0,direct_play_ms=0;
+    std::map<uint32_t,uint64_t> direct_days;
+    UiPage direct_return_page=page;
     DirectState direct_previous=DirectState::Idle;
     bool running=true;
     while(running) {
@@ -436,31 +439,40 @@ int main() {
         if(action==Action::Exit)break;
 #ifdef UXAIR_DEV_BUILD
         receiver.direct_busy=opened||receiver.mirror.load()||receiver.has_audio.load();
+        receiver.direct.check_timeout(now/1000000);
         DirectCommand direct_command;
         if(receiver.direct.take(direct_command)) {
             if(direct_command.kind==DirectCommandKind::Play) {
                 if(receiver.direct_busy||direct_open){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);}
                 else {direct_open=direct_player.open(direct_command.uri,direct_command.position,now,&receiver.direct);
-                    direct_started=direct_tick=now;direct_play_ms=0;direct_previous=DirectState::Idle;direct_started_utc=uint64_t(time(nullptr));receiver.direct_active=direct_open;
+                    direct_days.clear();direct_return_page=page;ui_visible=false;direct_started=direct_tick=now;direct_play_ms=0;direct_previous=DirectState::Idle;direct_started_utc=uint64_t(time(nullptr));receiver.direct_active=direct_open;
                     if(!direct_open){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);}}
             } else if(direct_open&&!direct_player.control(direct_command)){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);direct_player.close();direct_open=false;}
             if(direct_command.kind==DirectCommandKind::Stop)direct_open=false;
         }
         if(receiver.direct_active) {
             auto status=direct_player.tick(now);
-            if(direct_previous==DirectState::Playing&&now>direct_tick)direct_play_ms+=uint64_t(now-direct_tick)/1000000;
+            if(direct_previous==DirectState::Playing&&now>direct_tick){
+                uint64_t duration=uint64_t(now-direct_tick)/1000000;direct_play_ms+=duration;
+                uint64_t stamp=direct_started_utc*1000+uint64_t(direct_tick-direct_started)/1000000;
+                while(duration&&direct_days.size()<365){const uint32_t day=uint32_t(stamp/86400000);const uint64_t part=std::min<uint64_t>(duration,86400000-stamp%86400000);direct_days[day]+=part;stamp+=part;duration-=part;}
+            }
             direct_tick=now;
             if(action==Action::Back||!direct_open||status.state==DirectState::Error||status.state==DirectState::Ended) {
                 const bool direct_failed=status.state==DirectState::Error||receiver.direct.snapshot().state==DirectState::Error;
                 direct_player.close();receiver.direct_active=false;direct_open=false;
                 if(direct_play_ms>0&&now>direct_started&&!direct_failed){SessionSummary summary;summary.kind=SessionKind::Direct;
                     summary.started_utc=direct_started_utc;summary.duration_ms=direct_play_ms;
-                    usage.record(summary);save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;}
+                    summary.width=status.width;summary.height=status.height;for(const auto& day:direct_days)usage.record_direct_day(day.first,day.second);
+                    usage.record(summary,false);save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;}
                 DirectSnapshot terminal;terminal.state=direct_failed?DirectState::Error:DirectState::Ended;receiver.direct.publish(terminal);receiver.direct.reset(true);if(direct_failed){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);}
-                last_ui=0;receiver.show(direct_failed?"Direct Video failed (experimental)":"Direct Video stopped");
+                if(direct_failed){++usage.session_errors;save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;}
+                page=direct_return_page;nav.page=page;ui_visible=true;last_ui=0;receiver.show(direct_failed?"Direct Video failed (experimental)":"Direct Video stopped");
             } else {
                 receiver.direct.publish(status);
-                if(status.state==DirectState::Playing){if(direct_previous!=status.state)shell.transparent();}
+                if(action==Action::Select){ui_visible=!ui_visible;last_ui=0;if(!ui_visible)shell.transparent();}
+                if(ui_visible){if(now-last_ui>1000000000LL){auto old_page=page;page=UiPage::Diagnostics;draw_page("Direct Video","OK playback / diagnostics | Back stop");page=old_page;last_ui=now;}}
+                else if(status.state==DirectState::Playing){if(direct_previous!=status.state)shell.transparent();}
                 else if(now-last_ui>1000000000LL){shell.screen(status.state==DirectState::Paused?"Direct Video paused":"Direct Video loading","");last_ui=now;}
                 direct_previous=status.state;SDL_Delay(10);continue;
             }

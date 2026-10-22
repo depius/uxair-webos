@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -122,7 +123,14 @@ static bool valid_key(const char *p) {
     return strspn(p,"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")==44;
 }
 bool Receiver::start(const std::string& dir, const Settings& settings) {
-    const AdvertisedCapabilities capabilities=advertised_capabilities(settings);
+    AdvertisedCapabilities capabilities=advertised_capabilities(settings);
+#ifdef UXAIR_DEV_BUILD
+    const char *direct=getenv("UXAIR_DIRECT_VIDEO"),*discovery=getenv("UXAIR_DIRECT_DISCOVERY");
+    if(direct&&!strcmp(direct,"1")&&discovery&&!strcmp(discovery,"after-native-test")){
+        capabilities.direct_video=capabilities.hls=true;
+        fprintf(stderr,"[direct-protocol] explicit post-native-test discovery enabled (experimental)\n");
+    }
+#endif
     active_profile=settings;validate_settings(active_profile);
     const MirrorLimits limits=mirror_limits(active_profile);
     max_video_packet_bytes=limits.video_packet_bytes;
@@ -287,7 +295,8 @@ extern "C" int uxair_direct_request(void *context,const char *owner,const char *
     *size=int(response.body.size());*output=nullptr;
     if(*size){*output=static_cast<char*>(malloc(size_t(*size)));if(!*output){*size=0;return 500;}memcpy(*output,response.body.data(),size_t(*size));}
     *mime=response.type=="text/parameters"?"text/parameters":"text/x-apple-plist+xml";
-    fprintf(stderr,"[direct-protocol] response=%d body-bytes=%d\n",response.status,length);
+    const char *route=target&&!strcmp(target,"/play")?"play":target&&!strcmp(target,"/stop")?"stop":target&&!strcmp(target,"/action")?"action":target&&!strcmp(target,"/playback-info")?"feedback":target&&!strncmp(target,"/scrub",6)?"scrub":target&&!strncmp(target,"/rate",5)?"rate":"property";
+    fprintf(stderr,"[direct-protocol] route=%s response=%d body-bytes=%d\n",route,response.status,length);
     return response.status;
 }
 #endif

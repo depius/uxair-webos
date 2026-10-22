@@ -99,3 +99,6 @@ timeout 30s build/tests/direct-player-test
 
 c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc $(pkg-config --cflags libplist-2.0 libcurl) tests/hls_relay_test.cpp src/hls_relay.cpp src/direct_video.cpp $(pkg-config --libs libplist-2.0 libcurl) -lcrypto -o build/tests/hls-relay-test
 timeout 30s build/tests/hls-relay-test
+
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc $(pkg-config --cflags libplist-2.0 libcurl) tests/hls_network_test.cpp src/hls_relay.cpp src/direct_video.cpp $(pkg-config --libs libplist-2.0 libcurl) -lcrypto -o build/tests/hls-network-test
+timeout 35s python3 tests/hls_network_test.py

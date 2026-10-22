@@ -65,6 +65,7 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
     if(owner.empty()||owner.size()>128||target.size()>256||body.size()>524288)return reply;
     std::lock_guard<std::mutex> lock(mutex_);
     if(!owner_.empty()&&owner_!=owner){reply.status=409;return reply;}
+    last_request_ms_=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     DirectCommand command;command.kind=DirectCommandKind::Stop;
     if(method=="POST"&&target=="/action") {
         plist_t root=nullptr;
@@ -157,3 +158,7 @@ std::string DirectSession::sender_manifest(const std::string& url){
     event_cv_.wait_for(l,std::chrono::seconds(3),[&]{return pending_done_||!reverse_running_;});const auto result=pending_data_;pending_data_.clear();pending_id_=0;pending_url_.clear();return result;
 }
 void DirectSession::reset(bool keep_reverse){if(!keep_reverse)close_reverse();std::lock_guard<std::mutex> l(mutex_);commands_.clear();if(!keep_reverse){owner_.clear();events_.clear();reverse_token_=0;}snapshot_=DirectSnapshot();pending_done_=true;event_cv_.notify_all();}
+
+bool DirectSession::check_timeout(int64_t now_ms){std::lock_guard<std::mutex> lock(mutex_);if(owner_.empty()||reverse_running_||last_request_ms_==0||now_ms-last_request_ms_<30000)return false;commands_.clear();DirectCommand stop;stop.kind=DirectCommandKind::Stop;commands_.push_back(stop);last_request_ms_=0;return true;}
+
+void DirectSession::cancel_fetch(){std::lock_guard<std::mutex> l(mutex_);pending_data_.clear();pending_done_=true;event_cv_.notify_all();}

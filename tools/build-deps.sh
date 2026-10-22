@@ -42,7 +42,7 @@ if [ "$build_stamp" != "$previous_stamp" ] || [ ! -f "$prefix/lib/libcurl.a" ]; 
     (cd .cache/curl-8.23.0
      ./configure --host=arm-webos-linux-gnueabi --prefix="$prefix" --disable-shared --enable-static \
        --with-openssl="$prefix" --without-libpsl --without-zlib --without-brotli --without-zstd \
-       --without-libidn2 --without-nghttp2 --without-ngtcp2 --without-nghttp3 --disable-ldap --disable-ldaps \
+       --without-libidn2 --without-libssh2 --without-librtmp --without-nghttp2 --without-ngtcp2 --without-nghttp3 --disable-ldap --disable-ldaps \
        --disable-ftp --disable-file --disable-dict --disable-telnet --disable-tftp --disable-pop3 \
        --disable-imap --disable-smtp --disable-gopher --disable-mqtt --disable-rtsp --disable-smb \
        --enable-threaded-resolver --disable-manual --disable-docs --disable-libcurl-option \

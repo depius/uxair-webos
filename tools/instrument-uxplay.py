@@ -48,8 +48,19 @@ PROBE = '''        int probe_body_length = -1;
 '''
 
 DIRECT_GATE = r'''    if (!cseq && getenv("UXAIR_DIRECT_VIDEO") && !strcmp(getenv("UXAIR_DIRECT_VIDEO"), "1") &&
-        (!strcmp(url,"/play") || !strncmp(url,"/scrub",6) || !strncmp(url,"/rate",5) ||
-         !strcmp(url,"/stop") || !strcmp(url,"/playback-info") || !strcmp(url,"/reverse") || !strcmp(url,"/action") || !strncmp(url,"/getProperty?",13) || !strncmp(url,"/setProperty?",13))) {
+        (!strcmp(url,"/info") || !strcmp(url,"/play") || !strncmp(url,"/scrub",6) || !strncmp(url,"/rate",5) ||
+         !strcmp(url,"/stop") || !strcmp(url,"/server-info") || !strcmp(url,"/playback-info") || !strcmp(url,"/reverse") || !strcmp(url,"/action") || !strncmp(url,"/getProperty?",13) || !strncmp(url,"/setProperty?",13))) {
+        if (!strcmp(url,"/info") && !strcmp(method,"GET")) {
+            char *data=NULL;int length=0;*response=http_response_create();http_response_init(*response,"HTTP/1.1",200,"OK");
+            raop_handler_info(conn,request,*response,&data,&length);http_response_finish(*response,data,length);free(data);return;
+        }
+        if (!strcmp(url,"/server-info") && !strcmp(method,"GET")) {
+            char *data=NULL;int length=0;*response=http_response_create();http_response_init(*response,"HTTP/1.1",200,"OK");
+            http_handler_server_info(conn,request,*response,&data,&length);
+            plist_t root=NULL;plist_from_xml(data,(uint32_t)length,&root);free(data);data=NULL;
+            if(root){plist_dict_set_item(root,"features",plist_new_uint(dnssd_get_airplay_features(raop->dnssd)));uint32_t size=0;plist_to_xml(root,&data,&size);length=(int)size;plist_free(root);}
+            http_response_finish(*response,data,length);free(data);return;
+        }
         if (!strcmp(url,"/reverse")) {
             const char *upgrade=http_request_get_header(request,"Upgrade");
             const char *owner=http_request_get_header(request,"X-Apple-Session-ID");
@@ -98,7 +109,10 @@ def instrument_http_request(source):
              '        direct_request_diag_body_limit();\n'
              '        return -1;\n'
              '    }\n')
-    return '#include "direct_request_diag.h"\n' + source.replace(anchor, guard + anchor, 1)
+    small_guard = ('    const char *direct_path = http_request_get_url(request);\n'
+                   '    if (direct_path && (!strcmp(direct_path, "/play") || !strcmp(direct_path, "/action")) &&\n'
+                   '        ((size_t)request->datalen > 524288U || length > 524288U - (size_t)request->datalen)) return -1;\n')
+    return '#include "direct_request_diag.h"\n' + source.replace(anchor, small_guard + guard + anchor, 1)
 
 
 def instrument_httpd(source):
