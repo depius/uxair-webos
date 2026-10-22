@@ -33,13 +33,17 @@ int main(){
     assert(send("POST","/play",std::string(16385,'a'))==400);
     assert(session.request("session-A","POST","/play","text/parameters",body,true).status==409);
     // Exercise actual libplist binary/XML readers, not a parallel parser implementation.
-    for(bool binary:{false,true}){
+    for(bool binary:{false,true})for(bool seconds:{false,true}){
         plist_t dict=plist_new_dict();plist_dict_set_item(dict,"Content-Location",plist_new_string("https://example.com/vod.m3u8"));
-        plist_dict_set_item(dict,"Start-Position",plist_new_real(.25));char *data=nullptr;uint32_t len=0;
+        plist_dict_set_item(dict,"Start-Position",plist_new_real(.25));
+        if(seconds)plist_dict_set_item(dict,"Start-Position-Seconds",plist_new_real(6.5));char *data=nullptr;uint32_t len=0;
         if(binary)plist_to_bin(dict,&data,&len);else plist_to_xml(dict,&data,&len);
         assert(session.request("session-A","POST","/play",binary?"application/x-apple-binary-plist":"text/x-apple-plist+xml",std::string(data,len)).status==200);
-        assert(session.take(c)&&c.position==.25);free(data);plist_free(dict);session.reset();
+        assert(session.take(c)&&c.position==(seconds?6.5:.25)&&c.position_seconds==seconds);free(data);plist_free(dict);session.reset();
     }
+    assert(send("POST","/play","Content-Location: https://example.com/x\r\nStart-Position-Seconds: 6.5\r\n")==200);
+    assert(session.take(c)&&c.position==6.5&&c.position_seconds);session.reset();
+    assert(send("POST","/play","Content-Location: https://example.com/x\r\nStart-Position-Seconds: nan\r\n")==400);
     assert(session.request("session-A","POST","/play","application/x-apple-binary-plist","bplistBAD").status==400);
     DirectSnapshot error;error.state=DirectState::Error;session.publish(error);assert(send("GET","/playback-info")==503);session.reset();
     // Callback/main-thread publication and cancellation have finite CI timeouts.
@@ -62,7 +66,8 @@ int main(){
     char *xml=nullptr;uint32_t length=0;plist_to_xml(root,&xml,&length);plist_free(root);
     assert(session.request("session-A","POST","/action","text/x-apple-plist+xml",std::string(xml,length)).status==200);free(xml);
     assert(pending.wait_for(std::chrono::seconds(1))==std::future_status::ready&&pending.get()==manifest);
-    assert(send("GET","/getProperty?duration")==200);assert(send("PUT","/setProperty?notImplemented")==501);
+    assert(send("GET","/getProperty?duration")==200);assert(send("POST","/getProperty?duration")==200);
+    assert(send("POST","/setProperty?duration")==501);assert(send("POST","/fp-setup2")==501);assert(send("PUT","/setProperty?notImplemented")==501);
     DirectSnapshot ended;ended.state=DirectState::Ended;session.publish(ended);assert(read_event().find("stopped")!=std::string::npos);
     assert(send("POST","/play",body)==200);assert(session.take(c)&&c.kind==DirectCommandKind::Play);
     session.connection_lost(999);assert(!session.take(c));session.connection_lost(123);assert(session.take(c)&&c.kind==DirectCommandKind::Stop);

@@ -35,30 +35,36 @@ std::string direct_load_payload(const std::string& uri,const std::string& app,bo
     if((!direct_uri_valid(uri)&&!(internal&&uri.compare(0,17,"http://127.0.0.1:")==0&&uri.find_first_of("\r\n\"\\")==std::string::npos))||app!="com.github.depius.uxair.dev")return {};
     return "{\"args\":[{\"uri\":\""+escape(uri)+"\",\"mediaTransportType\":\"HLS\",\"option\":{\"appId\":\""+app+"\",\"adaptiveStreaming\":{\"maxWidth\":1920,\"maxHeight\":1080},\"queryPosition\":true}}]}";
 }
-static bool play_body(const std::string& type,const std::string& body,std::string& uri,double& start) {
-    start=0;if(body.empty()||body.size()>16384)return false;
+static bool play_body(const std::string& type,const std::string& body,std::string& uri,double& start,bool& seconds) {
+    start=0;seconds=false;if(body.empty()||body.size()>16384)return false;
     if(type=="application/x-apple-binary-plist"||type=="text/x-apple-plist+xml"||type=="application/x-apple-plist+xml") {
         plist_t root=nullptr;
         if(type=="application/x-apple-binary-plist")plist_from_bin(body.data(),uint32_t(body.size()),&root);
         else {if(body.find("<!ENTITY")!=std::string::npos)return false;plist_from_xml(body.data(),uint32_t(body.size()),&root);}
         if(!root||plist_get_node_type(root)!=PLIST_DICT){if(root)plist_free(root);return false;}
         plist_t location=plist_dict_get_item(root,"Content-Location"),position=plist_dict_get_item(root,"Start-Position");
+        plist_t seconds_node=plist_dict_get_item(root,"Start-Position-Seconds");
         bool valid=location&&plist_get_node_type(location)==PLIST_STRING;
         if(valid){char *v=nullptr;plist_get_string_val(location,&v);if(v){uri=v;free(v);}else valid=false;}
         if(position){if(plist_get_node_type(position)==PLIST_REAL)plist_get_real_val(position,&start);
             else if(plist_get_node_type(position)==PLIST_UINT){uint64_t v=0;plist_get_uint_val(position,&v);start=double(v);}else valid=false;}
-        plist_free(root);return valid&&direct_uri_valid(uri)&&std::isfinite(start)&&start>=0&&start<=1;
+        valid=valid&&std::isfinite(start)&&start>=0&&start<=1;
+        if(seconds_node){seconds=true;
+            if(plist_get_node_type(seconds_node)==PLIST_REAL)plist_get_real_val(seconds_node,&start);
+            else if(plist_get_node_type(seconds_node)==PLIST_UINT){uint64_t n=0;plist_get_uint_val(seconds_node,&n);start=double(n);}else valid=false;}
+        plist_free(root);return valid&&direct_uri_valid(uri)&&std::isfinite(start)&&start>=0&&start<=(seconds?31536000:1);
     }
     if(type!="text/parameters")return false;
-    std::istringstream in(body);std::string line;bool found=false,position=false;
+    std::istringstream in(body);std::string line;bool found=false,position=false;double absolute=0;
     while(std::getline(in,line)){if(!line.empty()&&line.back()=='\r')line.pop_back();const size_t sep=line.find(": ");
         if(line.empty())continue;if(sep==std::string::npos)return false;
         const std::string key=line.substr(0,sep),value=line.substr(sep+2);
         if(key=="Content-Location"){if(found)return false;uri=value;found=true;}
         else if(key=="Start-Position"){if(position||!number(value,start)||start>1)return false;position=true;}
+        else if(key=="Start-Position-Seconds"){if(seconds||!number(value,absolute))return false;seconds=true;}
         else return false;
     }
-    return found&&direct_uri_valid(uri);
+    if(seconds)start=absolute;return found&&direct_uri_valid(uri);
 }
 DirectReply DirectSession::request(const std::string& owner,const std::string& method,const std::string& target,const std::string& type,const std::string& body,bool busy) {
     DirectReply reply;
@@ -89,9 +95,9 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         if(kind=="playlistRemove") {commands_.clear();command.kind=DirectCommandKind::Stop;}
         else {reply.status=501;plist_free(root);return reply;}
         plist_free(root);
-    } else if((method=="GET"||method=="PUT")&&(target.compare(0,13,"/getProperty?")==0||target.compare(0,13,"/setProperty?")==0)) {
+    } else if((method=="GET"||method=="POST"||method=="PUT")&&(target.compare(0,13,"/getProperty?")==0||target.compare(0,13,"/setProperty?")==0)) {
         const auto key=target.substr(13);
-        if(method=="GET"&&(key=="playbackPosition"||key=="duration"||key=="rate")) {
+        if((method=="GET"||method=="POST")&&target.compare(0,13,"/getProperty?")==0&&(key=="playbackPosition"||key=="duration"||key=="rate")) {
             std::ostringstream out;out<<"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>value</key><real>"<<(key=="duration"?snapshot_.duration:key=="rate"?(snapshot_.state==DirectState::Playing?1:0):snapshot_.position)<<"</real></dict></plist>";
             reply.body=out.str();reply.type="text/x-apple-plist+xml";reply.status=200;return reply;
         }
@@ -99,7 +105,7 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         reply.status=501;return reply;
     } else if(method=="POST"&&target=="/play") {
         if(busy||snapshot_.state==DirectState::Loading||snapshot_.state==DirectState::Playing||snapshot_.state==DirectState::Paused){reply.status=409;return reply;}
-        if(!play_body(type.substr(0,type.find(';')),body,command.uri,command.position))return reply;
+        if(!play_body(type.substr(0,type.find(';')),body,command.uri,command.position,command.position_seconds))return reply;
         if(!commands_.empty()){reply.status=503;return reply;}
         command.kind=DirectCommandKind::Play;owner_=owner;snapshot_=DirectSnapshot();snapshot_.state=DirectState::Loading;
         if(reverse_running_){events_.push_back("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>category</key><string>video</string><key>state</key><string>loading</string></dict></plist>");event_cv_.notify_all();}

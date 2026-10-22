@@ -7,7 +7,7 @@
 #include <condition_variable>
 #include <atomic>
 enum class DirectCommandKind { Play, Pause, Resume, Seek, Stop };
-struct DirectCommand { DirectCommandKind kind; std::string uri; double position=0; };
+struct DirectCommand { DirectCommandKind kind; std::string uri; double position=0; bool position_seconds=false; };
 enum class DirectState { Idle, Loading, Playing, Paused, Ended, Error };
 struct DirectSnapshot { DirectState state=DirectState::Idle; double position=0,duration=0;unsigned width=0,height=0; };
 const char *direct_state_name(DirectState state);

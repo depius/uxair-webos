@@ -27,6 +27,8 @@ class InstrumentationTest(unittest.TestCase):
         self.assertNotIn('raop->hls_support = true', output)
         self.assertIn('httpd_set_connection_type(raop->httpd,conn,CONNECTION_TYPE_PTTH)', output)
         self.assertNotIn('CONNECTION_TYPE_EVENT', output)
+        self.assertIn('!strcmp(url,"/info?txtAirPlay")', output)
+        self.assertIn('!strcmp(url,"/fp-setup2")', output)
         with self.assertRaises(ValueError):
             module.instrument_raop(source + module.GATE)
 

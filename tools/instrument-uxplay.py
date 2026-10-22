@@ -48,9 +48,9 @@ PROBE = '''        int probe_body_length = -1;
 '''
 
 DIRECT_GATE = r'''    if (!cseq && getenv("UXAIR_DIRECT_VIDEO") && !strcmp(getenv("UXAIR_DIRECT_VIDEO"), "1") &&
-        (!strcmp(url,"/info") || !strcmp(url,"/play") || !strncmp(url,"/scrub",6) || !strncmp(url,"/rate",5) ||
+        (!strcmp(url,"/info") || !strcmp(url,"/info?txtAirPlay") || !strcmp(url,"/info?txtRAOP") || !strcmp(url,"/fp-setup2") || !strcmp(url,"/play") || !strncmp(url,"/scrub",6) || !strncmp(url,"/rate",5) ||
          !strcmp(url,"/stop") || !strcmp(url,"/server-info") || !strcmp(url,"/playback-info") || !strcmp(url,"/reverse") || !strcmp(url,"/action") || !strncmp(url,"/getProperty?",13) || !strncmp(url,"/setProperty?",13))) {
-        if (!strcmp(url,"/info") && !strcmp(method,"GET")) {
+        if ((!strcmp(url,"/info") || !strcmp(url,"/info?txtAirPlay") || !strcmp(url,"/info?txtRAOP")) && !strcmp(method,"GET")) {
             char *data=NULL;int length=0;*response=http_response_create();http_response_init(*response,"HTTP/1.1",200,"OK");
             raop_handler_info(conn,request,*response,&data,&length);http_response_finish(*response,data,length);free(data);return;
         }

@@ -29,10 +29,10 @@ void DirectPlayer::event(int type,int64_t value,const char* message,void *user){
     fprintf(stderr,"[direct-player] event=0x%x value=%lld\n",type,(long long)value);
 }
 DirectPlayer::~DirectPlayer(){close();}
-bool DirectPlayer::open(const std::string& uri,double fraction,int64_t now,DirectSession *session){
+bool DirectPlayer::open(const std::string& uri,double position,int64_t now,DirectSession *session,bool seconds){
     close();session_=session;relay_.sender_manifest=session?[session](const std::string& url){return session->sender_manifest(url);}:std::function<std::string(const std::string&)>();
     const auto local=relay_.start(uri);const auto payload=direct_load_payload(local,"com.github.depius.uxair.dev",true);if(payload.empty())return false;
-    start_fraction_=fraction;opened_ns_=last_progress_ns_=now;last_position_ms_=-1;state_=int(DirectState::Loading);
+    start_position_=position;start_seconds_=seconds;opened_ns_=last_progress_ns_=now;last_position_ms_=-1;state_=int(DirectState::Loading);
     acb_=AcbAPI_create();if(!acb_||!AcbAPI_initialize(acb_,PLAYER_TYPE_MSE,"com.github.depius.uxair.dev",direct_acb)){close();return false;}
     api_=new StarfishMediaAPIs(nullptr);
     if(!AcbAPI_setMediaId(acb_,api_->getMediaID())){close();return false;}
@@ -57,8 +57,8 @@ DirectSnapshot DirectPlayer::tick(int64_t now){
     }
     if(api_&&loaded_&&!started_){
         AcbAPI_setSinkType(acb_,SINK_TYPE_MAIN);AcbAPI_setState(acb_,APPSTATE_FOREGROUND,PLAYSTATE_LOADED,&task_);
-        if(start_fraction_>0&&duration_ms_<=0){if(now-opened_ns_>15000000000LL)state_=int(DirectState::Error);}
-        else {if(start_fraction_>0){DirectCommand seek;seek.kind=DirectCommandKind::Seek;seek.position=start_fraction_*duration_ms_/1000.0;if(!control(seek))state_=int(DirectState::Error);}
+        if(start_position_>0&&!start_seconds_&&duration_ms_<=0){if(now-opened_ns_>15000000000LL)state_=int(DirectState::Error);}
+        else {if(start_position_>0){DirectCommand seek;seek.kind=DirectCommandKind::Seek;seek.position=start_seconds_?start_position_:start_position_*duration_ms_/1000.0;if(!control(seek))state_=int(DirectState::Error);}
             if(state_!=int(DirectState::Error)){started_=api_->Play();if(!started_)state_=int(DirectState::Error);}}
     }
     if(state_==int(DirectState::Loading)&&now-opened_ns_>15000000000LL)state_=int(DirectState::Error);
