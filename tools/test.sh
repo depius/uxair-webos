@@ -113,3 +113,4 @@ c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc $(pkg-config --cfl
 timeout 15s build/tests/direct-native-diag-test
 python3 tests/direct_native_probe_test.py
 timeout 90s python3 tests/direct_fixture_test.py
+timeout 15s python3 tests/native_timeout_test.py

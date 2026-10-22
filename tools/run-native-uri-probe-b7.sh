@@ -2,6 +2,15 @@
 # Native-only fixture comparison. Never starts RAOP, changes app data, or binds LAN.
 set -eu
 umask 0077
+run_bounded_probe() {
+    # BusyBox 1.24/1.26 (contemporary with B7) requires -t SECS; newer
+    # BusyBox/coreutils use positional SECS. Both keep the same hard limit.
+    if timeout --help 2>&1 | grep -q -- '-t SECS'; then
+        timeout -s KILL -t 120 "$@"
+    else
+        timeout -s KILL 120 "$@"
+    fi
+}
 lan=${1:?Usage: run-native-uri-probe-b7.sh PC-LAN-IPv4}
 case "$lan" in *[!0-9.]*|'') echo '[native-probe] numeric fixture IPv4 required'; exit 2;; esac
 app=''
@@ -34,7 +43,7 @@ cd "$app"
 # A hard process deadline also bounds proprietary calls that never return. This
 # process is exclusively the diagnostic binary; production and receiver PIDs are untouched.
 set +e
-timeout -s KILL 120 ./direct-uri-probe "$lan" 2>native-uri-probe.log
+run_bounded_probe ./direct-uri-probe "$lan" 2>native-uri-probe.log
 result=$?
 set -e
 # Preserve every case summary; never send raw proprietary stderr or string payloads.

@@ -6,7 +6,8 @@ probe=(root/'src/direct_uri_probe.cpp').read_text()
 launcher=(root/'tools/run-native-uri-probe-b7.sh').read_text()
 for forbidden in ('Receiver ', 'start_log(', 'load_settings(', 'save_settings(', 'save_usage_stats(', 'UXAIR_DIRECT_DISCOVERY=after'):
     assert forbidden not in probe+launcher
-assert 'timeout -s KILL 120 ./direct-uri-probe' in launcher
+assert 'timeout -s KILL -t 120' in launcher and 'timeout -s KILL 120' in launcher
+assert 'run_bounded_probe ./direct-uri-probe' in launcher
 assert 'pidof uxair' in launcher and 'no process was stopped' in launcher
 assert 'com.github.depius.uxair.dev' in launcher and 'init=different' in launcher and 'ums=different' in launcher
 assert 'direct_fixture_uri_valid(' in probe and '16000000000LL' in probe and '6000000000LL' in probe

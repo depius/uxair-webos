@@ -51,7 +51,7 @@ New diagnostics emit the actual serialized Load field names/types through a boun
 
 ### One precise hardware comparison
 
-The new **development-only** direct-uri-probe executable and launcher require all UxAir receivers closed. It creates one SDL window and serial native sessions, stops at the first PLAYING candidate (also requiring real relay requests/fetches/bytes for loopback cases), holds that candidate for six seconds for visual/audio observation, and exits. Each case has the normal startup deadline; the entire diagnostic process has a 120-second hard deadline, including blocking proprietary calls. Back/Exit abort normally. It never starts RAOP or reads/writes settings, pairing or History. Only its separate bounded diagnostic log is written. No production process is stopped.
+The new **development-only** direct-uri-probe executable and launcher require all UxAir receivers closed. It creates one SDL window and serial native sessions, stops at the first PLAYING candidate (also requiring real relay requests/fetches/bytes for loopback cases), holds that candidate for six seconds for visual/audio observation, and exits. Each case has the normal startup deadline; the entire diagnostic process has a 120-second hard deadline (both legacy BusyBox -t SECS and modern positional syntax are detected), including blocking proprietary calls. Back/Exit abort normally. It never starts RAOP or reads/writes settings, pairing or History. Only its separate bounded diagnostic log is written. No production process is stopped.
 
 | Case | Native Load JSON | Native URI target |
 | --- | --- | --- |
