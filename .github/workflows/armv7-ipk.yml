@@ -63,6 +63,12 @@ jobs:
         run: python3 tools/validate-metadata.py
       - name: Build UxAir 1.2.0 development IPK
         run: tools/build.sh --development
+      - name: Show dependency build diagnostics on failure
+        if: failure()
+        run: |
+          for file in build/logs/curl.log build/logs/openssl.log build/logs/libplist.log build/logs/ffmpeg.log; do
+            if test -f "$file"; then tail -n 60 "$file"; fi
+          done
       - name: Build corresponding source archive
         run: python3 tools/source-package.py --development
       - name: Verify staged ELF and package

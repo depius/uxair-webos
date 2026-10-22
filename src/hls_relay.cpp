@@ -89,7 +89,7 @@ std::string HlsRelay::rewrite(const std::string& input,const std::string& base){
 }
 static bool send_all(int fd,const std::string& data){size_t sent=0;while(sent<data.size()){auto n=send(fd,data.data()+sent,data.size()-sent,MSG_NOSIGNAL);if(n<=0)return false;sent+=size_t(n);}return true;}
 void HlsRelay::serve(){
-    while(running_){int fd=accept(listener_,nullptr,nullptr);if(fd<0)break;client_=fd;timeval timeout={2,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
+    while(running_){int fd=accept(listener_,nullptr,nullptr);if(fd<0)break;{std::lock_guard<std::mutex> lock(clients_mutex_);clients_.push_back(fd);}timeval timeout={2,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
         std::string request;char buffer[1024];while(request.find("\r\n\r\n")==std::string::npos&&request.size()<4096){auto n=recv(fd,buffer,sizeof(buffer),0);if(n<=0)break;request.append(buffer,size_t(n));}
         HlsFetch response;std::string target;std::istringstream header(request);std::string method;header>>method>>target;
         const std::string prefix="/"+token_+"/";
@@ -102,7 +102,7 @@ void HlsRelay::serve(){
         if(response.status!=200)response.data.clear();
         // No URL, cookie, origin headers or credentials are exposed by the relay.
         std::string wire="HTTP/1.1 "+std::to_string(response.status)+" Result\r\nConnection: close\r\nContent-Type: "+(response.type.find_first_of("\r\n")==std::string::npos?response.type:"application/octet-stream")+"\r\nContent-Length: "+std::to_string(response.data.size())+"\r\n\r\n";
-        send_all(fd,wire);send_all(fd,response.data);client_=-1;close(fd);
+        send_all(fd,wire);send_all(fd,response.data);{std::lock_guard<std::mutex> lock(clients_mutex_);clients_.erase(std::remove(clients_.begin(),clients_.end(),fd),clients_.end());close(fd);}
     }
 }
 std::string HlsRelay::start(const std::string& uri){
@@ -112,6 +112,15 @@ std::string HlsRelay::start(const std::string& uri){
     listener_=socket(AF_INET,SOCK_STREAM,0);if(listener_<0)return {};sockaddr_in a={};a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
     if(::bind(listener_.load(),reinterpret_cast<sockaddr*>(&a),sizeof(a))||::listen(listener_.load(),4)){stop();return {};}
     socklen_t length=sizeof(a);getsockname(listener_,reinterpret_cast<sockaddr*>(&a),&length);port_=ntohs(a.sin_port);
-    running_=true;bytes=requests=failures=0;const auto local=register_url(uri,true);thread_=std::thread(&HlsRelay::serve,this);return local;
+    running_=true;bytes=requests=failures=0;const auto local=register_url(uri,true);try{for(int i=0;i<2;++i)workers_.emplace_back(&HlsRelay::serve,this);}catch(...){stop();return {};}return local;
 }
-void HlsRelay::stop(){running_=false;int fd=listener_.exchange(-1);if(fd>=0){shutdown(fd,SHUT_RDWR);close(fd);}fd=client_.load();if(fd>=0)shutdown(fd,SHUT_RDWR);if(thread_.joinable())thread_.join();std::lock_guard<std::mutex> lock(mutex_);resources_.clear();manifests_.clear();}
+void HlsRelay::stop(){
+    running_=false;
+    // Keep the listening descriptor alive until accept workers have exited.
+    // Closing it first could let an unrelated RAOP socket reuse the descriptor.
+    int fd=listener_.load();if(fd>=0)shutdown(fd,SHUT_RDWR);
+    {std::lock_guard<std::mutex> lock(clients_mutex_);for(int client:clients_)shutdown(client,SHUT_RDWR);}
+    for(auto& worker:workers_)if(worker.joinable())worker.join();workers_.clear();
+    fd=listener_.exchange(-1);if(fd>=0)close(fd);
+    std::lock_guard<std::mutex> lock(mutex_);resources_.clear();manifests_.clear();
+}
