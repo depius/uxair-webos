@@ -25,3 +25,7 @@ The build uses GCC, an eligible compilation process for the Runtime Library Exce
 The webOS Brew native toolchain and samples provide the build environment, headers, link stubs, and technical reference for the port; the samples are not bundled. The native backend was also informed by `mariotaku/ss4s` PCM payload documentation. SDL2, SDL2_ttf, LG fonts, glibc, Starfish Media Pipeline, and ACB are supplied by the TV and are not redistributed.
 
 Daniel Filho ([@danlflh](https://github.com/danlflh)) created the original webOS port. UxAir is maintained and adapted by Matej Skuhala ([@depius](https://github.com/depius)). Run `tools/source-package.py` to create a corresponding-source archive containing this application's source, the pinned UxPlay core, the original dependency source archives, and build instructions. All static libraries can be rebuilt and the app relinked using `tools/build.sh`; installing the resulting `.ipk` on the rooted target uses `tools/tv.sh install`.
+
+Direct HLS network relay uses pinned curl 8.23.0 (curl license); license is bundled in licenses/curl.txt. No other dependency revisions changed.
+
+The committed assets/hls-ca.pem is Mozilla CA data as of 2026-10-20, extracted by curl.se (MPL-2.0). Original data and extraction provenance are preserved in its header; the MPL-2.0 license is bundled. SHA-256: 796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe.

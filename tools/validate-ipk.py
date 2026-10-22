@@ -47,7 +47,7 @@ def main():
     if args.development:
         app['id'] += '.dev'
         app['title'] += ' Dev'
-        app['version'] = '1.1.0'
+        app['version'] = '1.2.0'
     stage = ROOT / 'build/app'
     staged = json.loads((stage / 'appinfo.json').read_text())
     if staged != app:
@@ -75,11 +75,19 @@ def main():
             fail('packaged large launcher icon differs from the current UxAir artwork')
         if not content('uxair') or not content('lib/libstdc++.so.6'):
             fail('missing receiver or private C++ runtime')
+        if args.development:
+            probe = content('direct-uri-probe')
+            if probe[:6] != b'\x7fELF\x01\x01' or int.from_bytes(probe[18:20], 'little') != 40 or not int.from_bytes(probe[36:40], 'little') & 0x200:
+                fail('native URI probe must be ARM ELF32 little-endian soft-float')
+        elif any(path.endswith('/direct-uri-probe') for path in files):
+            fail('development probe in production package')
         qr = content('bmc-qr.bmp')
         if qr != (ROOT / 'assets/bmc-qr.bmp').read_bytes() or qr[:2] != b'BM':
             fail('bundled donation QR differs from the committed local image')
         if int.from_bytes(qr[18:22], 'little') != 407 or int.from_bytes(qr[22:26], 'little', signed=True) != 407:
             fail('donation QR must be the expected 407x407 bitmap')
+        if content('hls-ca.pem') != (ROOT / 'assets/hls-ca.pem').read_bytes():
+            fail('HLS CA trust bundle differs from the committed trust store')
         coffee = content('bmc-icon.bmp')
         if coffee != (ROOT / 'assets/bmc-icon.bmp').read_bytes() or coffee[:2] != b'BM':
             fail('bundled Buy Me a Coffee icon differs from the supplied artwork')

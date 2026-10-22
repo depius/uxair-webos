@@ -197,14 +197,15 @@ void Shell::draw_history(const UiHistoryData& data,const std::vector<UiRow>& row
     card(panel+third+card_gap,top,third,"LIFETIME PLAYBACK",data.total_time);
     card(panel+2*(third+card_gap),top,third,"AVERAGE SESSION",data.average);
     const int second_y=top+86;
-    card(panel,second_y,content/2-card_gap/2,"LAST 30 DAYS - SCREEN MIRRORING",data.mirror_time);
-    card(panel+content/2+card_gap/2,second_y,content/2-card_gap/2,"LAST 30 DAYS - AIRPLAY MUSIC",data.music_time);
+    card(panel,second_y,third,"30 DAYS - SCREEN MIRRORING",data.mirror_time);
+    card(panel+third+card_gap,second_y,third,"30 DAYS - AIRPLAY MUSIC",data.music_time);
+    card(panel+2*(third+card_gap),second_y,third,"30 DAYS - DIRECT VIDEO",data.direct_time);
     auto draw_chart=[&](int x,int y,int cw,int ch,const std::vector<UiHistoryBar>& bars,const std::string& title,bool monthly) {
         fill_round_rect(renderer,{x,y,cw,ch},12,{25,39,61,255});
         uint64_t maximum=0;
         for(const auto& b:bars)if(b.available) {
             const uint64_t total=b.audio_ms>UINT64_MAX-b.mirror_ms?UINT64_MAX:b.mirror_ms+b.audio_ms;
-            maximum=std::max(maximum,total);
+            maximum=std::max(maximum,b.direct_ms>UINT64_MAX-total?UINT64_MAX:total+b.direct_ms);
         }
         const uint64_t axis=usage_chart_axis(maximum);
         const uint64_t unit=maximum>=3600000?3600000:maximum>=60000?60000:1000;
@@ -233,12 +234,14 @@ void Shell::draw_history(const UiHistoryData& data,const std::vector<UiRow>& row
             const int bw=std::max(1,std::min(right-left-3,monthly?22:14)),bx=(left+right-bw)/2;
             if(b.future)continue;
             if(!b.available) {SDL_SetRenderDrawColor(renderer,130,145,159,255);SDL_RenderDrawLine(renderer,bx,base-2,bx+bw-1,base-2);continue;}
-            const UsageBarHeights heights=usage_bar_heights(b.mirror_ms,b.audio_ms,axis,plot_h);
-            const int mh=heights.mirror,ah=heights.audio;
+            const uint64_t other=b.direct_ms>UINT64_MAX-b.audio_ms?UINT64_MAX:b.direct_ms+b.audio_ms;
+            const UsageBarHeights heights=usage_bar_heights(b.mirror_ms,other,axis,plot_h);
+            const int mh=heights.mirror,dh=other?int(heights.audio*(static_cast<long double>(b.direct_ms)/other)):0,ah=heights.audio-dh;
             SDL_SetRenderDrawColor(renderer,101,185,246,255);SDL_Rect mr={bx,base-mh,bw,mh};if(mh)SDL_RenderFillRect(renderer,&mr);
             SDL_SetRenderDrawColor(renderer,104,194,157,255);SDL_Rect ar={bx,base-mh-ah,bw,ah};if(ah)SDL_RenderFillRect(renderer,&ar);
+            SDL_SetRenderDrawColor(renderer,187,145,239,255);SDL_Rect dr={bx,base-mh-ah-dh,bw,dh};if(dh)SDL_RenderFillRect(renderer,&dr);
             if(b.partial)text_at("*",(left+right)/2-6,base-text_h,bw+12,small_,uxair_text);
-            if(!mh&&!ah) {SDL_SetRenderDrawColor(renderer,174,194,207,255);SDL_Rect zero={(left+right)/2-1,base-2,3,2};SDL_RenderFillRect(renderer,&zero);}
+            if(!mh&&!ah&&!dh) {SDL_SetRenderDrawColor(renderer,174,194,207,255);SDL_Rect zero={(left+right)/2-1,base-2,3,2};SDL_RenderFillRect(renderer,&zero);}
         }
         SDL_RenderSetClipRect(renderer,had_clip?&previous_clip:nullptr);
         // Labels are independent of bar availability, so Jan/Dec and day 1/end never disappear.
@@ -263,17 +266,19 @@ void Shell::draw_history(const UiHistoryData& data,const std::vector<UiRow>& row
     const int month_x=panel+layout.daily_width+layout.chart_gap;
     draw_chart(month_x,chart_y,content-layout.daily_width-layout.chart_gap,chart_h,data.monthly_bars,data.monthly_title,true);
     text_at("UTC · Blue label: current · * Partial history · — Unavailable · • Known zero · Blank: future",panel,chart_y+chart_h+7,content,small_,{157,178,194,255});
-    if(data.mirror_percent+data.audio_percent) {
-        text_at("Last 30 days - playback distribution",panel,layout.distribution_y,content/2,small_,uxair_text);
-        text_at("Screen mirroring  "+std::to_string(data.mirror_percent)+"%",panel+content/2,layout.distribution_y,content/4,small_,uxair_accent);
-        text_at("AirPlay music  "+std::to_string(data.audio_percent)+"%",panel+content*3/4,layout.distribution_y,content/4,small_,{145,211,181,255});
-    } else text_at("No playback yet",panel,layout.distribution_y,content,small_,{174,194,207,255});
-    const int dist_h=20;
-    SDL_Rect track={panel,layout.distribution_bar_y,content,dist_h};SDL_SetRenderDrawColor(renderer,47,65,85,255);SDL_RenderFillRect(renderer,&track);
-    const unsigned total_pct=data.mirror_percent+data.audio_percent;
-    const int mw=int(content*data.mirror_percent/100);
-    SDL_SetRenderDrawColor(renderer,101,185,246,255);SDL_Rect m={panel,layout.distribution_bar_y,mw,dist_h};if(mw)SDL_RenderFillRect(renderer,&m);
-    SDL_SetRenderDrawColor(renderer,104,194,157,255);SDL_Rect a={panel+mw,layout.distribution_bar_y,content-mw,dist_h};if(total_pct&&a.w)SDL_RenderFillRect(renderer,&a);
+    text_at("30-day distribution",panel,layout.distribution_y,content/4,small_,uxair_text);
+    const int total_pct=data.mirror_percent+data.audio_percent+data.direct_percent;
+    if(total_pct){
+    text_at("Mirroring "+std::to_string(data.mirror_percent)+"%",panel+content/4,layout.distribution_y,content/4,small_,uxair_accent);
+    text_at("Music "+std::to_string(data.audio_percent)+"%",panel+content/2,layout.distribution_y,content/4,small_,{145,211,181,255});
+    text_at("Direct Video "+std::to_string(data.direct_percent)+"%",panel+content*3/4,layout.distribution_y,content/4,small_,{187,145,239,255});
+    }
+    SDL_SetRenderDrawColor(renderer,47,65,85,255);SDL_Rect track={panel,layout.distribution_bar_y,content,20};SDL_RenderFillRect(renderer,&track);
+    int offset=panel;
+    const int widths[]={content*int(data.mirror_percent)/100,content*int(data.audio_percent)/100,content-content*int(data.mirror_percent)/100-content*int(data.audio_percent)/100};
+    const SDL_Color colors[]={{101,185,246,255},{104,194,157,255},{187,145,239,255}};
+    if(total_pct)for(int i=0;i<3;++i){SDL_SetRenderDrawColor(renderer,colors[i].r,colors[i].g,colors[i].b,255);SDL_Rect segment={offset,layout.distribution_bar_y,widths[i],20};SDL_RenderFillRect(renderer,&segment);offset+=widths[i];}
+    else text_at("No playback yet",panel+content/4,layout.distribution_y,content*3/4,small_,uxair_text);
     const int list_y=layout.list_y,row_h=layout.row_h;
     text_at("Recent sessions",panel,layout.heading_y,content/2,font_,uxair_text);
     text_at("STARTED (UTC)",panel+10,layout.heading_y+36,content*27/100,small_,{157,184,201,255});

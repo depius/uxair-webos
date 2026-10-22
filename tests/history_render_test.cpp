@@ -24,17 +24,18 @@ struct HistoryRenderTest {
     }
     static void render(Shell& shell,SDL_Surface *surface,bool empty,uint32_t today=20747) {
         UsageStats stats;stats.daily_from_day=20736; // 2026-10-10 UTC
-        if(!empty){DailyUsage d;d.utc_day=20747;d.mirror_ms=100000;d.audio_ms=51000;stats.daily.push_back(d);}
+        if(!empty){DailyUsage d;d.utc_day=20747;d.mirror_ms=100000;d.audio_ms=51000;d.direct_ms=30000;stats.daily.push_back(d);}
         auto days=summarize_usage(stats,UsagePeriod::ThisMonth,today);
         auto months=summarize_usage(stats,UsagePeriod::ThisYear,today);
         assert(days.title=="This month — October 2026");
         UiHistoryData data;data.daily_title=days.title;data.monthly_title=months.title;
         data.daily_bars=days.bars;data.monthly_bars=months.bars;
-        data.summary=empty?"0 completed":"5 completed";data.total_time="2 min 31 s";data.average="30 s";
-        data.mirror_time="1 min 40 s";data.music_time="51 s";data.mirror_percent=empty?0:66;data.audio_percent=empty?0:34;
+        data.summary=empty?"0 completed":"5 completed";data.total_time=empty?"0 s":"3 min 1 s";data.average=empty?"0 s":"36 s";
+        data.mirror_time=empty?"0 s":"1 min 40 s";data.direct_time=empty?"0 s":"30 s";data.music_time=empty?"0 s":"51 s";
+        data.mirror_percent=empty?0:55;data.audio_percent=empty?0:28;data.direct_percent=empty?0:17;
         data.storage="History storage 1 KB | 5/100 sessions | 365d";
         std::vector<UiRow> rows;
-        if(!empty)for(int i=0;i<5;++i)rows.emplace_back("2026-10-21 12:30","30 s","Mirror / HEVC / 3840x2160");
+        if(!empty)for(int i=0;i<5;++i)rows.emplace_back("2026-10-21 12:30","30 s",i==2?"Direct Video / Native HLS / 1920x1080":"Mirror / HEVC / 3840x2160");
         rows.emplace_back("Reset history","","Reset saved usage history");
         SDL_Rect previous={0,0,1920,1080};SDL_RenderSetClipRect(shell.renderer,&previous);
         shell.page(UiPage::History,"",rows,empty?0:2,"Left/Right sections",nullptr,"",false,&data);
@@ -49,7 +50,7 @@ struct HistoryRenderTest {
         for(int y=layout.chart_y;y<plot_top;++y)for(int x=layout.panel_x;x<1920-48;++x) {
             Uint32 pixel=*(reinterpret_cast<Uint32*>(static_cast<Uint8*>(surface->pixels)+y*surface->pitch)+x);
             Uint8 r,g,b;SDL_GetRGB(pixel,surface->format,&r,&g,&b);
-            assert(!(r==101&&g==185&&b==246)&&!(r==104&&g==194&&b==157));
+            assert(!(r==101&&g==185&&b==246)&&!(r==104&&g==194&&b==157)&&!(r==187&&g==145&&b==239));
         }
         assert(SDL_SaveBMP(surface,today!=20747?"build/tests/history-month-end.bmp":empty?"build/tests/history-empty.bmp":"build/tests/history-five-sessions.bmp")==0);
     }

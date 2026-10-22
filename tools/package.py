@@ -26,18 +26,23 @@ def main():
     if args.development:
         app['id'] += '.dev'
         app['title'] += ' Dev'
-        app['version'] = '1.1.0'
+        app['version'] = '1.2.0'
     (stage / 'appinfo.json').write_text(json.dumps(app, indent=2) + '\n')
     source_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     (stage / 'build-info.txt').write_text(f'version={app["version"]}\ncommit={source_commit}\n')
     shutil.copy2(ROOT / 'packaging/icon.png', stage / 'icon.png')
     shutil.copy2(ROOT / 'packaging/largeIcon.png', stage / 'largeIcon.png')
     shutil.copy2(ROOT / 'build/uxair', stage / 'uxair')
+    if args.development:
+        shutil.copy2(ROOT / 'build/direct-uri-probe', stage / 'direct-uri-probe')
     shutil.copy2(ROOT / 'assets/bmc-qr.bmp', stage / 'bmc-qr.bmp')
     shutil.copy2(ROOT / 'assets/bmc-icon.bmp', stage / 'bmc-icon.bmp')
+    shutil.copy2(ROOT / 'assets/hls-ca.pem', stage / 'hls-ca.pem')
     shutil.copy2(SDK / 'arm-webos-linux-gnueabi/sysroot/usr/lib/libstdc++.so.6', stage / 'lib/libstdc++.so.6')
     for source, dest in [
         ('LICENSE', 'GPL-3.0.txt'),
+        ('.cache/curl-8.23.0/COPYING', 'curl.txt'),
+        ('packaging/Mozilla-MPL-2.0.txt', 'Mozilla-MPL-2.0.txt'),
         ('.cache/openssl-3.5.8/LICENSE.txt', 'OpenSSL.txt'),
         ('.cache/libplist-2.7.0/COPYING', 'libplist.txt'),
         ('.cache/ffmpeg-8.1.2/COPYING.LGPLv2.1', 'FFmpeg.txt'),
@@ -50,6 +55,9 @@ def main():
     strip = SDK / 'bin/arm-webos-linux-gnueabi-strip'
     subprocess.run([str(strip), str(stage / 'uxair')], check=True)
     subprocess.run(['python3', str(ROOT / 'tools/verify-elf.py'), str(stage)], check=True)
+    if args.development:
+        subprocess.run([str(strip), str(stage / 'direct-uri-probe')], check=True)
+        subprocess.run(['python3', str(ROOT / 'tools/verify-elf.py'), str(stage), 'direct-uri-probe'], check=True)
     (ROOT / 'dist').mkdir(exist_ok=True)
     subprocess.run(['ares-package', str(stage), '-o', str(ROOT / 'dist')], check=True)
     package = ROOT / 'dist' / f"{app['id']}_{app['version']}_arm.ipk"

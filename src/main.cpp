@@ -1,3 +1,5 @@
+#include "direct_player.h"
+#include <map>
 #include "audio.h"
 #include "h264.h"
 #include "hevc_stream.h"
@@ -260,6 +262,14 @@ int main() {
             rows.push_back(UiRow("Audio delay",std::to_string(receiver.audio_delay_ms.load())+" ms","Set before connecting; step size 25 ms",receiver.idle_for_profile_change()));
 
         } else if(which==UiPage::Diagnostics) {
+            const auto direct_status=receiver.direct.snapshot();
+            const char *direct_states[]={"Idle","Loading","Playing","Paused","Ended","Error"};
+            rows.push_back(UiRow("Direct Video",direct_states[int(direct_status.state)],
+                "Native HLS "+std::to_string(direct_status.width)+"x"+std::to_string(direct_status.height)+" / "+duration_text(uint64_t(std::max(0.0,direct_status.position)*1000))+" of "+duration_text(uint64_t(std::max(0.0,direct_status.duration)*1000))+"; stage "+direct_stage_name(direct_status.stage)+" / "+direct_error_name(direct_status.error)));
+
+            rows.push_back(UiRow("Direct native / relay",std::to_string(direct_status.callbacks)+" callbacks / "+std::to_string(direct_status.relay_requests)+" requests",
+                "Upstream "+std::to_string(direct_status.upstream_fetches)+"; bytes "+std::to_string(direct_status.downloaded_bytes)+"; failures "+std::to_string(direct_status.relay_failures)+"; result "+std::to_string(direct_status.native_result)));
+
             rows.push_back(UiRow("On-screen overlay",diagnostics_mode_name(settings.diagnostics),"Off, Compact or Detailed"));
             std::string resolution=observed_width?std::to_string(observed_width)+" x "+std::to_string(observed_height):"Awaiting SPS";
             rows.push_back(UiRow("Negotiated codec / SPS",std::string(receiver.incoming_video_codec==2?"HEVC":receiver.incoming_video_codec==1?"H.264":"Awaiting codec")+"  "+resolution,
@@ -283,7 +293,8 @@ int main() {
             rows.push_back(UiRow("Mirroring audio",receiver.mirror?"Active":"Idle","Stereo audio during screen mirroring"));
         } else if(which==UiPage::History) {
             for(const SessionSummary& session:usage.recent) {
-                std::string kind=session.kind==SessionKind::Audio?"AirPlay music":
+                std::string kind=session.kind==SessionKind::Audio?"AirPlay music":session.kind==SessionKind::Direct?
+                    "Direct Video - Native HLS - "+(session.width?std::to_string(session.width)+"x"+std::to_string(session.height):std::string("geometry unavailable")):
                     std::string(session_kind_name(session.kind))+" - "+(session.codec==2?"HEVC":"H.264")+" - "+
                     std::to_string(session.width)+"x"+std::to_string(session.height);
                 rows.push_back(UiRow(utc_text(session.started_utc),duration_text(session.duration_ms),kind,false));
@@ -350,9 +361,11 @@ int main() {
             history_data.total_time=duration_text(usage.playback_ms);
             history_data.average=sessions?duration_text(usage.playback_ms/sessions):"No usage";
             history_data.mirror_time=duration_text(thirty.mirror_ms);
-            history_data.music_time=duration_text(thirty.audio_ms);
-            history_data.mirror_percent=usage_mirror_percent(thirty.mirror_ms,thirty.audio_ms);
-            history_data.audio_percent=(thirty.mirror_ms||thirty.audio_ms)?100-history_data.mirror_percent:0;
+            history_data.music_time=duration_text(thirty.audio_ms);history_data.direct_time=duration_text(thirty.direct_ms);
+            const long double total=static_cast<long double>(thirty.mirror_ms)+thirty.audio_ms+thirty.direct_ms;
+            history_data.mirror_percent=total?unsigned(thirty.mirror_ms*100.0L/total+0.5L):0;
+            history_data.audio_percent=total?std::min(100-history_data.mirror_percent,unsigned(thirty.audio_ms*100.0L/total+0.5L)):0;
+            history_data.direct_percent=total?100-history_data.mirror_percent-history_data.audio_percent:0;
             history_data.storage=usage.storage_corrupt?"History file unreadable; reset to restart":"History storage "+std::to_string((history_storage+1023)/1024)+" KB | "+std::to_string(usage.recent.size())+"/100 sessions | 365d";
             history_data.daily_title=days.title;history_data.monthly_title=months.title;
             history_data.daily_bars=days.bars;history_data.monthly_bars=months.bars;
@@ -415,6 +428,12 @@ int main() {
             "HEVC enabled; iOS chooses codec. Check actual codec after reconnect.":
             "H.264 active. Reconnect sender.");
     };
+    DirectPlayer direct_player;
+    bool direct_open=false;int64_t direct_started=0,direct_tick=0;uint64_t direct_started_utc=0,direct_play_ms=0;
+    std::map<uint32_t,uint64_t> direct_days;
+    UiPage direct_return_page=page;
+    DirectState direct_previous=DirectState::Idle;int64_t direct_maintenance=0;
+    unsigned direct_command_records=0;
     bool running=true;
     while(running) {
         int64_t now=now_ns();
@@ -422,7 +441,58 @@ int main() {
         previous_loop=now;
         Action action=shell.action();
         if(shell.take_pointer_motion()&&ui_visible&&page==UiPage::History)last_ui=0;
-        if(action==Action::Exit)break;
+        if(action==Action::Exit&&!receiver.direct_active)break;
+#ifdef UXAIR_DEV_BUILD
+        receiver.direct_busy=opened||receiver.mirror.load()||receiver.has_audio.load();
+        receiver.direct.check_timeout(now/1000000);
+        DirectCommand direct_command;
+        if(receiver.direct.take(direct_command)) {
+            const char *commands[]={"play","pause","resume","seek","stop"};
+            if(direct_command_records<192){++direct_command_records;fprintf(stderr,"[direct-player] dequeued command=%s\n",commands[int(direct_command.kind)]);}
+            if(direct_command.kind==DirectCommandKind::Play) {
+                if(receiver.direct_busy||direct_open){DirectSnapshot failure;failure.state=DirectState::Error;failure.stage=DirectStage::Dequeued;failure.error=DirectError::Busy;receiver.direct.publish(failure);}
+                else {DirectSnapshot starting;starting.state=DirectState::Loading;starting.stage=DirectStage::Dequeued;receiver.direct.publish(starting);
+                    receiver.direct_active=true; // Reserve the decoder before synchronous firmware Load.
+                    direct_open=direct_player.open(direct_command.uri,direct_command.position,now,&receiver.direct,direct_command.position_seconds,direct_configured_contract());
+                    direct_days.clear();direct_return_page=page;ui_visible=false;direct_started=direct_tick=now;direct_play_ms=0;direct_previous=DirectState::Idle;direct_started_utc=uint64_t(time(nullptr));receiver.direct_active=direct_open;
+                    if(!direct_open){const auto failure=direct_player.snapshot();direct_player.close();ui_visible=true;last_ui=0;
+                        receiver.direct.publish(failure);
+                        ++usage.session_errors;save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;receiver.show("Direct Video failed (experimental)");}}
+            } else if(direct_open&&direct_command.kind!=DirectCommandKind::Stop&&!direct_player.control(direct_command)){direct_open=false;}
+            if(direct_command.kind==DirectCommandKind::Stop)direct_open=false;
+        }
+        if(receiver.direct_active) {
+            if(now-direct_maintenance>1000000000LL){rotate_log();direct_maintenance=now;}
+            auto status=direct_player.tick(now);
+            if(direct_previous==DirectState::Playing&&now>direct_tick){
+                uint64_t duration=uint64_t(now-direct_tick)/1000000;direct_play_ms+=duration;
+                uint64_t stamp=direct_started_utc*1000+uint64_t(direct_tick-direct_started)/1000000;
+                while(duration&&direct_days.size()<365){const uint32_t day=uint32_t(stamp/86400000);const uint64_t part=std::min<uint64_t>(duration,86400000-stamp%86400000);direct_days[day]+=part;stamp+=part;duration-=part;}
+            }
+            direct_tick=now;
+            if(action==Action::Back||action==Action::Exit||!direct_open||status.state==DirectState::Error||status.state==DirectState::Ended) {
+                const bool direct_failed=status.state==DirectState::Error||receiver.direct.snapshot().state==DirectState::Error;
+                direct_player.close();receiver.direct_active=false;direct_open=false;
+                if(direct_play_ms>0&&now>direct_started&&!direct_failed){SessionSummary summary;summary.kind=SessionKind::Direct;
+                    summary.started_utc=direct_started_utc;summary.duration_ms=direct_play_ms;
+                    summary.width=status.width;summary.height=status.height;for(const auto& day:direct_days)usage.record_direct_day(day.first,day.second);
+                    usage.record(summary,false);save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;}
+                DirectSnapshot terminal=direct_failed?(status.state==DirectState::Error?status:receiver.direct.snapshot()):status;terminal.state=direct_failed?DirectState::Error:DirectState::Ended;receiver.direct.publish(terminal); // Publish once; do not erase a subsequent sender play command.
+                if(direct_failed){++usage.session_errors;save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;}
+                page=direct_return_page;nav.page=page;ui_visible=true;last_ui=0;receiver.show(direct_failed?"Direct Video failed (experimental)":"Direct Video stopped");
+                if(action==Action::Exit)break;
+                action=Action::None; // Direct owns this input; never navigate the restored page with it.
+            } else {
+                receiver.direct.publish(status);
+                if(action==Action::Select){ui_visible=!ui_visible;last_ui=0;if(!ui_visible)shell.transparent();}
+                if(ui_visible){if(now-last_ui>1000000000LL){auto old_page=page;page=UiPage::Diagnostics;draw_page("Direct Video","OK playback / diagnostics | Back stop");page=old_page;last_ui=now;}}
+                else if(status.state==DirectState::Playing){if(direct_previous!=status.state)shell.transparent();}
+                else if(now-last_ui>1000000000LL){shell.screen(status.state==DirectState::Paused?"Direct Video paused":"Direct Video loading","");last_ui=now;}
+                direct_previous=status.state;SDL_Delay(10);continue;
+            }
+        }
+#endif
+
         std::string pairing_pin=receiver.pin();
         const bool pairing_changed=pairing_pin!=last_rendered_pin;
         if(pairing_changed) {

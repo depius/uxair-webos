@@ -10,6 +10,7 @@
 #include "settings.h"
 #include "audio_session.h"
 #include "pairing_ui.h"
+#include "direct_video.h"
 struct Packet {
     bool video;
     unsigned codec;
@@ -27,6 +28,8 @@ struct ReceiverDiagnostics {
     DurationSample video_queue_residence, audio_queue_residence;
 };
 struct Receiver {
+    DirectSession direct;
+    std::atomic<bool> direct_active{false},direct_busy{false};
     ~Receiver();
     bool start(const std::string& directory, const Settings& settings);
     void stop();

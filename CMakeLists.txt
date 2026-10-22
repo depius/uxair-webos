@@ -63,10 +63,18 @@ if(BUILD_RECEIVER)
     target_compile_definitions(airplay PRIVATE PLIST_210 PLIST_230 OPENSSL_API_COMPAT=0x10101000L _REENTRANT _LARGEFILE64_SOURCE _FILE_OFFSET_BITS=64)
     target_include_directories(airplay PUBLIC "${UX}/lib" PRIVATE "${UX}/lib/llhttp" "${UX}/lib/playfair" "${DEPS}/include")
     target_link_libraries(airplay PUBLIC playfair dnssd llhttp "${DEPS}/lib/libplist-2.0.a" "${DEPS}/lib/libcrypto.a" pthread dl m)
-    add_executable(uxair src/main.cpp src/receiver.cpp src/audio.cpp src/h264.cpp
+    set(DIRECT_SOURCES src/direct_video.cpp src/direct_player.cpp src/direct_native_diag.cpp src/hls_relay.cpp)
+    add_executable(uxair src/main.cpp src/receiver.cpp ${DIRECT_SOURCES} src/audio.cpp src/h264.cpp
         src/hevc_sample.cpp src/hevc_stream.cpp)
     target_include_directories(uxair PRIVATE "${DEPS}/include")
-    target_link_libraries(uxair PRIVATE lg_media airplay "${DEPS}/lib/libavcodec.a" "${DEPS}/lib/libswresample.a" "${DEPS}/lib/libavutil.a")
+    target_link_libraries(uxair PRIVATE lg_media airplay "${DEPS}/lib/libcurl.a" "${DEPS}/lib/libssl.a" "${DEPS}/lib/libcrypto.a" "${DEPS}/lib/libavcodec.a" "${DEPS}/lib/libswresample.a" "${DEPS}/lib/libavutil.a")
+    if(BUILD_DEVELOPMENT_PACKAGE)
+        add_executable(direct-uri-probe src/direct_uri_probe.cpp ${DIRECT_SOURCES})
+        target_include_directories(direct-uri-probe PRIVATE "${DEPS}/include")
+        target_link_libraries(direct-uri-probe PRIVATE lg_media "${DEPS}/lib/libplist-2.0.a" "${DEPS}/lib/libcurl.a" "${DEPS}/lib/libssl.a" "${DEPS}/lib/libcrypto.a" dl m)
+        target_link_options(direct-uri-probe PRIVATE -Wl,--exclude-libs,ALL)
+        set_target_properties(direct-uri-probe PROPERTIES INSTALL_RPATH "$ORIGIN/lib" BUILD_WITH_INSTALL_RPATH TRUE)
+    endif()
     # LG's player loads its own older OpenSSL/FFmpeg indirectly. Keep private
     # static symbols out of the dynamic namespace to avoid interposition.
     target_link_options(uxair PRIVATE -Wl,--exclude-libs,ALL)

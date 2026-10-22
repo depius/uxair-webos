@@ -1,4 +1,4 @@
-name: Build UxAir 1.1.0 ARMv7 package
+name: Build UxAir 1.2.0 ARMv7 package
 
 on:
   push:
@@ -22,8 +22,12 @@ jobs:
           persist-credentials: false
       - name: Install native test dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes build-essential ffmpeg pkg-config libsdl2-dev libsdl2-ttf-dev fonts-dejavu-core libavcodec-dev libavutil-dev libswresample-dev
+          # The Azure mirror stalled downloading test dependencies in run 39821397919.
+          if test -f /etc/apt/apt-mirrors.txt; then
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+          fi
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install --yes --no-install-recommends build-essential ffmpeg pkg-config libssl-dev libcurl4-openssl-dev libplist-dev libsdl2-dev libsdl2-ttf-dev fonts-dejavu-core libavcodec-dev libavutil-dev libswresample-dev
       - name: Validate source and run sanitizer-backed tests
         run: |
           python3 tools/validate-metadata.py
@@ -61,23 +65,30 @@ jobs:
           command -v ares-package
       - name: Validate source metadata
         run: python3 tools/validate-metadata.py
-      - name: Build UxAir 1.1.0 production IPK
-        run: tools/build.sh
+      - name: Build UxAir 1.2.0 development IPK
+        run: tools/build.sh --development
+      - name: Show dependency build diagnostics on failure
+        if: failure()
+        run: |
+          for file in build/logs/curl.log build/logs/openssl.log build/logs/libplist.log build/logs/ffmpeg.log; do
+            if test -f "$file"; then tail -n 60 "$file"; fi
+          done
       - name: Build corresponding source archive
-        run: tools/source-package.py
+        run: python3 tools/source-package.py --development
       - name: Verify staged ELF and package
         run: |
           python3 tools/verify-elf.py build/app | tee dist/ELF_REPORT.txt
-          python3 tools/validate-ipk.py
+          python3 tools/verify-elf.py build/app direct-uri-probe | tee -a dist/ELF_REPORT.txt
+          python3 tools/validate-ipk.py --development
       - name: Record source commit and package checksum
         run: |
           git rev-parse HEAD > dist/BUILD_COMMIT.txt
           (cd dist && shasum -a 256 *.ipk *-source.tar.gz > SHA256SUMS)
           cat dist/BUILD_COMMIT.txt dist/SHA256SUMS dist/ELF_REPORT.txt
-      - name: Upload verified UxAir 1.1.0 production package and source
+      - name: Upload verified UxAir 1.2.0 development package and source
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: uxair-1.1.0-production-armv7-${{ github.sha }}
+          name: uxair-1.2.0-development-armv7-${{ github.sha }}
           path: |
             dist/*.ipk
             dist/*-source.tar.gz

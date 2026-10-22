@@ -17,8 +17,12 @@ jobs:
           persist-credentials: false
       - name: Install native test dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes build-essential ffmpeg pkg-config libsdl2-dev libsdl2-ttf-dev fonts-dejavu-core libavcodec-dev libavutil-dev libswresample-dev
+          # The Azure mirror stalled downloading test dependencies in run 39821397919.
+          if test -f /etc/apt/apt-mirrors.txt; then
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+          fi
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install --yes --no-install-recommends build-essential ffmpeg pkg-config libssl-dev libcurl4-openssl-dev libplist-dev libsdl2-dev libsdl2-ttf-dev fonts-dejavu-core libavcodec-dev libavutil-dev libswresample-dev
       - name: Validate release metadata and documentation
         run: python3 tools/validate-metadata.py
       - name: Run sanitizer-backed host tests

@@ -47,6 +47,40 @@ PROBE = '''        int probe_body_length = -1;
                                 probe_body_length, probe_session);
 '''
 
+DIRECT_GATE = r'''    if (!cseq && getenv("UXAIR_DIRECT_VIDEO") && !strcmp(getenv("UXAIR_DIRECT_VIDEO"), "1") &&
+        (!strcmp(url,"/info") || !strcmp(url,"/info?txtAirPlay") || !strcmp(url,"/info?txtRAOP") || !strcmp(url,"/fp-setup2") || !strcmp(url,"/play") || !strncmp(url,"/scrub",6) || !strncmp(url,"/rate",5) ||
+         !strcmp(url,"/stop") || !strcmp(url,"/server-info") || !strcmp(url,"/playback-info") || !strcmp(url,"/reverse") || !strcmp(url,"/action") || !strncmp(url,"/getProperty?",13) || !strncmp(url,"/setProperty?",13))) {
+        if ((!strcmp(url,"/info") || !strcmp(url,"/info?txtAirPlay") || !strcmp(url,"/info?txtRAOP")) && !strcmp(method,"GET")) {
+            char *data=NULL;int length=0;*response=http_response_create();http_response_init(*response,"HTTP/1.1",200,"OK");
+            raop_handler_info(conn,request,*response,&data,&length);http_response_finish(*response,data,length);free(data);return;
+        }
+        if (!strcmp(url,"/server-info") && !strcmp(method,"GET")) {
+            char *data=NULL;int length=0;*response=http_response_create();http_response_init(*response,"HTTP/1.1",200,"OK");
+            http_handler_server_info(conn,request,*response,&data,&length);
+            plist_t root=NULL;plist_from_xml(data,(uint32_t)length,&root);free(data);data=NULL;
+            if(root){plist_dict_set_item(root,"features",plist_new_uint(dnssd_get_airplay_features(raop->dnssd)));uint32_t size=0;plist_to_xml(root,&data,&size);length=(int)size;plist_free(root);}
+            http_response_finish(*response,data,length);free(data);return;
+        }
+        if (!strcmp(url,"/reverse")) {
+            const char *upgrade=http_request_get_header(request,"Upgrade");
+            const char *owner=http_request_get_header(request,"X-Apple-Session-ID");
+            int accepted=!strcmp(method,"POST") && upgrade && !strcmp(upgrade,"PTTH/1.0") &&
+                uxair_direct_reverse(raop->callbacks.cls,owner,httpd_get_connection_socket(raop->httpd,conn),(unsigned long)conn);
+            *response=http_response_create();http_response_init(*response,"HTTP/1.1",accepted?101:409,accepted?"Switching Protocols":"Conflict");
+            if(accepted){httpd_set_connection_type(raop->httpd,conn,CONNECTION_TYPE_PTTH);http_response_add_header(*response,"Connection","Upgrade");http_response_add_header(*response,"Upgrade","PTTH/1.0");}
+            http_response_finish(*response,NULL,0);return;
+        }
+        int direct_length=0,output_length=0;char *output=NULL;const char *mime="text/parameters";
+        const char *data=http_request_get_data(request,&direct_length);
+        int status=uxair_direct_request(raop->callbacks.cls,http_request_get_header(request,"X-Apple-Session-ID"),
+            method,url,http_request_get_header(request,"Content-Type"),data,direct_length,&output,&output_length,&mime);
+        *response=http_response_create();
+        http_response_init(*response,"HTTP/1.1",status,status==200?"OK":"Direct Video Request Failed");
+        http_response_add_header(*response,"Content-Type",mime);
+        http_response_finish(*response,output,output_length);free(output);return;
+    }
+'''
+
 
 def replace_region(source, start, end, replacement):
     if source.count(start) != 1 or source.count(end) != 1:
@@ -59,8 +93,10 @@ def replace_region(source, start, end, replacement):
 def instrument_raop(source):
     if source.count(INCLUDE) != 1 or source.count(GATE) != 1:
         raise ValueError('pinned UxPlay request gate changed; refuse to instrument')
-    return source.replace(INCLUDE, INCLUDE + '#include "direct_request_diag.h"\n', 1).replace(
-        GATE, GATE + PROBE, 1)
+    source=source.replace('    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");',
+        '    uxair_direct_lost(raop->callbacks.cls,(unsigned long)conn);\n    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");',1)
+    return source.replace(INCLUDE, INCLUDE + '#include "direct_request_diag.h"\n#include "direct_bridge.h"\n', 1).replace(
+        GATE, DIRECT_GATE + GATE + PROBE, 1)
 
 
 def instrument_http_request(source):
@@ -73,10 +109,33 @@ def instrument_http_request(source):
              '        direct_request_diag_body_limit();\n'
              '        return -1;\n'
              '    }\n')
-    return '#include "direct_request_diag.h"\n' + source.replace(anchor, guard + anchor, 1)
+    small_guard = ('    const char *direct_path = http_request_get_url(request);\n'
+                   '    if (direct_path && (!strcmp(direct_path, "/play") || !strcmp(direct_path, "/action")) &&\n'
+                   '        ((size_t)request->datalen > 524288U || length > 524288U - (size_t)request->datalen)) return -1;\n')
+    return '#include "direct_request_diag.h"\n' + source.replace(anchor, small_guard + guard + anchor, 1)
 
 
 def instrument_httpd(source):
+    # The pinned reader loops on EAGAIN until the first eight bytes arrive.
+    # Feed each available fragment once; negotiated PTTH sockets already have
+    # a known role and never need to probe an HTTP response prefix.
+    source = source.replace('                    http_request_is_reverse(connection->request);\n',
+                            '                    http_request_set_reverse(connection->request);\n', 1)
+    source = replace_region(
+        source,
+        '            if (new_request) {\n                int readstart = 0;\n',
+        '            if (http_request_is_reverse(connection->request)) {\n',
+        '            int read_result = recv(connection->socket_fd, buffer, sizeof(buffer), 0);\n'
+        '            if (read_result == 0) {\n'
+        '                httpd_remove_connection(httpd, connection, 0);\n'
+        '                continue;\n'
+        '            }\n'
+        '            if (read_result < 0) {\n'
+        '                if (errno != SOCKET_ERRORNAME(EAGAIN) && errno != SOCKET_ERRORNAME(EWOULDBLOCK) && errno != SOCKET_ERRORNAME(EINTR))\n'
+        '                    httpd_remove_connection(httpd, connection, SOCKET_GET_ERROR());\n'
+        '                continue;\n'
+        '            }\n'
+        '            recv_datalen = read_result;\n')
     source = replace_region(
         source,
         '                if (recv_datalen && logger_debug) {\n',
