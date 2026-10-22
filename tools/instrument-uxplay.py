@@ -67,7 +67,7 @@ DIRECT_GATE = r'''    if (!cseq && getenv("UXAIR_DIRECT_VIDEO") && !strcmp(geten
             int accepted=!strcmp(method,"POST") && upgrade && !strcmp(upgrade,"PTTH/1.0") &&
                 uxair_direct_reverse(raop->callbacks.cls,owner,httpd_get_connection_socket(raop->httpd,conn),(unsigned long)conn);
             *response=http_response_create();http_response_init(*response,"HTTP/1.1",accepted?101:409,accepted?"Switching Protocols":"Conflict");
-            if(accepted){httpd_set_connection_type(raop->httpd,conn,CONNECTION_TYPE_EVENT);http_response_add_header(*response,"Connection","Upgrade");http_response_add_header(*response,"Upgrade","PTTH/1.0");}
+            if(accepted){httpd_set_connection_type(raop->httpd,conn,CONNECTION_TYPE_PTTH);http_response_add_header(*response,"Connection","Upgrade");http_response_add_header(*response,"Upgrade","PTTH/1.0");}
             http_response_finish(*response,NULL,0);return;
         }
         int direct_length=0,output_length=0;char *output=NULL;const char *mime="text/parameters";
@@ -116,6 +116,26 @@ def instrument_http_request(source):
 
 
 def instrument_httpd(source):
+    # The pinned reader loops on EAGAIN until the first eight bytes arrive.
+    # Feed each available fragment once; negotiated PTTH sockets already have
+    # a known role and never need to probe an HTTP response prefix.
+    source = source.replace('                    http_request_is_reverse(connection->request);\n',
+                            '                    http_request_set_reverse(connection->request);\n', 1)
+    source = replace_region(
+        source,
+        '            if (new_request) {\n                int readstart = 0;\n',
+        '            if (http_request_is_reverse(connection->request)) {\n',
+        '            int read_result = recv(connection->socket_fd, buffer, sizeof(buffer), 0);\n'
+        '            if (read_result == 0) {\n'
+        '                httpd_remove_connection(httpd, connection, 0);\n'
+        '                continue;\n'
+        '            }\n'
+        '            if (read_result < 0) {\n'
+        '                if (errno != SOCKET_ERRORNAME(EAGAIN) && errno != SOCKET_ERRORNAME(EWOULDBLOCK) && errno != SOCKET_ERRORNAME(EINTR))\n'
+        '                    httpd_remove_connection(httpd, connection, SOCKET_GET_ERROR());\n'
+        '                continue;\n'
+        '            }\n'
+        '            recv_datalen = read_result;\n')
     source = replace_region(
         source,
         '                if (recv_datalen && logger_debug) {\n',
