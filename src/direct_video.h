@@ -9,7 +9,16 @@
 enum class DirectCommandKind { Play, Pause, Resume, Seek, Stop };
 struct DirectCommand { DirectCommandKind kind; std::string uri; double position=0; bool position_seconds=false; };
 enum class DirectState { Idle, Loading, Playing, Paused, Ended, Error };
-struct DirectSnapshot { DirectState state=DirectState::Idle; double position=0,duration=0;unsigned width=0,height=0; };
+enum class DirectStage { Idle, Queued, Dequeued, Relay, AcbCreate, AcbInitialize, Construct, MediaId, Load, AwaitLoad, Sink, LoadedState, Window, Seek, Play, AwaitPlaying, Playing, Paused, VideoInfo, Stopped };
+enum class DirectError { None, Busy, RelayStart, Payload, AcbCreate, AcbInitialize, Construct, MediaId, LoadRejected, NativeError, Sink, Seek, PlayRejected, LoadTimeout, DurationTimeout, PlayingTimeout, ProgressTimeout, ControlRejected };
+const char *direct_stage_name(DirectStage);
+const char *direct_error_name(DirectError);
+struct DirectSnapshot {
+    DirectState state=DirectState::Idle; double position=0,duration=0;unsigned width=0,height=0;
+    DirectStage stage=DirectStage::Idle;DirectError error=DirectError::None;int64_t native_result=0;
+    uint64_t callbacks=0,relay_requests=0,upstream_fetches=0,downloaded_bytes=0,relay_failures=0;
+    int last_callback=-1;int64_t last_callback_value=0;
+};
 const char *direct_state_name(DirectState state);
 struct DirectReply { int status=400; std::string body,type="text/parameters"; };
 bool direct_uri_valid(const std::string& uri);

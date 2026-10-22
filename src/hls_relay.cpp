@@ -11,7 +11,20 @@
 #include <cstdio>
 #include <algorithm>
 #include <chrono>
+#include <cerrno>
 static const size_t manifest_limit=262144,segment_limit=8*1024*1024;
+void HlsRelay::trace(const char *stage,int code,long http){
+    if(diagnostic_records_.load()<64&&diagnostic_records_.fetch_add(1)<64)
+        fprintf(stderr,"[hls-relay] stage=%s code=%d http=%ld\n",stage,code,http);
+}
+std::string HlsRelay::resource_path(size_t index,const std::string& uri,bool manifest) const {
+    std::string suffix=".bin";
+    const auto path=uri.substr(0,uri.find('?'));
+    for(const char *known:{".ts",".m4s",".mp4",".aac"}){
+        const size_t n=strlen(known);if(path.size()>=n&&path.compare(path.size()-n,n,known)==0){suffix=known;break;}}
+    if(manifest)suffix=".m3u8";
+    return "/"+token_+"/"+std::to_string(index)+suffix;
+}
 struct WriteBuffer {std::string data;size_t limit;};
 static size_t write_data(char *data,size_t size,size_t n,void *ptr){auto& b=*static_cast<WriteBuffer*>(ptr);if(n&&size>SIZE_MAX/n)return 0;const size_t count=size*n;if(count>b.limit-b.data.size())return 0;b.data.append(data,count);return count;}
 bool HlsRelay::address_allowed(uint32_t address) const {
@@ -24,7 +37,7 @@ bool HlsRelay::address_allowed(uint32_t address) const {
 static curl_socket_t open_socket(void *ctx,curlsocktype purpose,struct curl_sockaddr *address){
     if(purpose!=CURLSOCKTYPE_IPCXN||address->family!=AF_INET)return CURL_SOCKET_BAD;
     auto *relay=static_cast<HlsRelay*>(ctx);auto *a=reinterpret_cast<sockaddr_in*>(&address->addr);
-    if(!relay->address_allowed(a->sin_addr.s_addr))return CURL_SOCKET_BAD;
+    if(!relay->address_allowed(a->sin_addr.s_addr)){relay->trace("policy-denied",0);return CURL_SOCKET_BAD;}
     return socket(address->family,address->socktype,address->protocol);
 }
 static int progress(void *ctx,curl_off_t,curl_off_t,curl_off_t,curl_off_t){return !static_cast<std::atomic<bool>*>(ctx)->load();}
@@ -38,7 +51,7 @@ HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest){
     for(int redirect=0;redirect<=3&&running_;++redirect){
         const long remaining=12000-long(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-began).count());
         if(remaining<=0){result.status=504;break;}
-        if(!direct_uri_valid(current))break;
+        if(!direct_uri_valid(current)){trace("invalid-url",0);break;}
         CURL *curl=curl_easy_init();if(!curl)break;WriteBuffer buffer;buffer.limit=std::min(limit,segment_limit);
         curl_easy_setopt(curl,CURLOPT_URL,current.c_str());curl_easy_setopt(curl,CURLOPT_PROTOCOLS_STR,"http,https");
         curl_easy_setopt(curl,CURLOPT_PROXY,"");curl_easy_setopt(curl,CURLOPT_NETRC,CURL_NETRC_IGNORED);
@@ -56,8 +69,8 @@ HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest){
         auto code=curl_easy_perform(curl);long status=0;curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);
         char *location=nullptr,*type=nullptr;curl_easy_getinfo(curl,CURLINFO_REDIRECT_URL,&location);curl_easy_getinfo(curl,CURLINFO_CONTENT_TYPE,&type);
         std::string next=location?location:"";result.type=type?type:"application/octet-stream";
-        curl_easy_cleanup(curl);++requests;
-        if(code!=CURLE_OK){fprintf(stderr,"[hls-relay] fetch error=%d http=%ld\n",int(code),status);result.status=code==CURLE_OPERATION_TIMEDOUT?504:502;break;}
+        curl_easy_cleanup(curl);++requests;trace(manifest?"manifest-fetch":"segment-fetch",int(code),status);
+        if(code!=CURLE_OK){result.status=code==CURLE_OPERATION_TIMEDOUT?504:502;break;}
         if(status>=300&&status<400&&!next.empty()){current=resolve(current,next);continue;}
         if(status!=200){result.status=status==404?404:502;break;}
         result.status=200;result.data.swap(buffer.data);result.url=current;bytes+=result.data.size();return result;
@@ -70,7 +83,8 @@ std::string HlsRelay::register_url(const std::string& uri,bool manifest){
     std::lock_guard<std::mutex> lock(mutex_);auto i=std::find(resources_.begin(),resources_.end(),uri);
     if(i==resources_.end()){size_t total=uri.size();for(const auto& item:resources_)total+=item.size();if(resources_.size()>=4096||total>2097152)return {};resources_.push_back(uri);manifests_.push_back(manifest);i=resources_.end()-1;}
     if(manifest)manifests_[size_t(i-resources_.begin())]=true;
-    return "http://127.0.0.1:"+std::to_string(port_)+"/"+token_+"/"+std::to_string(i-resources_.begin());
+    const size_t index=size_t(i-resources_.begin());
+    return "http://127.0.0.1:"+std::to_string(port_)+resource_path(index,uri,manifests_[index]);
 }
 std::string HlsRelay::rewrite(const std::string& input,const std::string& base){
     if(input.size()>manifest_limit||input.compare(0,7,"#EXTM3U")!=0)return {};
@@ -89,32 +103,71 @@ std::string HlsRelay::rewrite(const std::string& input,const std::string& base){
 }
 static bool send_all(int fd,const std::string& data){size_t sent=0;while(sent<data.size()){auto n=send(fd,data.data()+sent,data.size()-sent,MSG_NOSIGNAL);if(n<=0)return false;sent+=size_t(n);}return true;}
 void HlsRelay::serve(){
-    while(running_){int fd=accept(listener_,nullptr,nullptr);if(fd<0)break;{std::lock_guard<std::mutex> lock(clients_mutex_);clients_.push_back(fd);}timeval timeout={2,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
-        std::string request;char buffer[1024];while(request.find("\r\n\r\n")==std::string::npos&&request.size()<4096){auto n=recv(fd,buffer,sizeof(buffer),0);if(n<=0)break;request.append(buffer,size_t(n));}
-        HlsFetch response;std::string target;std::istringstream header(request);std::string method;header>>method>>target;
-        const std::string prefix="/"+token_+"/";
-        if(method=="GET"&&target.compare(0,prefix.size(),prefix)==0&&target.size()<=prefix.size()+4){
-            auto id=target.substr(prefix.size());if(!id.empty()&&id.find_first_not_of("0123456789")==std::string::npos){size_t index=size_t(strtoul(id.c_str(),nullptr,10));std::string url;bool manifest=false;
-                {std::lock_guard<std::mutex> lock(mutex_);if(index<resources_.size()){url=resources_[index];manifest=manifests_[index];}}
-                if(!url.empty()){response=fetch(url,manifest?manifest_limit:segment_limit,manifest);if(response.status==200&&(response.data.compare(0,7,"#EXTM3U")==0||response.type.find("mpegurl")!=std::string::npos)){response.data=rewrite(response.data,response.url);response.type="application/vnd.apple.mpegurl";if(response.data.empty())response.status=422;}}
+    while(running_){
+        int fd=accept(listener_,nullptr,nullptr);if(fd<0)break;
+        {std::lock_guard<std::mutex> lock(clients_mutex_);clients_.push_back(fd);}
+        timeval timeout={2,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
+        std::string request;char buffer[1024];
+        while(request.find("\r\n\r\n")==std::string::npos&&request.size()<4096){auto n=recv(fd,buffer,std::min(sizeof(buffer),4096-request.size()),0);if(n<=0)break;request.append(buffer,size_t(n));}
+        ++incoming_requests;
+        HlsFetch response;response.status=404;std::string target,method;std::istringstream header(request);header>>method>>target;
+        const std::string prefix="/"+token_+"/";bool manifest=false;long resource=-1;
+        if(request.find("\r\n\r\n")==std::string::npos)response.status=request.size()>=4096?431:400;
+        else if((method=="GET"||method=="HEAD")&&target.compare(0,prefix.size(),prefix)==0){
+            const auto tail=target.substr(prefix.size());const auto dot=tail.find('.');const auto id=tail.substr(0,dot);
+            if(!id.empty()&&id.size()<=4&&id.find_first_not_of("0123456789")==std::string::npos){
+                const size_t index=size_t(strtoul(id.c_str(),nullptr,10));std::string url;
+                {std::lock_guard<std::mutex> lock(mutex_);
+                    if(index<resources_.size()&&target==resource_path(index,resources_[index],manifests_[index])){
+                        url=resources_[index];manifest=manifests_[index];resource=long(index);}}
+                if(!url.empty()){
+                    response=fetch(url,manifest?manifest_limit:segment_limit,manifest);
+                    if(response.status==200&&(manifest||response.data.compare(0,7,"#EXTM3U")==0||response.type.find("mpegurl")!=std::string::npos)){
+                        response.data=rewrite(response.data,response.url);response.type="application/vnd.apple.mpegurl";
+                        if(response.data.empty()){response.status=422;trace("manifest-invalid",0);++failures;}
+                    }else if(response.status==200){
+                        // Windows may label .ts files as text; native demuxers need a media MIME type.
+                        if(tail.size()>=3&&tail.compare(tail.size()-3,3,".ts")==0)response.type="video/mp2t";
+                        else if((tail.size()>=4&&tail.compare(tail.size()-4,4,".mp4")==0)||(tail.size()>=4&&tail.compare(tail.size()-4,4,".m4s")==0))response.type="video/mp4";
+                        else if(tail.size()>=4&&tail.compare(tail.size()-4,4,".aac")==0)response.type="audio/aac";
+                        else response.type="application/octet-stream";
+                    }
+                }
             }
-        }else response.status=404;
+        }
         if(response.status!=200)response.data.clear();
-        // No URL, cookie, origin headers or credentials are exposed by the relay.
-        std::string wire="HTTP/1.1 "+std::to_string(response.status)+" Result\r\nConnection: close\r\nContent-Type: "+(response.type.find_first_of("\r\n")==std::string::npos?response.type:"application/octet-stream")+"\r\nContent-Length: "+std::to_string(response.data.size())+"\r\n\r\n";
-        send_all(fd,wire);send_all(fd,response.data);{std::lock_guard<std::mutex> lock(clients_mutex_);clients_.erase(std::remove(clients_.begin(),clients_.end(),fd),clients_.end());close(fd);}
+        const char *label=method=="GET"?"GET":method=="HEAD"?"HEAD":"other";
+        if(diagnostic_records_.load()<64&&diagnostic_records_.fetch_add(1)<64)
+            fprintf(stderr,"[hls-relay] request=%s resource=%ld manifest=%d http=%d bytes=%zu\n",label,resource,int(manifest),response.status,response.data.size());
+        std::string wire="HTTP/1.1 "+std::to_string(response.status)+" Result\r\nConnection: close\r\nContent-Type: "+(response.type.empty()?"application/octet-stream":response.type)+"\r\nContent-Length: "+std::to_string(response.data.size())+"\r\n\r\n";
+        send_all(fd,wire);if(method!="HEAD")send_all(fd,response.data);
+        {std::lock_guard<std::mutex> lock(clients_mutex_);clients_.erase(std::remove(clients_.begin(),clients_.end(),fd),clients_.end());close(fd);}
     }
 }
 std::string HlsRelay::start(const std::string& uri){
-    stop();if(!direct_uri_valid(uri))return {};static std::once_flag init;std::call_once(init,[]{curl_global_init(CURL_GLOBAL_DEFAULT);});
-    const char *lan=getenv("UXAIR_DIRECT_LAN");allowed_lan_=lan?lan:"";unsigned char secret[16];if(RAND_bytes(secret,sizeof(secret))!=1)return {};
+    stop();diagnostic_records_=0;bytes=requests=failures=incoming_requests=0;
+    if(!direct_uri_valid(uri)){trace("start-invalid-url",0);return {};}
+    static std::once_flag init;static CURLcode initialized=CURLE_FAILED_INIT;
+    std::call_once(init,[]{initialized=curl_global_init(CURL_GLOBAL_DEFAULT);});
+    if(initialized!=CURLE_OK){trace("curl-initialize",int(initialized));return {};}
+    const char *lan=getenv("UXAIR_DIRECT_LAN");allowed_lan_=lan?lan:"";
+    trace("start-lan-exception",allowed_lan_.empty()?0:1);
+    unsigned char secret[16];const int random=RAND_bytes(secret,sizeof(secret));
+    if(random!=1){trace("random",random);return {};}
     token_.clear();const char hex[]="0123456789abcdef";for(auto c:secret){token_+=hex[c>>4];token_+=hex[c&15];}
-    listener_=socket(AF_INET,SOCK_STREAM,0);if(listener_<0)return {};sockaddr_in a={};a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
-    if(::bind(listener_.load(),reinterpret_cast<sockaddr*>(&a),sizeof(a))||::listen(listener_.load(),4)){stop();return {};}
-    socklen_t length=sizeof(a);getsockname(listener_,reinterpret_cast<sockaddr*>(&a),&length);port_=ntohs(a.sin_port);
-    running_=true;bytes=requests=failures=0;const auto local=register_url(uri,true);try{for(int i=0;i<2;++i)workers_.emplace_back(&HlsRelay::serve,this);}catch(...){stop();return {};}return local;
+    listener_=socket(AF_INET,SOCK_STREAM,0);if(listener_<0){trace("socket",errno);return {};}
+    sockaddr_in a={};a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    if(::bind(listener_.load(),reinterpret_cast<sockaddr*>(&a),sizeof(a))){trace("bind",errno);stop();return {};}
+    if(::listen(listener_.load(),4)){trace("listen",errno);stop();return {};}
+    socklen_t length=sizeof(a);
+    if(getsockname(listener_,reinterpret_cast<sockaddr*>(&a),&length)){trace("socket-name",errno);stop();return {};}
+    port_=ntohs(a.sin_port);running_=true;
+    const auto local=register_url(uri,true);if(local.empty()){trace("catalog",0);stop();return {};}
+    try{for(int i=0;i<2;++i)workers_.emplace_back(&HlsRelay::serve,this);}catch(...){trace("workers",0);stop();return {};}
+    trace("listening-port",int(port_));return local;
 }
 void HlsRelay::stop(){
+    const bool active=listener_.load()>=0||!workers_.empty();
     running_=false;
     // Keep the listening descriptor alive until accept workers have exited.
     // Closing it first could let an unrelated RAOP socket reuse the descriptor.
@@ -122,5 +175,7 @@ void HlsRelay::stop(){
     {std::lock_guard<std::mutex> lock(clients_mutex_);for(int client:clients_)shutdown(client,SHUT_RDWR);}
     for(auto& worker:workers_)if(worker.joinable())worker.join();workers_.clear();
     fd=listener_.exchange(-1);if(fd>=0)close(fd);
+    if(active)fprintf(stderr,"[hls-relay] stage=stopped native_requests=%llu upstream_fetches=%llu bytes=%llu failures=%llu\n",
+        (unsigned long long)incoming_requests.load(),(unsigned long long)requests.load(),(unsigned long long)bytes.load(),(unsigned long long)failures.load());
     std::lock_guard<std::mutex> lock(mutex_);resources_.clear();manifests_.clear();
 }

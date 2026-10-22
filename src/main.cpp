@@ -265,7 +265,10 @@ int main() {
             const auto direct_status=receiver.direct.snapshot();
             const char *direct_states[]={"Idle","Loading","Playing","Paused","Ended","Error"};
             rows.push_back(UiRow("Direct Video",direct_states[int(direct_status.state)],
-                "Native HLS "+std::to_string(direct_status.width)+"x"+std::to_string(direct_status.height)+" / "+duration_text(uint64_t(std::max(0.0,direct_status.position)*1000))+" of "+duration_text(uint64_t(std::max(0.0,direct_status.duration)*1000))+"; discovery disabled; hardware verification required"));
+                "Native HLS "+std::to_string(direct_status.width)+"x"+std::to_string(direct_status.height)+" / "+duration_text(uint64_t(std::max(0.0,direct_status.position)*1000))+" of "+duration_text(uint64_t(std::max(0.0,direct_status.duration)*1000))+"; stage "+direct_stage_name(direct_status.stage)+" / "+direct_error_name(direct_status.error)));
+
+            rows.push_back(UiRow("Direct native / relay",std::to_string(direct_status.callbacks)+" callbacks / "+std::to_string(direct_status.relay_requests)+" requests",
+                "Upstream "+std::to_string(direct_status.upstream_fetches)+"; bytes "+std::to_string(direct_status.downloaded_bytes)+"; failures "+std::to_string(direct_status.relay_failures)+"; result "+std::to_string(direct_status.native_result)));
 
             rows.push_back(UiRow("On-screen overlay",diagnostics_mode_name(settings.diagnostics),"Off, Compact or Detailed"));
             std::string resolution=observed_width?std::to_string(observed_width)+" x "+std::to_string(observed_height):"Awaiting SPS";
@@ -443,15 +446,18 @@ int main() {
         receiver.direct.check_timeout(now/1000000);
         DirectCommand direct_command;
         if(receiver.direct.take(direct_command)) {
+            const char *commands[]={"play","pause","resume","seek","stop"};
+            fprintf(stderr,"[direct-player] dequeued command=%s\n",commands[int(direct_command.kind)]);
             if(direct_command.kind==DirectCommandKind::Play) {
-                if(receiver.direct_busy||direct_open){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);}
-                else {receiver.direct_active=true; // Reserve the decoder before synchronous firmware Load.
+                if(receiver.direct_busy||direct_open){DirectSnapshot failure;failure.state=DirectState::Error;failure.stage=DirectStage::Dequeued;failure.error=DirectError::Busy;receiver.direct.publish(failure);}
+                else {DirectSnapshot starting;starting.state=DirectState::Loading;starting.stage=DirectStage::Dequeued;receiver.direct.publish(starting);
+                    receiver.direct_active=true; // Reserve the decoder before synchronous firmware Load.
                     direct_open=direct_player.open(direct_command.uri,direct_command.position,now,&receiver.direct,direct_command.position_seconds);
                     direct_days.clear();direct_return_page=page;ui_visible=false;direct_started=direct_tick=now;direct_play_ms=0;direct_previous=DirectState::Idle;direct_started_utc=uint64_t(time(nullptr));receiver.direct_active=direct_open;
-                    if(!direct_open){direct_player.close();ui_visible=true;last_ui=0;
-                        DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);
+                    if(!direct_open){const auto failure=direct_player.snapshot();direct_player.close();ui_visible=true;last_ui=0;
+                        receiver.direct.publish(failure);
                         ++usage.session_errors;save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;receiver.show("Direct Video failed (experimental)");}}
-            } else if(direct_open&&direct_command.kind!=DirectCommandKind::Stop&&!direct_player.control(direct_command)){DirectSnapshot failure;failure.state=DirectState::Error;receiver.direct.publish(failure);direct_player.close();direct_open=false;}
+            } else if(direct_open&&direct_command.kind!=DirectCommandKind::Stop&&!direct_player.control(direct_command)){receiver.direct.publish(direct_player.snapshot());direct_open=false;}
             if(direct_command.kind==DirectCommandKind::Stop)direct_open=false;
         }
         if(receiver.direct_active) {
@@ -470,7 +476,7 @@ int main() {
                     summary.started_utc=direct_started_utc;summary.duration_ms=direct_play_ms;
                     summary.width=status.width;summary.height=status.height;for(const auto& day:direct_days)usage.record_direct_day(day.first,day.second);
                     usage.record(summary,false);save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;}
-                DirectSnapshot terminal;terminal.state=direct_failed?DirectState::Error:DirectState::Ended;receiver.direct.publish(terminal); // Publish once; do not erase a subsequent sender play command.
+                DirectSnapshot terminal=direct_failed?(status.state==DirectState::Error?status:receiver.direct.snapshot()):status;terminal.state=direct_failed?DirectState::Error:DirectState::Ended;receiver.direct.publish(terminal); // Publish once; do not erase a subsequent sender play command.
                 if(direct_failed){++usage.session_errors;save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;}
                 page=direct_return_page;nav.page=page;ui_visible=true;last_ui=0;receiver.show(direct_failed?"Direct Video failed (experimental)":"Direct Video stopped");
                 if(action==Action::Exit)break;

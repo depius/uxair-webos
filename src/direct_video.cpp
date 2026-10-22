@@ -10,6 +10,23 @@
 #include <unistd.h>
 #include <poll.h>
 #include <chrono>
+const char *direct_stage_name(DirectStage s) {
+    static const char *names[]={"idle","queued","dequeued","relay","acb-create","acb-initialize","construct","media-id","load","await-load","sink","loaded-state","window","seek","play","await-playing","playing","paused","video-info","stopped"};
+    const unsigned n=unsigned(s);return n<sizeof(names)/sizeof(*names)?names[n]:"unknown";
+}
+const char *direct_error_name(DirectError e) {
+    static const char *names[]={"none","busy","relay-start","payload","acb-create","acb-initialize","construct","media-id","load-rejected","native-error","sink","seek","play-rejected","load-timeout","duration-timeout","playing-timeout","progress-timeout","control-rejected"};
+    const unsigned n=unsigned(e);return n<sizeof(names)/sizeof(*names)?names[n]:"unknown";
+}
+static std::string diagnostic_plist(const DirectSnapshot& s) {
+    std::ostringstream out;
+    out<<"<key>uxairStage</key><string>"<<direct_stage_name(s.stage)<<"</string><key>uxairError</key><string>"<<direct_error_name(s.error)<<"</string>";
+    out<<"<key>uxairNativeResult</key><integer>"<<s.native_result<<"</integer><key>uxairCallbackCount</key><integer>"<<s.callbacks<<"</integer>";
+    out<<"<key>uxairLastCallback</key><integer>"<<s.last_callback<<"</integer><key>uxairLastCallbackValue</key><integer>"<<s.last_callback_value<<"</integer>";
+    out<<"<key>uxairRelayRequests</key><integer>"<<s.relay_requests<<"</integer><key>uxairUpstreamFetches</key><integer>"<<s.upstream_fetches<<"</integer>";
+    out<<"<key>uxairDownloadedBytes</key><integer>"<<s.downloaded_bytes<<"</integer><key>uxairRelayFailures</key><integer>"<<s.relay_failures<<"</integer>";
+    return out.str();
+}
 static bool number(const std::string& text,double& value) {
     if(text.empty()||text.size()>32)return false;char *end=nullptr;value=strtod(text.c_str(),&end);
     return end==text.c_str()+text.size()&&std::isfinite(value)&&value>=0&&value<=31536000;
@@ -107,7 +124,7 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         if(busy||snapshot_.state==DirectState::Loading||snapshot_.state==DirectState::Playing||snapshot_.state==DirectState::Paused){reply.status=409;return reply;}
         if(!play_body(type.substr(0,type.find(';')),body,command.uri,command.position,command.position_seconds))return reply;
         if(!commands_.empty()){reply.status=503;return reply;}
-        command.kind=DirectCommandKind::Play;owner_=owner;snapshot_=DirectSnapshot();snapshot_.state=DirectState::Loading;
+        command.kind=DirectCommandKind::Play;owner_=owner;snapshot_=DirectSnapshot();snapshot_.state=DirectState::Loading;snapshot_.stage=DirectStage::Queued;
         if(reverse_running_){events_.push_back("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>category</key><string>video</string><key>state</key><string>loading</string></dict></plist>");event_cv_.notify_all();}
     } else if(method=="POST"&&target=="/stop") {commands_.clear();}
     else if(method=="POST"&&target.compare(0,6,"/rate?")==0){
@@ -116,11 +133,14 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
     } else if(method=="POST"&&target.compare(0,16,"/scrub?position=")==0) {
         if(!number(target.substr(16),command.position))return reply;command.kind=DirectCommandKind::Seek;
     } else if(method=="GET"&&(target=="/scrub"||target=="/playback-info")) {
-        if(snapshot_.state==DirectState::Error){reply.status=503;return reply;}
+        if(snapshot_.state==DirectState::Error){reply.status=503;reply.type="text/x-apple-plist+xml";
+            reply.body="<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>"+diagnostic_plist(snapshot_)+"</dict></plist>";return reply;}
         std::ostringstream out;
         if(target=="/scrub")out<<"duration: "<<snapshot_.duration<<"\nposition: "<<snapshot_.position<<"\n";
         else {reply.type="text/x-apple-plist+xml";out<<"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>duration</key><real>"<<snapshot_.duration<<"</real><key>position</key><real>"<<snapshot_.position<<"</real><key>rate</key><real>"<<(snapshot_.state==DirectState::Playing?1:0)<<"</real><key>readyToPlay</key><"<<(snapshot_.state==DirectState::Playing||snapshot_.state==DirectState::Paused?"true":"false")<<"/><key>playbackBufferEmpty</key><"<<(snapshot_.state==DirectState::Loading?"true":"false")<<"/><key>playbackBufferFull</key><false/><key>playbackLikelyToKeepUp</key><"<<(snapshot_.state==DirectState::Playing?"true":"false")<<"/><key>loadedTimeRanges</key><array/><key>seekableTimeRanges</key><array>"<<(snapshot_.duration>0?"<dict><key>start</key><real>0</real><key>duration</key><real>"+std::to_string(snapshot_.duration)+"</real></dict>":"")<<"</array></dict></plist>";}
-        reply.body=out.str();reply.status=200;return reply;
+        reply.body=out.str();
+        if(target=="/playback-info"){const auto end=reply.body.rfind("</dict></plist>");if(end!=std::string::npos)reply.body.insert(end,diagnostic_plist(snapshot_));}
+        reply.status=200;return reply;
     } else {reply.status=501;return reply;}
     if(command.kind!=DirectCommandKind::Play&&command.kind!=DirectCommandKind::Stop&&(snapshot_.state==DirectState::Idle||snapshot_.state==DirectState::Error||snapshot_.state==DirectState::Ended)){reply.status=409;return reply;}
     if(commands_.size()>=8){reply.status=503;return reply;}commands_.push_back(command);reply.status=200;return reply;
@@ -130,7 +150,7 @@ const char *direct_state_name(DirectState s){switch(s){case DirectState::Loading
 void DirectSession::publish(DirectSnapshot s){
     std::lock_guard<std::mutex> l(mutex_);
     if(!std::isfinite(s.position)||s.position<0)s.position=0;if(!std::isfinite(s.duration)||s.duration<0)s.duration=0;
-    if(reverse_running_&&s.state!=snapshot_.state){std::string event="<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>category</key><string>video</string><key>state</key><string>";event+=direct_state_name(s.state);event+="</string>";if(s.state==DirectState::Error)event+="<key>reason</key><string>error</string>";event+="</dict></plist>";if(events_.size()>=16)events_.pop_front();events_.push_back(event);event_cv_.notify_all();}
+    if(reverse_running_&&s.state!=snapshot_.state){std::string event="<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>category</key><string>video</string><key>state</key><string>";event+=direct_state_name(s.state);event+="</string>";if(s.state==DirectState::Error)event+="<key>reason</key><string>error</string>"+diagnostic_plist(s);event+="</dict></plist>";if(events_.size()>=16)events_.pop_front();events_.push_back(event);event_cv_.notify_all();}
     snapshot_=s;if(s.state==DirectState::Idle||s.state==DirectState::Ended||s.state==DirectState::Error){if(!reverse_running_)owner_.clear();commands_.clear();}
 }
 DirectSnapshot DirectSession::snapshot(){std::lock_guard<std::mutex> l(mutex_);return snapshot_;}

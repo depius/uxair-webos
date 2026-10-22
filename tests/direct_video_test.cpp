@@ -45,7 +45,10 @@ int main(){
     assert(session.take(c)&&c.position==6.5&&c.position_seconds);session.reset();
     assert(send("POST","/play","Content-Location: https://example.com/x\r\nStart-Position-Seconds: nan\r\n")==400);
     assert(session.request("session-A","POST","/play","application/x-apple-binary-plist","bplistBAD").status==400);
-    DirectSnapshot error;error.state=DirectState::Error;session.publish(error);assert(send("GET","/playback-info")==503);session.reset();
+    DirectSnapshot error;error.state=DirectState::Error;error.stage=DirectStage::AwaitLoad;error.error=DirectError::LoadTimeout;error.callbacks=7;error.native_result=1;
+    session.publish(error);assert(send("GET","/playback-info")==503);
+    auto feedback=session.request("session-A","GET","/playback-info","","");plist_t failure=nullptr;plist_from_xml(feedback.body.data(),uint32_t(feedback.body.size()),&failure);assert(failure&&plist_dict_get_item(failure,"uxairError"));plist_free(failure);
+    assert(feedback.body.find("load-timeout")!=std::string::npos&&feedback.body.find("PRIVATE")==std::string::npos);session.reset();
     // Callback/main-thread publication and cancellation have finite CI timeouts.
     std::thread callback([&]{for(int i=0;i<1000;++i)send("GET","/playback-info");});
     for(int i=0;i<1000;++i){session.publish(playing);session.snapshot();}callback.join();

@@ -7,6 +7,8 @@ import pathlib
 import subprocess
 import tempfile
 import time
+import threading
+import urllib.parse
 
 
 def main():
@@ -26,8 +28,18 @@ def main():
         (root / 'master.m3u8').write_text('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=1280x720,CODECS="avc1.42c01f,mp4a.40.2"\nmedia.m3u8\n')
         (root / 'index.html').write_text('<!doctype html><meta name="viewport" content="width=device-width"><title>UxAir HLS fixture</title><h1>Unprotected H.264/AAC HLS</h1><video controls playsinline x-webkit-airplay="allow" width="100%" src="master.m3u8"></video>')
         class Handler(http.server.SimpleHTTPRequestHandler):
+            records = 0
+            records_lock = threading.Lock()
             def log_message(self, *unused):
                 pass  # Never print URL query strings.
+            def log_request(self, code='-', size='-'):
+                path = urllib.parse.urlsplit(self.path).path
+                role = 'master' if path == '/master.m3u8' else 'media' if path == '/media.m3u8' else 'segment' if path.endswith('.ts') else 'other'
+                with Handler.records_lock:
+                    if Handler.records >= 64: return
+                    Handler.records += 1
+                method = self.command if self.command in ('GET', 'HEAD') else 'other'
+                print(f'[fixture] request={method} role={role} http={int(code)}', flush=True)
             def do_GET(self):
                 if self.path == '/redirect':
                     self.send_response(302)

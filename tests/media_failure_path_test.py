@@ -19,4 +19,7 @@ assert cleanup.index('usage.record(summary,false)') < cleanup.index('if(action==
 assert 'action=Action::None;' in cleanup
 assert 'direct_command.kind!=DirectCommandKind::Stop&&!direct_player.control' in main
 assert 'direct_player.close();ui_visible=true;last_ui=0;' in main
+assert 'const auto failure=direct_player.snapshot();direct_player.close();' in main
+assert 'terminal=direct_failed?(status.state==DirectState::Error?status:receiver.direct.snapshot()):status' in main
+assert '[direct-player] dequeued command=%s' in main
 print('PASS: failed media startup is cleaned up and surfaced without terminating the SDL loop')

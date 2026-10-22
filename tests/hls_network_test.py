@@ -24,8 +24,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if self.path == "/missing.ts": self.send_error(404); return
         if self.path == "/slow": time.sleep(13)
-        data = b"x" * 1024 if self.path == "/large" else b"#EXTM3U\n#EXT-X-ENDLIST\n"
-        self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers()
+        if self.path.startswith('/master.m3u8'):
+            data = b'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=900000\nmedia.m3u8?token=PRIVATE\n'
+        elif self.path.startswith('/media.m3u8'):
+            data = b'#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nsegment.ts?token=PRIVATE\n#EXT-X-ENDLIST\n'
+        elif self.path.startswith('/segment.ts'): data = bytes([0x47]) * 188
+        elif self.path == '/invalid.m3u8': data = b'not a playlist'
+        else: data = b"x" * 1024 if self.path == "/large" else b"#EXTM3U\n#EXT-X-ENDLIST\n"
+        self.send_response(200); self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Type", "text/vnd.trolltech.linguist" if self.path.startswith('/segment.ts') else "application/octet-stream")
+        self.end_headers()
         try: self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError): pass
 with tempfile.TemporaryDirectory() as folder:
