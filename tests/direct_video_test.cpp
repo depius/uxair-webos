@@ -63,6 +63,8 @@ int main(){
     assert(session.request("session-A","POST","/action","text/x-apple-plist+xml",std::string(xml,length)).status==200);free(xml);
     assert(pending.wait_for(std::chrono::seconds(1))==std::future_status::ready&&pending.get()==manifest);
     assert(send("GET","/getProperty?duration")==200);assert(send("PUT","/setProperty?notImplemented")==501);
+    DirectSnapshot ended;ended.state=DirectState::Ended;session.publish(ended);assert(read_event().find("stopped")!=std::string::npos);
+    assert(send("POST","/play",body)==200);assert(session.take(c)&&c.kind==DirectCommandKind::Play);
     session.connection_lost(999);assert(!session.take(c));session.connection_lost(123);assert(session.take(c)&&c.kind==DirectCommandKind::Stop);
     session.reset();close(sockets[0]);close(sockets[1]);
     puts("PASS: direct URL/plist parsing, session ownership, controls, bounded queue and concurrent snapshots");

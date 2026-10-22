@@ -30,6 +30,8 @@ Pinned UxPlay remains 9f3c2bbc (1.74). Its reverse EVENT ownership, FCUP schema 
 
 Install the new `.dev_1.2.0_arm.ipk` with the configured `b7` ares device. Do not uninstall it or reset state. Keep production UxAir idle while testing the shared TV decoder.
 
+PC prerequisites: Python 3, FFmpeg with libx264/AAC in PATH, webOS ares CLI and an already configured rooted B7 SSH connection. Allow TCP 8080 only on the test LAN.
+
 On the PC, in the PR checkout (replace 192.168.1.10 and 192.168.1.20 with PC and TV addresses):
 
 ```sh
@@ -40,7 +42,14 @@ ares-launch -d b7 --close com.github.depius.uxair.dev
 ssh root@192.168.1.20 'sh -s -- 192.168.1.10' < tools/run-direct-b7.sh
 ```
 
-On Windows use `python` if `python3` is unavailable. For PowerShell without input redirection, copy the launcher to `/tmp/uxair-direct-test.sh` with `scp`, then run `ssh root@TV-IP 'sh /tmp/uxair-direct-test.sh PC-IP'`. This writes only a temporary test script, not firmware or production state. The foreground SSH terminal may stay quiet because the app writes its own log. Ctrl-C ends the test receiver.
+On Windows use `python` if `python3` is unavailable. Replace the final SSH command above with these exact PowerShell commands:
+
+```powershell
+scp tools/run-direct-b7.sh root@192.168.1.20:/tmp/uxair-direct-test.sh
+ssh root@192.168.1.20 'sh /tmp/uxair-direct-test.sh 192.168.1.10'
+```
+
+This writes only a temporary test script, not firmware or production state. The foreground SSH terminal may stay quiet because the app writes its own log. Ctrl-C ends the test receiver.
 
 Read the ephemeral port with this safe command (pick the application root found by the launcher):
 
@@ -76,6 +85,8 @@ Do not send full logs, pairing files, URLs or packet captures containing stream 
 ```sh
 ssh root@192.168.1.20 'sh -s -- 192.168.1.10 --safari-after-native-test' < tools/run-direct-b7.sh
 ```
+
+PowerShell: `ssh root@192.168.1.20 'sh /tmp/uxair-direct-test.sh 192.168.1.10 --safari-after-native-test'`.
 
 This explicitly enables experimental direct discovery for that process; it is never the default. On iPhone Safari open `http://192.168.1.10:8080/`, use the video's AirPlay output control and choose UxAir Dev. Fullscreen alone is not a route switch. Report events, sanitized method/response sequence and any unsupported action/property names as structure/types only. If an unknown schema blocks playback, that exact redacted request structure is the only additional protocol evidence needed; no separate Apple TV is required for this experiment.
 
