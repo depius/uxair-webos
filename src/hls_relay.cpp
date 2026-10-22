@@ -110,7 +110,7 @@ std::string HlsRelay::start(const std::string& uri){
     const char *lan=getenv("UXAIR_DIRECT_LAN");allowed_lan_=lan?lan:"";unsigned char secret[16];if(RAND_bytes(secret,sizeof(secret))!=1)return {};
     token_.clear();const char hex[]="0123456789abcdef";for(auto c:secret){token_+=hex[c>>4];token_+=hex[c&15];}
     listener_=socket(AF_INET,SOCK_STREAM,0);if(listener_<0)return {};sockaddr_in a={};a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
-    if(bind(listener_,reinterpret_cast<sockaddr*>(&a),sizeof(a))||listen(listener_,4)){stop();return {};}
+    if(::bind(listener_.load(),reinterpret_cast<sockaddr*>(&a),sizeof(a))||::listen(listener_.load(),4)){stop();return {};}
     socklen_t length=sizeof(a);getsockname(listener_,reinterpret_cast<sockaddr*>(&a),&length);port_=ntohs(a.sin_port);
     running_=true;bytes=requests=failures=0;const auto local=register_url(uri,true);thread_=std::thread(&HlsRelay::serve,this);return local;
 }
