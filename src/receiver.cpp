@@ -296,7 +296,9 @@ extern "C" int uxair_direct_request(void *context,const char *owner,const char *
     if(*size){*output=static_cast<char*>(malloc(size_t(*size)));if(!*output){*size=0;return 500;}memcpy(*output,response.body.data(),size_t(*size));}
     *mime=response.type=="text/parameters"?"text/parameters":"text/x-apple-plist+xml";
     const char *route=target&&!strcmp(target,"/play")?"play":target&&!strcmp(target,"/stop")?"stop":target&&!strcmp(target,"/action")?"action":target&&!strcmp(target,"/playback-info")?"feedback":target&&!strncmp(target,"/scrub",6)?"scrub":target&&!strncmp(target,"/rate",5)?"rate":"property";
-    fprintf(stderr,"[direct-protocol] route=%s response=%d body-bytes=%d\n",route,response.status,length);
+    static std::atomic<unsigned> records{0};
+    if(records.load()<192 && records.fetch_add(1)<192)
+        fprintf(stderr,"[direct-protocol] route=%s response=%d body-bytes=%d\n",route,response.status,length);
     return response.status;
 }
 #endif

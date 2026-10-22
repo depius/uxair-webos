@@ -429,7 +429,7 @@ int main() {
     bool direct_open=false;int64_t direct_started=0,direct_tick=0;uint64_t direct_started_utc=0,direct_play_ms=0;
     std::map<uint32_t,uint64_t> direct_days;
     UiPage direct_return_page=page;
-    DirectState direct_previous=DirectState::Idle;
+    DirectState direct_previous=DirectState::Idle;int64_t direct_maintenance=0;
     bool running=true;
     while(running) {
         int64_t now=now_ns();
@@ -455,6 +455,7 @@ int main() {
             if(direct_command.kind==DirectCommandKind::Stop)direct_open=false;
         }
         if(receiver.direct_active) {
+            if(now-direct_maintenance>1000000000LL){rotate_log();direct_maintenance=now;}
             auto status=direct_player.tick(now);
             if(direct_previous==DirectState::Playing&&now>direct_tick){
                 uint64_t duration=uint64_t(now-direct_tick)/1000000;direct_play_ms+=duration;
