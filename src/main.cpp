@@ -458,7 +458,7 @@ int main() {
                     if(!direct_open){const auto failure=direct_player.snapshot();direct_player.close();ui_visible=true;last_ui=0;
                         receiver.direct.publish(failure);
                         ++usage.session_errors;save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;receiver.show("Direct Video failed (experimental)");}}
-            } else if(direct_open&&direct_command.kind!=DirectCommandKind::Stop&&!direct_player.control(direct_command)){receiver.direct.publish(direct_player.snapshot());direct_open=false;}
+            } else if(direct_open&&direct_command.kind!=DirectCommandKind::Stop&&!direct_player.control(direct_command)){direct_open=false;}
             if(direct_command.kind==DirectCommandKind::Stop)direct_open=false;
         }
         if(receiver.direct_active) {

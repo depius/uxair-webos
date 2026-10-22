@@ -22,4 +22,8 @@ assert 'direct_player.close();ui_visible=true;last_ui=0;' in main
 assert 'const auto failure=direct_player.snapshot();direct_player.close();' in main
 assert 'terminal=direct_failed?(status.state==DirectState::Error?status:receiver.direct.snapshot()):status' in main
 assert '[direct-player] dequeued command=%s' in main
+control_failure = main.split('!direct_player.control(direct_command)){', 1)[1].split('}', 1)[0]
+assert 'publish' not in control_failure and 'direct_open=false;' in control_failure
+# Error is published only after native cleanup: a sender retry cannot be accepted
+# during teardown and then erased by a second terminal publication.
 print('PASS: failed media startup is cleaned up and surfaced without terminating the SDL loop')
