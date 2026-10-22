@@ -445,7 +445,7 @@ int main() {
             direct_tick=now;
             if(action==Action::Back||!direct_open||status.state==DirectState::Error||status.state==DirectState::Ended) {
                 direct_player.close();receiver.direct_active=false;direct_open=false;
-                if(now>direct_started&&status.state!=DirectState::Error){SessionSummary summary;summary.kind=SessionKind::Direct;
+                if(direct_play_ms>0&&now>direct_started&&status.state!=DirectState::Error){SessionSummary summary;summary.kind=SessionKind::Direct;
                     summary.started_utc=direct_started_utc;summary.duration_ms=direct_play_ms;
                     usage.record(summary);save_usage_stats(state_dir+"/usage-v1",usage);history_dirty=true;}
                 receiver.direct.reset();last_ui=0;receiver.show("Direct Video stopped");

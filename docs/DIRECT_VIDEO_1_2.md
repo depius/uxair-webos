@@ -27,3 +27,5 @@ Primary native API evidence: https://www.webosbrew.org/webos-userland/d3/dda/Sta
 4. If native playback passes, capture a genuine Safari AirPlay Video exchange with a separate known compatible receiver on the trusted LAN. Record request methods/content types, redacted structure and event order, never PINs, credentials or signed URLs. Use this evidence to implement reverse/FCUP/session teardown before enabling advertisement on this B7.
 
 Host tests use real libplist and simulated firmware; they validate parsing, command/state ownership, queue bounds and native adapter calls, not HLS network playback. ARM build and ELF/IPK validation establish binary/package compatibility only.
+
+A ready-to-run fixture is included: `python3 tools/direct-hls-fixture.py --bind LAN-IP`. It generates 12 seconds of 720p H.264/AAC MPEG-TS HLS into a temporary directory, serves relative master/media/segment URLs and a Safari HTML5 page, then deletes all generated media when stopped. Open `http://LAN-IP:8080/` on the iPhone. `/redirect` exercises a relative HTTP redirect and `/missing.ts` a 404. This does not validate firmware playback automatically.
