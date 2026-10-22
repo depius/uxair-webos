@@ -78,6 +78,7 @@ jobs:
       - name: Verify staged ELF and package
         run: |
           python3 tools/verify-elf.py build/app | tee dist/ELF_REPORT.txt
+          python3 tools/verify-elf.py build/app direct-uri-probe | tee -a dist/ELF_REPORT.txt
           python3 tools/validate-ipk.py --development
       - name: Record source commit and package checksum
         run: |

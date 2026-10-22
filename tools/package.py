@@ -33,6 +33,8 @@ def main():
     shutil.copy2(ROOT / 'packaging/icon.png', stage / 'icon.png')
     shutil.copy2(ROOT / 'packaging/largeIcon.png', stage / 'largeIcon.png')
     shutil.copy2(ROOT / 'build/uxair', stage / 'uxair')
+    if args.development:
+        shutil.copy2(ROOT / 'build/direct-uri-probe', stage / 'direct-uri-probe')
     shutil.copy2(ROOT / 'assets/bmc-qr.bmp', stage / 'bmc-qr.bmp')
     shutil.copy2(ROOT / 'assets/bmc-icon.bmp', stage / 'bmc-icon.bmp')
     shutil.copy2(ROOT / 'assets/hls-ca.pem', stage / 'hls-ca.pem')
@@ -53,6 +55,9 @@ def main():
     strip = SDK / 'bin/arm-webos-linux-gnueabi-strip'
     subprocess.run([str(strip), str(stage / 'uxair')], check=True)
     subprocess.run(['python3', str(ROOT / 'tools/verify-elf.py'), str(stage)], check=True)
+    if args.development:
+        subprocess.run([str(strip), str(stage / 'direct-uri-probe')], check=True)
+        subprocess.run(['python3', str(ROOT / 'tools/verify-elf.py'), str(stage), 'direct-uri-probe'], check=True)
     (ROOT / 'dist').mkdir(exist_ok=True)
     subprocess.run(['ares-package', str(stage), '-o', str(ROOT / 'dist')], check=True)
     package = ROOT / 'dist' / f"{app['id']}_{app['version']}_arm.ipk"

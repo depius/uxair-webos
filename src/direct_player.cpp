@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <chrono>
 extern "C" int direct_acb_video_info(long,const char*,long*) __asm__("AcbAPI_setMediaVideoData");
+// Weak binding preserves startup on firmware without this optional method.
+extern "C" bool direct_notify_foreground(StarfishMediaAPIs*) __asm__("_ZN17StarfishMediaAPIs16notifyForegroundEv") __attribute__((weak));
 static std::mutex context_mutex;static std::map<uintptr_t,DirectPlayer*> contexts;static std::atomic<uintptr_t> next_context{1};
 static int64_t clock_ms(){return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 static void direct_acb(long,long task,long event,long app,long play,const char*){
@@ -33,7 +35,7 @@ void DirectPlayer::event(int type,int64_t value,const char* message,void *user){
     // the first of each event type (including previously ignored source/resource events).
     const bool first=type>=0&&type<64&&!(p.event_types_&(uint64_t(1)<<type));
     if(type>=0&&type<64)p.event_types_|=uint64_t(1)<<type;
-    if(first&&p.event_records_++<32)fprintf(stderr,"[direct-player] event=0x%x raw_value=%lld\n",type,(long long)value);
+    if(first&&p.event_records_++<32)fprintf(stderr,"[direct-player] event=0x%x raw_value=%lld name=%s json=%s\n",type,(long long)value,direct_native_event_name(type),direct_native_json_summary(message).c_str());
     if(p.state_==int(DirectState::Error))return;
     switch(type){
     case PF_EVENT_TYPE_STR_STATE_UPDATE__LOADCOMPLETED:p.loaded_=true;break;
@@ -50,12 +52,14 @@ void DirectPlayer::event(int type,int64_t value,const char* message,void *user){
     default:break;}
 }
 DirectPlayer::~DirectPlayer(){close();}
-bool DirectPlayer::open(const std::string& uri,double position,int64_t now,DirectSession *session,bool seconds){
+bool DirectPlayer::open(const std::string& uri,double position,int64_t now,DirectSession *session,bool seconds,DirectLoadContract contract,bool fixture_direct){
     close();state_=int(DirectState::Loading);session_=session;
     relay_.sender_manifest=session?[session](const std::string& url){return session->sender_manifest(url);}:std::function<std::string(const std::string&)>();
     begin(DirectStage::Relay);auto began=clock_ms();const auto local=relay_.start(uri);result(DirectStage::Relay,!local.empty(),began);
     if(local.empty()){fail(DirectError::RelayStart);cleanup();return false;}
-    const auto payload=direct_load_payload(local,"com.github.depius.uxair.dev",true);
+    const char *lan=getenv("UXAIR_DIRECT_LAN");
+    if(fixture_direct&&!direct_fixture_uri_valid(uri,lan?lan:"")){fail(DirectError::Payload);cleanup();return false;}
+    const auto payload=direct_load_payload(fixture_direct?uri:local,"com.github.depius.uxair.dev",!fixture_direct,contract);
     if(payload.empty()){fail(DirectError::Payload);cleanup();return false;}
     start_position_=position;start_seconds_=seconds;opened_ns_=last_progress_ns_=now;last_position_ms_=-1;
     begin(DirectStage::AcbCreate);began=clock_ms();acb_=AcbAPI_create();result(DirectStage::AcbCreate,acb_,began);
@@ -66,11 +70,22 @@ bool DirectPlayer::open(const std::string& uri,double position,int64_t now,Direc
     begin(DirectStage::Construct);began=clock_ms();
     try{api_=new StarfishMediaAPIs(nullptr);}catch(...){fail(DirectError::Construct);cleanup();return false;}
     result(DirectStage::Construct,api_!=nullptr,began);
-    begin(DirectStage::MediaId);began=clock_ms();const bool registered=AcbAPI_setMediaId(acb_,api_->getMediaID());result(DirectStage::MediaId,registered,began);
+    const char *media_id=api_->getMediaID();const size_t media_id_size=media_id?strnlen(media_id,4097):0;
+    fprintf(stderr,"[direct-player] media-id present=%d bounded=%d\n",int(media_id_size>0),int(media_id_size<=4096));
+    if(!media_id_size||media_id_size>4096){fail(DirectError::MediaId);cleanup();return false;}
+    begin(DirectStage::MediaId);began=clock_ms();const bool registered=AcbAPI_setMediaId(acb_,media_id);result(DirectStage::MediaId,registered,began);
     if(!registered){fail(DirectError::MediaId);cleanup();return false;}
     context_id_=next_context++;if(!context_id_){fail(DirectError::Construct);cleanup();return false;}
     {std::lock_guard<std::mutex> lock(context_mutex);contexts[context_id_]=this;}
+    // LG's Chromium SMP initialization explicitly notifies foreground before Load.
+    // Like that source, record the boolean without treating it as load completion.
+    began=clock_ms();fprintf(stderr,"[direct-player] foreground begin available=%d\n",int(direct_notify_foreground!=nullptr));
+    const int foreground=direct_notify_foreground?int(direct_notify_foreground(api_)):-1;
+    fprintf(stderr,"[direct-player] foreground end result=%d ms=%lld\n",foreground,(long long)(clock_ms()-began));
+    fprintf(stderr,"[direct-player] load-schema contract=%s source=%s uri=string scheme=http suffix=%s app-id=dev media-id=separate-binding fields=%s\n",
+        direct_contract_name(contract),fixture_direct?"fixture-lan":"loopback-relay",fixture_direct&&uri.find("probe.mp4")!=std::string::npos?"mp4":"m3u8",direct_native_json_summary(payload.c_str()).c_str());
     begin(DirectStage::Load);began=clock_ms();const bool accepted=api_->Load(payload.c_str(),event,reinterpret_cast<void*>(context_id_));result(DirectStage::Load,accepted,began);
+    fprintf(stderr,"[direct-player] load-return=%d readiness=await-callback network=unproven\n",int(accepted));
     if(!accepted&&state_!=int(DirectState::Error))fail(DirectError::LoadRejected);
     if(state_==int(DirectState::Error)){cleanup();return false;}
     // Match the working native initialization order: bind the window after Load.

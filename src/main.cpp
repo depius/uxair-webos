@@ -453,7 +453,7 @@ int main() {
                 if(receiver.direct_busy||direct_open){DirectSnapshot failure;failure.state=DirectState::Error;failure.stage=DirectStage::Dequeued;failure.error=DirectError::Busy;receiver.direct.publish(failure);}
                 else {DirectSnapshot starting;starting.state=DirectState::Loading;starting.stage=DirectStage::Dequeued;receiver.direct.publish(starting);
                     receiver.direct_active=true; // Reserve the decoder before synchronous firmware Load.
-                    direct_open=direct_player.open(direct_command.uri,direct_command.position,now,&receiver.direct,direct_command.position_seconds);
+                    direct_open=direct_player.open(direct_command.uri,direct_command.position,now,&receiver.direct,direct_command.position_seconds,direct_configured_contract());
                     direct_days.clear();direct_return_page=page;ui_visible=false;direct_started=direct_tick=now;direct_play_ms=0;direct_previous=DirectState::Idle;direct_started_utc=uint64_t(time(nullptr));receiver.direct_active=direct_open;
                     if(!direct_open){const auto failure=direct_player.snapshot();direct_player.close();ui_visible=true;last_ui=0;
                         receiver.direct.publish(failure);

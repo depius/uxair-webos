@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include "direct_native_diag.h"
 #include <deque>
 #include <mutex>
 #include <cstdint>
@@ -22,7 +23,7 @@ struct DirectSnapshot {
 const char *direct_state_name(DirectState state);
 struct DirectReply { int status=400; std::string body,type="text/parameters"; };
 bool direct_uri_valid(const std::string& uri);
-std::string direct_load_payload(const std::string& uri,const std::string& app,bool internal=false);
+std::string direct_load_payload(const std::string& uri,const std::string& app,bool internal=false,DirectLoadContract contract=DirectLoadContract::ArgsHls);
 class DirectSession {
     std::thread reverse_thread_;std::atomic<bool> reverse_running_{false};int reverse_fd_=-1;uintptr_t reverse_token_=0;
     std::condition_variable event_cv_;std::deque<std::string> events_;

@@ -48,9 +48,14 @@ bool direct_uri_valid(const std::string& uri) {
     return true;
 }
 static std::string escape(const std::string& s){std::string out;for(char c:s){if(c=='"'||c=='\\')out+='\\';out+=c;}return out;}
-std::string direct_load_payload(const std::string& uri,const std::string& app,bool internal) {
+std::string direct_load_payload(const std::string& uri,const std::string& app,bool internal,DirectLoadContract contract) {
     if((!direct_uri_valid(uri)&&!(internal&&uri.compare(0,17,"http://127.0.0.1:")==0&&uri.find_first_of("\r\n\"\\")==std::string::npos))||app!="com.github.depius.uxair.dev")return {};
-    return "{\"args\":[{\"uri\":\""+escape(uri)+"\",\"mediaTransportType\":\"HLS\",\"option\":{\"appId\":\""+app+"\",\"adaptiveStreaming\":{\"maxWidth\":1920,\"maxHeight\":1080},\"queryPosition\":true}}]}";
+    const std::string option="\"option\":{\"appId\":\""+app+"\",\"mediaFormat\":{\"type\":\"video\"},\"adaptiveStreaming\":{\"maxWidth\":1920,\"maxHeight\":1080},\"queryPosition\":true}";
+    if(contract==DirectLoadContract::ArgsHls)return "{\"args\":[{\"uri\":\""+escape(uri)+"\",\"mediaTransportType\":\"HLS\","+option+"}]}";
+    // The URI envelope is from uMediaClient::loadAsync, not the SMP BUFFERSTREAM
+    // schema. Expose it only as an explicit experimental choice until B7 evidence.
+    return "{\"uri\":\""+escape(uri)+"\",\"type\":\"media\",\"payload\":{\"mediaTransportType\":\""+
+        (contract==DirectLoadContract::UriHls?"HLS":"URI")+"\","+option+"}}";
 }
 static bool play_body(const std::string& type,const std::string& body,std::string& uri,double& start,bool& seconds) {
     start=0;seconds=false;if(body.empty()||body.size()>16384)return false;

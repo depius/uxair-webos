@@ -26,6 +26,76 @@ V3 stores a separate Direct coverage start, so legacy Direct lifetime totals are
 
 Pinned UxPlay remains 9f3c2bbc (1.74). Its reverse PTTH ownership, FCUP schema and controls were inspected alongside upstream 0477d47; its YouTube/GStreamer playlist implementation is not wholesale imported into this native receiver. Source: https://github.com/FDH2/UxPlay . Native API declarations: https://www.webosbrew.org/webos-userland/d3/dda/StarfishMediaAPIs_8h_source.html . LG HLS options: https://webostv.developer.lge.com/develop/guides/mediaoption-parameter . These establish API/protocol evidence, not Safari/B7 acceptance.
 
+## B7 zero-request investigation (2026-10-23)
+
+The hardware-tested 4676c97 build reached Starfish Load return 1 and 147 callbacks but made **zero native relay requests** before the unchanged 15-second deadline. This rules out the Direct queue/SDL dequeue and synchronous Load failing to return. It does not prove URI acceptance, HLS parsing, socket access or decoder readiness.
+
+The native header decodes the reported events as follows:
+
+| Event | Native name | What the observation establishes |
+| --- | --- | --- |
+| 0x0d, value 1 | INT_NUM_PROGRAM | A program-count notification; not proof of any bytes fetched |
+| 0x02 | INT_BUFFER_RANGE_INFO | Buffer-range notification; not a terminal error |
+| 0x01 | STR_STREAMING_INFO_PERI | Periodic streaming information; numeric value 0 omits its string payload |
+| 0x12 / 0x13 | INT_ERROR / STR_ERROR | Explicit error callbacks; the earlier trace did not show either |
+
+### Source-supported correction and evidence limits
+
+LG's [Chromium SMP initialization](https://github.com/webosose/chromium84-temp/blob/df04aa361ad493d47003a80ebfa3034dfc9de6e0/src/media/neva/webos/media_platform_api_webos_smp.cc) calls notifyForeground **before** Load. This was missing in DirectPlayer and is now called through a weak symbol (no new mandatory loader dependency), with availability/result/timing recorded. As in that source, its boolean is not interpreted as asynchronous readiness. Working mirroring initialization is unchanged.
+
+That source builds args[0] for **BUFFERSTREAM**. Its [URI client](https://github.com/webosose/chromium84-temp/blob/df04aa361ad493d47003a80ebfa3034dfc9de6e0/src/media/neva/webos/umediaclient_impl.cc) instead calls uMediaClient::loadAsync(uri, kMedia, options). [uMediaClient implementation](https://github.com/webosose/umediaserver/blob/master/src/media_client/uMediaClient.cpp) sends the distinct object `{uri:string,type:"media",payload:object}`. These public sources **do not establish** that B7 StarfishMediaAPIs::Load supports arbitrary URI playback or that the uMS envelope is accepted by its private implementation. The old args/HLS JSON was valid JSON but its URI contract was unverified. The two URI envelopes are explicit diagnostic alternatives, not a newly claimed correct Starfish contract.
+
+Normal Direct still defaults to args/HLS, now with notifyForeground and an explicit mediaFormat.type="video" (the [documented default](https://webostv.developer.lge.com/develop/guides/mediaoption-parameter)). HLS and URI are documented transport names; m3u8 extension and HLS MIME remain preserved. No source evidence establishes a B7 loopback prohibition, so the relay remains **loopback-only**. Namespace checks report only same/different/unavailable and do not establish which process actually handles a URI or prove a security policy.
+
+New diagnostics emit the actual serialized Load field names/types through a bounded JSON parser, contract name, source class, suffix, fixed app identity and separate media-ID binding presence. No URI, random relay token, signed query, media ID, native errorText or unknown JSON key is printed. Numeric errorCode is retained when present in error JSON. Callbacks have header-derived names and a bounded first-event JSON shape; periodic information is not logged per frame. String payloads remain redacted. Load return 1 is explicitly logged with readiness=await-callback and network=unproven.
+
+### One precise hardware comparison
+
+The new **development-only** direct-uri-probe executable and launcher require all UxAir receivers closed. It creates one SDL window and serial native sessions, stops at the first PLAYING candidate (also requiring real relay requests/fetches/bytes for loopback cases), holds that candidate for six seconds for visual/audio observation, and exits. Each case has the normal startup deadline; the entire diagnostic process has a 120-second hard deadline, including blocking proprietary calls. Back/Exit abort normally. It never starts RAOP or reads/writes settings, pairing or History. Only its separate bounded diagnostic log is written. No production process is stopped.
+
+| Case | Native Load JSON | Native URI target |
+| --- | --- | --- |
+| A | Existing args/HLS + foreground | Loopback HLS relay |
+| B | uMS URI envelope, HLS | Loopback HLS relay |
+| C | uMS URI envelope, URI | Loopback HLS relay |
+| D | uMS URI envelope, HLS | Fixed PC HLS fixture directly |
+| E | uMS URI envelope, URI | Fixed PC HLS fixture directly |
+| F | uMS URI envelope, URI | Fixed PC progressive MP4 control |
+
+Direct fixture targets are restricted in code to a numeric RFC1918 PC address matching UXAIR_DIRECT_LAN, HTTP port 8080 and exactly /master.m3u8 or /probe.mp4, with **no credentials, query or other path**. The regular AirPlay path cannot select this bypass. MP4 is generated by remuxing the existing fixture video/audio with -c copy; it is not a transcoding feature or a general MP4 playback claim. Cases D-F test the service's outbound path without opening a LAN relay port.
+
+Update the checkout and install the new DEV IPK. Close the dev receiver (and close any running production receiver through its normal UI). Restart the updated PC fixture so /probe.mp4 exists:
+
+```powershell
+# PC terminal 1; leave running:
+python tools/direct-hls-fixture.py --bind 192.168.1.89 --port 8080
+# PC terminal 2, from this PR checkout:
+ares-install -d b7 com.github.depius.uxair.dev_1.2.0_arm.ipk
+ares-launch -d b7 --close com.github.depius.uxair.dev
+scp tools/run-native-uri-probe-b7.sh root@192.168.1.27:/tmp/uxair-native-uri-probe.sh
+```
+
+The single test command is:
+
+```powershell
+ssh root@192.168.1.27 'sh /tmp/uxair-native-uri-probe.sh 192.168.1.89'
+```
+
+Report its sanitized output, the PC fixture's master/media/segment/mp4 status lines and the case with visible video/audible tone, if any. The fixture request log cap is 192; no URLs or request headers are printed. Return 0 means only a PLAYING callback candidate; 1 means no candidate, 130 an intentional abort and 137 a hard deadline. A timeout does not establish unsupported HLS.
+
+Interpretation:
+
+- A now requests/plays: missing foreground notification is implicated; only hardware video/audio confirms recovery.
+- B/C requests while A did not: payload shape/transport handling is implicated. After picture/audio and controls pass, the matching explicit process flag `UXAIR_DIRECT_CONTRACT=uri-envelope-hls` or `uri-envelope-auto` can be used with the existing dev launcher. Neither changes saved settings nor enables discovery; unknown values retain args/HLS.
+- Only D/E request: the native API can reach the PC but the loopback path is suspect. This is the evidence needed before considering a token-protected LAN listener; do not infer network namespace isolation solely from the symptoms.
+- Only F requests/plays: generic URI handling works for progressive H.264/AAC but HLS initialization remains suspect.
+- No requests in A-F: the remaining issue is the native API contract/service setup, foreground policy or unsupported URI implementation; it is not an upstream playlist/segment download failure. A B7 libplayerAPIs/uMS implementation trace would be needed to distinguish these. Do not invent required fields or claim unsupported firmware from this alone.
+- Requests occur but no PLAYING: use native errorCode, video/source/resource JSON shapes and HTTP status to narrow demux, resource and ACB behavior. Even PLAYING does not verify visible video/audio or A/V sync.
+
+### Compressed-stream fallback assessment
+
+A fallback is feasible in principle: policy-controlled HLS retrieval -> FFmpeg HLS/MPEG-TS/MOV demux -> H.264 Annex B access units + timestamps -> the existing hardware BUFFERSTREAM Feed path; AAC can use the existing decoder/PCM path. Video should remain compressed, with no transcoder. Current pinned FFmpeg intentionally has avformat/network disabled, so this is **not an existing or completed fallback**. It would require enabling the limited demuxers/bitstream filter, a custom bounded AVIO layer that cannot bypass the relay's redirect/TLS/address policy, audio extradata handling, queue/seek/PTS/discontinuity tests and B7 A/V validation. Merely enabling FFmpeg HTTP would bypass security safeguards. This larger path is deferred until the native comparison establishes whether it is needed; firmware URI support has not been disproved.
+
 ## B7 loading failure follow-up (2026-10-22)
 
 The owner confirmed TV-to-PC HTTP connectivity with BusyBox wget. Three native attempts reached play 200/loading, then stopped after approximately 15 seconds with playback-info 503; no picture/audio was observed. This confirms a native startup failure, **not its precise firmware cause**. Old logs printed only selected callbacks and failed fetches, so missing direct-player/hls-relay lines did not prove that the main loop or Load was skipped.
@@ -37,7 +107,7 @@ Concrete corrections:
 - Main-loop dequeue, relay startup, ACB creation/initialization, Starfish construction, media-ID registration, Load, window, sink, loaded-state, Seek/Play and cleanup each have credential-free begin/end/result diagnostics. Native operations include elapsed milliseconds, so a missing end identifies a blocking call. Numeric ACB callback events are bounded. Integer ACB returns are recorded without inventing undocumented success conventions; false boolean returns are failures.
 - Every native callback is counted, including previously ignored source/resource events. Only the first occurrence of each type (at most 32/session) is printed, never its text. Dequeue records are capped at 192/process; native phase records at 128 pairs/session plus fixed cleanup transitions; relay fetch/request records at 64/session. One waiting summary appears after five seconds. Startup stays **15 seconds**, stalled progress 30 seconds; distinct errors identify load, initial-duration, playing, native, sink and control failures.
 - Terminal errors preserve stage, native result, callback count/last numeric event, actual native relay requests, upstream fetches, downloaded bytes and failures. These appear in Diagnostics, normal feedback, and a diagnostic XML body on HTTP 503/error stopped events. Feedback no longer loses evidence when resources close. Control failures publish their terminal error once, after cleanup, preventing a retry accepted during teardown from being erased by a second terminal publication. A relay request counter counts actual native-facing requests, not a synthetic preflight.
-- The PC client exits nonzero with a sanitized failure summary for 503, stopped-before-ready, malformed feedback or network loss. Failed stop cleanup cannot mask the first error or produce a traceback. Fixture request logs show only GET/HEAD, master/media/segment role and HTTP status (first 64).
+- The PC client exits nonzero with a sanitized failure summary for 503, stopped-before-ready, malformed feedback or network loss. Failed stop cleanup cannot mask the first error or produce a traceback. Fixture request logs show only GET/HEAD, master/media/segment/mp4 role and HTTP status (first 192).
 
 Primary references: [LG mediaOption](https://webostv.developer.lge.com/develop/guides/mediaoption-parameter) documents HLS/URI transport and extension/MIME detection; [native ACB declarations](https://github.com/webosbrew/webos-userland/blob/master/include/appswitching-control-block/AcbAPI.h) define VIDEO/MSE and return types; [Starfish API](https://www.webosbrew.org/webos-userland/d3/dda/StarfishMediaAPIs_8h_source.html) declares Load callbacks and Seek(millis). Duration/playtime values remain raw numeric observations in logs; their conversion to seconds is still an unverified firmware assumption.
 

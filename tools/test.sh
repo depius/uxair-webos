@@ -94,7 +94,7 @@ build/tests/media-test build/tests/landscape.h264 build/tests/portrait.h264 buil
 c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc $(pkg-config --cflags libplist-2.0) tests/direct_video_test.cpp src/direct_video.cpp $(pkg-config --libs libplist-2.0) -o build/tests/direct-video-test
 timeout 30s build/tests/direct-video-test
 
-c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc -Itests/direct_stubs $(pkg-config --cflags libplist-2.0) tests/direct_player_test.cpp src/direct_player.cpp src/direct_video.cpp src/hls_relay.cpp $(pkg-config --libs libplist-2.0 libcurl) -lcrypto -o build/tests/direct-player-test
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc -Itests/direct_stubs $(pkg-config --cflags libplist-2.0) tests/direct_player_test.cpp src/direct_player.cpp src/direct_native_diag.cpp src/direct_video.cpp src/hls_relay.cpp $(pkg-config --libs libplist-2.0 libcurl) -lcrypto -o build/tests/direct-player-test
 if ! timeout 30s build/tests/direct-player-test 2>build/tests/direct-player.log; then
   cat build/tests/direct-player.log
   exit 1
@@ -108,3 +108,8 @@ c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc $(pkg-config --cfl
 timeout 35s python3 tests/hls_network_test.py
 
 timeout 45s python3 tests/direct_control_client_test.py
+
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc $(pkg-config --cflags libplist-2.0) tests/direct_native_diag_test.cpp src/direct_native_diag.cpp src/direct_video.cpp $(pkg-config --libs libplist-2.0) -o build/tests/direct-native-diag-test
+timeout 15s build/tests/direct-native-diag-test
+python3 tests/direct_native_probe_test.py
+timeout 90s python3 tests/direct_fixture_test.py

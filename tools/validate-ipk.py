@@ -75,6 +75,12 @@ def main():
             fail('packaged large launcher icon differs from the current UxAir artwork')
         if not content('uxair') or not content('lib/libstdc++.so.6'):
             fail('missing receiver or private C++ runtime')
+        if args.development:
+            probe = content('direct-uri-probe')
+            if probe[:6] != b'\x7fELF\x01\x01' or int.from_bytes(probe[18:20], 'little') != 40 or not int.from_bytes(probe[36:40], 'little') & 0x200:
+                fail('native URI probe must be ARM ELF32 little-endian soft-float')
+        elif any(path.endswith('/direct-uri-probe') for path in files):
+            fail('development probe in production package')
         qr = content('bmc-qr.bmp')
         if qr != (ROOT / 'assets/bmc-qr.bmp').read_bytes() or qr[:2] != b'BM':
             fail('bundled donation QR differs from the committed local image')

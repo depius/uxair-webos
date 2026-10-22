@@ -4,16 +4,22 @@
 #include <cstdio>
 #include <AcbAPI.h>
 #include <thread>
+#include <cstdlib>
 void (*StarfishMediaAPIs::callback)(int,int64_t,const char*,void*)=nullptr;
 void *StarfishMediaAPIs::context=nullptr;
 std::string StarfishMediaAPIs::payload,StarfishMediaAPIs::last_seek;
 int StarfishMediaAPIs::unloads=0;
+int foreground_calls=0,load_calls=0;
+static bool foreground_result=true;
+extern "C" bool test_foreground(StarfishMediaAPIs*) __asm__("_ZN17StarfishMediaAPIs16notifyForegroundEv");
+extern "C" bool test_foreground(StarfishMediaAPIs*){++foreground_calls;return foreground_result;}
 bool StarfishMediaAPIs::load_success=true,StarfishMediaAPIs::play_success=true,StarfishMediaAPIs::synchronous_load=false;
 bool acb_initialize_success=true,acb_sink_success=true;int acb_player_type=-1,acb_sink_calls=0;
 extern "C" int AcbAPI_setMediaVideoData(long,const char*,long*){return 1;}
 int main(){
  DirectPlayer p;assert(p.open("https://media.example/vod.m3u8",0,1));
  assert(StarfishMediaAPIs::payload.find("HLS")!=std::string::npos);
+ assert(foreground_calls==1&&load_calls==1);
  StarfishMediaAPIs::callback(0x16,0,nullptr,StarfishMediaAPIs::context);
  assert(p.tick(2).state==DirectState::Playing);
  DirectCommand c;c.kind=DirectCommandKind::Pause;assert(p.control(c));assert(p.tick(3).state==DirectState::Paused);
@@ -32,6 +38,23 @@ int main(){
  StarfishMediaAPIs::callback(3,12000,nullptr,StarfishMediaAPIs::context);assert(p.tick(3).state==DirectState::Playing);
  assert(StarfishMediaAPIs::last_seek=="3000");p.close();
  assert(acb_player_type==PLAYER_TYPE_VIDEO);
+ // Reproduce the exact B7 callbacks. None is an error or evidence of fetched data.
+ assert(p.open("https://media.example/vod.m3u8",0,1));
+ StarfishMediaAPIs::callback(0xd,1,nullptr,StarfishMediaAPIs::context);
+ for(int i=0;i<73;++i){StarfishMediaAPIs::callback(2,0,"{\"bufferRange\":[],\"uri\":\"https://SECRET.invalid/?token=PRIVATE\"}",StarfishMediaAPIs::context);
+     StarfishMediaAPIs::callback(1,0,"{\"state\":\"PRIVATE\",\"uri\":\"https://SECRET.invalid\"}",StarfishMediaAPIs::context);}
+ auto b7=p.tick(5002000001LL);assert(b7.state==DirectState::Loading&&b7.callbacks==147&&b7.relay_requests==0&&b7.upstream_fetches==0);
+ assert(p.tick(15001000001LL).error==DirectError::LoadTimeout);p.close();
+ // Foreground's boolean alone is not interpreted as asynchronous readiness.
+ foreground_result=false;assert(p.open("https://media.example/vod.m3u8",0,1));assert(p.tick(2).state==DirectState::Loading);p.close();foreground_result=true;
+ for(auto contract:{DirectLoadContract::UriHls,DirectLoadContract::UriAuto}){
+     assert(p.open("https://media.example/vod.m3u8",0,1,nullptr,false,contract));
+     assert(StarfishMediaAPIs::payload.find("\"type\":\"media\"")!=std::string::npos&&StarfishMediaAPIs::payload.find("\"args\"")==std::string::npos);p.close();}
+ // The production command path cannot bypass the relay. Explicit probe source
+ // overrides reject credentials, non-fixture paths and non-allowlisted origins.
+ setenv("UXAIR_DIRECT_LAN","192.168.1.89",1);
+ assert(!p.open("https://media.example/vod.m3u8",0,1,nullptr,false,DirectLoadContract::UriAuto,true));assert(p.snapshot().error==DirectError::Payload);
+ unsetenv("UXAIR_DIRECT_LAN");
  // No native callback: fail at the unchanged 15-second deadline, preserving counters.
  assert(p.open("https://media.example/vod.m3u8",0,1));
  StarfishMediaAPIs::callback(0xb,77,"https://SECRET.invalid/?token=PRIVATE",StarfishMediaAPIs::context);

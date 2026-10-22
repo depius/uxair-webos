@@ -25,6 +25,9 @@ def main():
                         '-g', '60', '-c:a', 'aac', '-b:a', '96k', '-f', 'hls',
                         '-hls_time', '2', '-hls_list_size', '0', str(root / 'media.m3u8')],
                        check=True, timeout=60)
+        # Progressive control uses the same compressed H.264/AAC: remux only.
+        subprocess.run(['ffmpeg', '-nostdin', '-loglevel', 'error', '-i', str(root / 'media.m3u8'),
+                        '-c', 'copy', '-movflags', '+faststart', str(root / 'probe.mp4')], check=True, timeout=30)
         (root / 'master.m3u8').write_text('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=1280x720,CODECS="avc1.42c01f,mp4a.40.2"\nmedia.m3u8\n')
         (root / 'index.html').write_text('<!doctype html><meta name="viewport" content="width=device-width"><title>UxAir HLS fixture</title><h1>Unprotected H.264/AAC HLS</h1><video controls playsinline x-webkit-airplay="allow" width="100%" src="master.m3u8"></video>')
         class Handler(http.server.SimpleHTTPRequestHandler):
@@ -34,9 +37,9 @@ def main():
                 pass  # Never print URL query strings.
             def log_request(self, code='-', size='-'):
                 path = urllib.parse.urlsplit(self.path).path
-                role = 'master' if path == '/master.m3u8' else 'media' if path == '/media.m3u8' else 'segment' if path.endswith('.ts') else 'other'
+                role = 'master' if path == '/master.m3u8' else 'media' if path == '/media.m3u8' else 'segment' if path.endswith('.ts') else 'mp4' if path == '/probe.mp4' else 'other'
                 with Handler.records_lock:
-                    if Handler.records >= 64: return
+                    if Handler.records >= 192: return
                     Handler.records += 1
                 method = self.command if self.command in ('GET', 'HEAD') else 'other'
                 print(f'[fixture] request={method} role={role} http={int(code)}', flush=True)

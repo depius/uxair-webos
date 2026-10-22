@@ -21,7 +21,7 @@ def version(v):
 def main():
     stage = pathlib.Path(sys.argv[1])
     binary = sys.argv[2] if len(sys.argv) > 2 else 'uxair'
-    if binary not in ('uxair', 'hevc-probe'):
+    if binary not in ('uxair', 'hevc-probe', 'direct-uri-probe'):
         sys.exit('Unsupported binary name')
     files = [stage / binary, stage / 'lib/libstdc++.so.6']
     exported = output('-V', files[1]).split('Version needs section')[0]
@@ -38,6 +38,11 @@ def main():
         for name in re.findall(r'Name: ((?:GLIBCXX|CXXABI)[_A-Z.0-9]+)',versions):
             if name not in exported:
                 sys.exit(f'{file}: bundled C++ runtime lacks {name}')
+    if binary in ('uxair', 'direct-uri-probe'):
+        symbols = output('-Ws', files[0])
+        foreground = [line for line in symbols.splitlines() if '_ZN17StarfishMediaAPIs16notifyForegroundEv' in line]
+        if not foreground or any('WEAK' not in line or 'UND' not in line for line in foreground):
+            sys.exit('notifyForeground must remain an optional weak native import')
     dynamic = output('-d',files[0])
     if '$ORIGIN/lib' not in dynamic:
         sys.exit('Missing private runtime search path')
