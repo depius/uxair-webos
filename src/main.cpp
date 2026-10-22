@@ -290,7 +290,8 @@ int main() {
             rows.push_back(UiRow("Mirroring audio",receiver.mirror?"Active":"Idle","Stereo audio during screen mirroring"));
         } else if(which==UiPage::History) {
             for(const SessionSummary& session:usage.recent) {
-                std::string kind=session.kind==SessionKind::Audio?"AirPlay music":
+                std::string kind=session.kind==SessionKind::Audio?"AirPlay music":session.kind==SessionKind::Direct?
+                    "Direct Video - Native HLS - "+(session.width?std::to_string(session.width)+"x"+std::to_string(session.height):std::string("geometry unavailable")):
                     std::string(session_kind_name(session.kind))+" - "+(session.codec==2?"HEVC":"H.264")+" - "+
                     std::to_string(session.width)+"x"+std::to_string(session.height);
                 rows.push_back(UiRow(utc_text(session.started_utc),duration_text(session.duration_ms),kind,false));

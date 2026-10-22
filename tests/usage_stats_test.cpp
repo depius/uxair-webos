@@ -150,6 +150,9 @@ int main() {
     paused.record_direct_day(usage_utc_day(1704153600),10000); // elapsed pause skipped an entire day
     paused.record(played,false);assert(paused.daily.size()==2&&paused.playback_ms==20000&&paused.direct_sessions==1);
     assert(paused.daily[0].direct_ms==10000&&paused.daily[1].direct_ms==10000);
+    {std::ofstream legacy(path.c_str());legacy<<"UXAIR_USAGE_V2\ntotals 1000 1 0 0 1 0 0 0 0 0 0\ncoverage 19675\nsessions 0\ndaily 1\nday 19675 0 0 0 0\n";}
+    UsageStats partial;assert(load_usage_stats(path,partial));assert(partial.direct_from_day==usage_utc_day(uint64_t(time(nullptr))));
+    assert(save_usage_stats(path,partial));UsageStats partial_again;assert(load_usage_stats(path,partial_again)&&partial_again.direct_from_day==partial.direct_from_day);
     // Invalid and oversized files are bounded, preserved, and require explicit reset.
     {std::ofstream bad(path.c_str(),std::ios::binary);bad<<"UXAIR_USAGE_V2\ntotals 1";}
     UsageStats corrupt;assert(!load_usage_stats(path,corrupt)&&corrupt.storage_corrupt);

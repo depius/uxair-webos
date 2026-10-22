@@ -64,6 +64,7 @@ static uint64_t sat_add(uint64_t a,uint64_t b) {
 }
 static void daily_add(UsageStats& stats,const SessionSummary& s) {
     if(!s.started_utc||!s.duration_ms)return;
+    if(s.kind==SessionKind::Direct&&!stats.direct_from_day)stats.direct_from_day=usage_utc_day(s.started_utc);
     const uint64_t first_ms=s.started_utc*1000;
     if(first_ms/1000!=s.started_utc||UINT64_MAX-first_ms<s.duration_ms)return;
     uint64_t cursor=first_ms,end=first_ms+s.duration_ms;
@@ -141,7 +142,7 @@ bool load_usage_stats(const std::string& path,UsageStats& stats) {
     } else {
         std::string tag,extra;
         if(!std::getline(in,line)||line.size()>40){stats.storage_corrupt=true;return false;}
-        std::istringstream meta(line);if(!(meta>>tag>>parsed.daily_from_day)||(meta>>extra)||tag!="coverage"){stats.storage_corrupt=true;return false;}
+        std::istringstream meta(line);if(!(meta>>tag>>parsed.daily_from_day)||(v3&&!(meta>>parsed.direct_from_day))||(meta>>extra)||tag!="coverage"){stats.storage_corrupt=true;return false;}
         if(!std::getline(in,line)||line.size()>20){stats.storage_corrupt=true;return false;}
         std::istringstream sc(line);size_t count=0;if(!(sc>>tag>>count)||(sc>>extra)||tag!="sessions"||count>UsageStats::MaxRecentSessions){stats.storage_corrupt=true;return false;}
         for(size_t i=0;i<count;++i){if(!std::getline(in,line)||line.size()>300){stats.storage_corrupt=true;return false;}
@@ -157,6 +158,7 @@ bool load_usage_stats(const std::string& path,UsageStats& stats) {
             parsed.daily.push_back(d);previous=d.utc_day;}
         if(std::getline(in,line)){stats.storage_corrupt=true;return false;}
     }
+    if(!v3)parsed.direct_from_day=parsed.direct_sessions?usage_utc_day(uint64_t(std::time(nullptr))):parsed.daily_from_day;
     parsed.storage_corrupt=false;stats=parsed;return true;
 }
 bool save_usage_stats(const std::string& path,const UsageStats& s) {
@@ -164,7 +166,7 @@ bool save_usage_stats(const std::string& path,const UsageStats& s) {
     std::ostringstream out;out<<"UXAIR_USAGE_V3\n";
     out<<"totals "<<s.playback_ms<<" "<<s.successful_sessions<<" "<<s.mirror_sessions<<" "<<s.audio_sessions<<" "<<s.direct_sessions<<" "
        <<s.incoming_frames<<" "<<s.feed_frames<<" "<<s.packet_drops<<" "<<s.video_frame_drops<<" "<<s.decoder_errors<<" "<<s.session_errors<<"\n";
-    out<<"coverage "<<s.daily_from_day<<"\nsessions "<<s.recent.size()<<"\n";
+    out<<"coverage "<<s.daily_from_day<<" "<<s.direct_from_day<<"\nsessions "<<s.recent.size()<<"\n";
     for(const auto& x:s.recent)out<<"session "<<x.started_utc<<" "<<x.duration_ms<<" "<<unsigned(x.kind)<<" "<<x.width<<" "<<x.height<<" "<<x.codec<<" "
         <<x.incoming_frames<<" "<<x.feed_frames<<" "<<x.packet_drops<<" "<<x.video_frame_drops<<" "<<x.decoder_errors<<" "<<x.session_errors<<"\n";
     out<<"daily "<<s.daily.size()<<"\n";
@@ -228,8 +230,9 @@ UsageSummary summarize_usage(const UsageStats& stats,UsagePeriod p,uint32_t toda
         }
         b.future=starts[size_t(i)]>today;
         b.available=coverage&&!b.future&&ends[size_t(i)]>coverage;
+        b.direct_available=b.available&&(!stats.direct_from_day||ends[size_t(i)]>stats.direct_from_day);
         // Current-to-date coverage is separate from missing earlier records.
-        b.partial=b.available&&coverage>starts[size_t(i)];
+        b.partial=b.available&&(coverage>starts[size_t(i)]||(stats.direct_sessions&&stats.direct_from_day>starts[size_t(i)]));
         if(!calendar&&monthly)b.partial=b.partial||b.current; // legacy rolling summaries
     }
     for(const DailyUsage& d:stats.daily) {

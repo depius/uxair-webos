@@ -21,14 +21,14 @@ struct UsageStats {
     uint64_t incoming_frames=0,feed_frames=0,packet_drops=0,video_frame_drops=0,decoder_errors=0,session_errors=0;
     std::deque<SessionSummary> recent;
     std::vector<DailyUsage> daily;
-    uint32_t daily_from_day=0;
+    uint32_t daily_from_day=0,direct_from_day=0;
     bool storage_corrupt=false;
     void record(const SessionSummary& session,bool aggregate=true);
     void record_direct_day(uint32_t day,uint64_t duration_ms);
     void reset();
 };
 enum class UsagePeriod { Days7=0,Days30=1,Months12=2,ThisMonth=3,ThisYear=4 };
-struct UsageBar { std::string label; uint64_t mirror_ms=0,audio_ms=0,direct_ms=0; bool available=false,partial=false,future=false,current=false; };
+struct UsageBar { std::string label; uint64_t mirror_ms=0,audio_ms=0,direct_ms=0; bool available=false,direct_available=false,partial=false,future=false,current=false; };
 struct UsageSummary {
     std::string title;
     uint64_t mirror_ms=0,audio_ms=0,direct_ms=0,mirror_sessions=0,audio_sessions=0,direct_sessions=0;

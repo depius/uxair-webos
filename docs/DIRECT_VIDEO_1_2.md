@@ -20,7 +20,7 @@ The native firmware still performs demuxing, decoding and A/V sync; its memory u
 
 ## History and Diagnostics
 
-V3 adds Direct daily milliseconds/session counts and reads V1/V2 without erasing data or inventing prior Direct daily usage. Storage remains 64 KiB, 100 recent sessions and 365 daily entries. Played intervals are assigned to UTC day buckets across pauses, rather than incorrectly treating paused time as contiguous playback. Recent sessions, lifetime counters, three-color stacked charts, three-category duration percentages and Direct Diagnostics are integrated. Unknown codec remains unknown; no URL/credentials are stored in History.
+V3 stores a separate Direct coverage start, so legacy Direct lifetime totals are not misrepresented as known zero daily activity. Partial recorded coverage receives the existing * indicator. V3 adds Direct daily milliseconds/session counts and reads V1/V2 without erasing data or inventing prior Direct daily usage. Storage remains 64 KiB, 100 recent sessions and 365 daily entries. Played intervals are assigned to UTC day buckets across pauses, rather than incorrectly treating paused time as contiguous playback. Recent sessions, lifetime counters, three-color stacked charts, three-category duration percentages and Direct Diagnostics are integrated. Unknown codec remains unknown; no URL/credentials are stored in History.
 
 ## Source evidence / upstream comparison
 

@@ -49,7 +49,7 @@ struct HistoryRenderTest {
         for(int y=layout.chart_y;y<plot_top;++y)for(int x=layout.panel_x;x<1920-48;++x) {
             Uint32 pixel=*(reinterpret_cast<Uint32*>(static_cast<Uint8*>(surface->pixels)+y*surface->pitch)+x);
             Uint8 r,g,b;SDL_GetRGB(pixel,surface->format,&r,&g,&b);
-            assert(!(r==101&&g==185&&b==246)&&!(r==104&&g==194&&b==157));
+            assert(!(r==101&&g==185&&b==246)&&!(r==104&&g==194&&b==157)&&!(r==187&&g==145&&b==239));
         }
         assert(SDL_SaveBMP(surface,today!=20747?"build/tests/history-month-end.bmp":empty?"build/tests/history-empty.bmp":"build/tests/history-five-sessions.bmp")==0);
     }
