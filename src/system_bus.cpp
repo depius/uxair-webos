@@ -22,6 +22,8 @@ struct SystemBus::Impl {
     std::atomic<bool> *block = nullptr;
     std::mutex mutex;
     std::string previous;   // the app in front before UxAir brought itself there
+    LSMessageToken foreground_token = 0; // touched only on the bus thread
+    bool wants_foreground = false;
 };
 
 // The raw JSON value of key in payload (a number or a quoted string), or "".
@@ -77,6 +79,9 @@ static bool on_screen_saver(LSHandle *handle, LSMessage *message, void *context)
 
 static bool on_foreground(LSHandle *, LSMessage *message, void *context) {
     auto *impl = static_cast<SystemBus::Impl *>(context);
+    impl->foreground_token=0;
+    if(!impl->wants_foreground)return true;
+    if(json_value(LSMessageGetPayload(message),"returnValue")=="false")return true;
     const std::string front = unquote(json_value(LSMessageGetPayload(message), "appId"));
     if (front == impl->app_id) return true;   // already in front
     {
@@ -91,6 +96,15 @@ static bool on_foreground(LSHandle *, LSMessage *message, void *context) {
 static gboolean run_task(gpointer data) {
     Task *task = static_cast<Task *>(data);
     SystemBus::Impl *impl = task->impl;
+    if(!impl->handle)return G_SOURCE_REMOVE;
+    impl->wants_foreground=task->kind==kBringToFront;
+    // A reply to an older foreground query must not relaunch UxAir after Back
+    // or after the sender has disconnected.
+    if(impl->foreground_token) {
+        LSError error;LSErrorInit(&error);
+        if(!LSCallCancel(impl->handle,impl->foreground_token,&error))log_error("cancel foreground",&error);
+        impl->foreground_token=0;
+    }
     std::string previous;
     {
         std::lock_guard<std::mutex> l(impl->mutex);
@@ -98,19 +112,27 @@ static gboolean run_task(gpointer data) {
         if (task->kind != kBringToFront) impl->previous.clear();
     }
     switch (task->kind) {
-    case kBringToFront: call_once(impl->handle, kForeground, "{}", on_foreground, impl); break;
+    case kBringToFront: {
+        LSError error;LSErrorInit(&error);
+        if(!LSCallOneReply(impl->handle,kForeground,"{}",on_foreground,impl,&impl->foreground_token,&error))
+            log_error("foreground",&error);
+        break;
+    }
     case kReturnToPrevious: if (!previous.empty()) launch(impl, previous); break;
     case kToBackground: launch(impl, !task->target.empty() ? task->target : previous.empty() ? kHome : previous); break;
     }
-    delete task;
     return G_SOURCE_REMOVE;
 }
 static void post(SystemBus::Impl *impl, int kind, const char *target = nullptr) {
-    if (impl && impl->handle) g_main_context_invoke(impl->context, run_task, new Task{impl, kind, target ? target : ""});
+    if (!impl || !impl->thread.joinable())return;
+    GSource *source=g_idle_source_new();
+    g_source_set_callback(source,run_task,new Task{impl,kind,target?target:""},
+                          [](gpointer data){delete static_cast<Task*>(data);});
+    g_source_attach(source,impl->context);g_source_unref(source);
 }
 
 bool SystemBus::start(const char *app_id) {
-    if (impl_) return true;
+    if (impl_) return impl_->thread.joinable();
     impl_ = new Impl;
     impl_->app_id = app_id;
     impl_->block = &block_;
@@ -136,8 +158,20 @@ void SystemBus::to_background(const char *app_id) { post(impl_, kToBackground, a
 
 SystemBus::~SystemBus() {
     if (!impl_) return;
-    if (impl_->loop) g_main_loop_quit(impl_->loop);
-    if (impl_->thread.joinable()) impl_->thread.join();
+    if (impl_->thread.joinable()) {
+        // Queue quit: a direct quit before the new thread enters run() can be
+        // lost and leave join() waiting forever during immediate shutdown.
+        GSource *source=g_idle_source_new();
+        g_source_set_priority(source,G_PRIORITY_HIGH);
+        g_source_set_callback(source,[](gpointer data)->gboolean {
+            auto *impl=static_cast<Impl*>(data);
+            LSError error;LSErrorInit(&error);
+            if(impl->handle && !LSUnregister(impl->handle,&error))log_error("unregister",&error);
+            impl->handle=nullptr;g_main_loop_quit(impl->loop);return G_SOURCE_REMOVE;
+        },impl_,nullptr);
+        g_source_attach(source,impl_->context);g_source_unref(source);
+        impl_->thread.join();
+    }
     if (impl_->handle) {
         LSError error;
         LSErrorInit(&error);

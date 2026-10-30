@@ -8,7 +8,8 @@
 // saver (tvpower registerScreenSaverRequest, after about 90 s without picture
 // changes or keys - a Now Playing screen counts as still); while a session
 // plays, UxAir answers ack:false to postpone it, as video apps do. The Now
-// Playing screen dims and drifts for the OLED instead.
+// Playing screen dims for the OLED instead. Paused playback and settings do
+// not inhibit the system screen saver.
 //
 // Foreground: UxAir keeps running in the background so it stays discoverable
 // (webOS does not freeze it). A connecting device brings it to the front; when

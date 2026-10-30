@@ -51,6 +51,6 @@ int main() {
     assert(mapper.map(button(SDL_BUTTON_LEFT), 2200) == Action::Select);
     assert(mapper.map(button(SDL_BUTTON_LEFT), 2250) == Action::Select);
     SDL_Event quit = {}; quit.type = SDL_QUIT;
-    assert(mapper.map(quit, 2300) == Action::Exit);
+    assert(mapper.map(quit, 2300) == Action::Quit);
     std::puts("PASS: SDL input actions, remote click and cross-source deduplication");
 }

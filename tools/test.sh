@@ -2,6 +2,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/tests
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc tests/now_playing_test.cpp -o build/tests/now-playing-test
+build/tests/now-playing-test
+c++ -std=c++11 -g -fsanitize=address,undefined -Isrc tests/secure_data_test.cpp -o build/tests/secure-data-test
+build/tests/secure-data-test
+python3 tests/build_platform_test.py
 c++ -std=c++11 -g -fsanitize=address,undefined -Isrc tests/diagnostics_test.cpp -o build/tests/diagnostics-test
 build/tests/diagnostics-test
 echo 'PASS: arrival/PTS gap attribution, timing windows, duration samples and reset'
@@ -33,6 +38,11 @@ c++ -std=c++11 -g -fsanitize=address,undefined -Isrc -Itests/sdl_stub $(pkg-conf
   tests/history_render_test.cpp src/shell.cpp src/input.cpp src/ui_navigation.cpp src/usage_stats.cpp \
   $(pkg-config --libs sdl2 SDL2_ttf) -o build/tests/history-render-test
 timeout 30s build/tests/history-render-test
+c++ -std=c++11 -g -fsanitize=address,undefined -Isrc -Itests/sdl_stub $(pkg-config --cflags sdl2 SDL2_ttf) \
+  tests/shell_signal_test.cpp src/shell.cpp src/input.cpp src/ui_navigation.cpp src/usage_stats.cpp \
+  $(pkg-config --libs sdl2 SDL2_ttf) -o build/tests/shell-signal-test
+timeout 10s build/tests/shell-signal-test term
+timeout 10s build/tests/shell-signal-test int
 c++ -std=c++11 -g -fsanitize=address,undefined -Isrc \
   tests/pairing_ui_test.cpp src/ui_navigation.cpp -o build/tests/pairing-ui-test
 build/tests/pairing-ui-test

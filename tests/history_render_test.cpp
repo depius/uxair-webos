@@ -5,6 +5,27 @@
 #include <algorithm>
 
 struct HistoryRenderTest {
+    static void now_playing(Shell& shell,SDL_Surface *surface) {
+        // np_* fonts intentionally absent: exercise the allocation-failure fallback.
+        NowPlayingView view;view.title="Track";view.artist="Artist";view.album="Album";
+        view.duration_s=180;view.elapsed_s=30;
+        shell.now_playing(view);assert(!shell.cover_ && shell.title_);
+        const std::vector<uint8_t> png={137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,2,0,0,0,144,119,83,222,0,0,0,12,73,68,65,84,120,156,99,248,207,192,0,0,3,1,1,0,201,254,146,239,0,0,0,0,73,69,78,68,174,66,96,130};
+        view.cover=&png;++view.cover_generation;shell.now_playing(view);
+        // SDL2_image is optional on a TV, but required for the host decode test.
+        assert(shell.cover_);SDL_Texture *cached=shell.cover_;
+        for(int i=0;i<50;++i){view.elapsed_s+=1;shell.now_playing(view);assert(shell.cover_==cached);}
+        auto pixel=[&](int y){return *(reinterpret_cast<Uint32*>(static_cast<Uint8*>(surface->pixels)+y*surface->pitch)+2);};
+        const Uint32 bright=pixel(2);assert(bright==pixel(1077));
+        view.brightness=0.35f;shell.now_playing(view);assert(pixel(2)==pixel(1077)&&pixel(2)!=bright);
+        std::vector<uint8_t> invalid={0,1,2,3};view.cover=&invalid;++view.cover_generation;
+        shell.now_playing(view);assert(!shell.cover_);
+        for(int i=0;i<20;++i) {
+            view.cover=&png;++view.cover_generation;shell.now_playing(view);assert(shell.cover_);
+            view.cover=nullptr;++view.cover_generation;shell.now_playing(view);assert(!shell.cover_);
+        }
+        assert(SDL_SaveBMP(surface,"build/tests/now-playing-solid.bmp")==0);
+    }
     static void fonts(Shell& shell) {
         const char *path="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
         shell.small_=TTF_OpenFont(path,23);shell.font_=TTF_OpenFont(path,30);shell.large_=TTF_OpenFont(path,76);
@@ -58,7 +79,7 @@ int main() {
     assert(SDL_Init(0)==0&&TTF_Init()==0);
     SDL_Surface *surface=SDL_CreateRGBSurfaceWithFormat(0,1920,1080,32,SDL_PIXELFORMAT_ARGB8888);assert(surface);
     {Shell shell;shell.renderer=SDL_CreateSoftwareRenderer(surface);assert(shell.renderer);
-     HistoryRenderTest::fonts(shell);HistoryRenderTest::render(shell,surface,false);HistoryRenderTest::render(shell,surface,true);HistoryRenderTest::render(shell,surface,false,20756);HistoryRenderTest::about(shell,surface);}
+     HistoryRenderTest::fonts(shell);HistoryRenderTest::render(shell,surface,false);HistoryRenderTest::render(shell,surface,true);HistoryRenderTest::render(shell,surface,false,20756);HistoryRenderTest::about(shell,surface);HistoryRenderTest::now_playing(shell,surface);}
     SDL_FreeSurface(surface);
     puts("PASS: actual SDL History rendering, five-session bounds, clip restoration and header pixels");
 }

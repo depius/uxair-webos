@@ -1,7 +1,7 @@
 #pragma once
 #include <SDL.h>
 
-enum class Action { None, Back, Exit, Left, Right, Up, Down, Select };
+enum class Action { None, Back, Exit, Quit, Left, Right, Up, Down, Select };
 
 // Keep webOS-specific scancodes supplied by the TV build so this mapper can
 // also be exercised with the native SDL2 headers in host tests.

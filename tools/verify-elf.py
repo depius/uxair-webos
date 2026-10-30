@@ -38,7 +38,14 @@ def main():
         for name in re.findall(r'Name: ((?:GLIBCXX|CXXABI)[_A-Z.0-9]+)',versions):
             if name not in exported:
                 sys.exit(f'{file}: bundled C++ runtime lacks {name}')
+        print(f'{file.name}:')
+        print(output('-A', file))
+        print(output('-d', file))
     dynamic = output('-d',files[0])
+    marker = ROOT / 'build/media-backend.txt'
+    if binary == 'uxair' and marker.exists() and marker.read_text().strip() == 'starfish':
+        if 'libNDL' in dynamic or 'libndl' in dynamic:
+            sys.exit('Starfish package unexpectedly depends on NDL')
     if '$ORIGIN/lib' not in dynamic:
         sys.exit('Missing private runtime search path')
     for bad in ['libcrypto.so', 'libplist', 'libavcodec', 'libgstreamer', 'libX11']:

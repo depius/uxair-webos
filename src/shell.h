@@ -34,7 +34,6 @@ struct NowPlayingView {
     uint64_t cover_generation = 0;
     double elapsed_s = 0, duration_s = 0;           // duration 0: no progress bar
     float brightness = 1;                           // 1 full, lower when idle (OLED)
-    int dx = 0, dy = 0;                             // slow drift of the layout (OLED)
 };
 enum class UiHitKind { None, Category, Row, DialogChoice, Cancel };
 struct UiHit {
@@ -71,7 +70,6 @@ private:
     SDL_Texture *cover_=nullptr;          // decoded cover of cover_generation_
     uint64_t cover_generation_=~uint64_t(0);
     SDL_Color cover_tint_={29,45,71,255}; // the cover's average colour
-    SDL_Texture *background_=nullptr;     // 1 x 256 gradient of cover_tint_, stretched
     SDL_Texture *title_=nullptr;          // the rendered title, scrolled when too wide
     std::string title_text_;
     int title_w_=0,title_h_=0;
@@ -85,5 +83,5 @@ private:
 int64_t now_ns();
 std::string app_directory();
 std::string data_directory();
-void start_log(const char *name);
+bool start_log(const char *name);
 void rotate_log();

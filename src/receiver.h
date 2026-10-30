@@ -10,22 +10,13 @@
 #include "settings.h"
 #include "audio_session.h"
 #include "pairing_ui.h"
+#include "now_playing.h"
 struct Packet {
     bool video;
     unsigned codec;
     uint64_t timestamp;
     int64_t arrival_ns = 0, enqueued_ns = 0, dequeued_ns = 0;
     std::vector<uint8_t> data;
-};
-// What the sender reports about the audio it plays (AirPlay "md=0,1,2"):
-// DMAP text, cover art and progress, for the Now Playing screen.
-struct NowPlaying {
-    std::string title, artist, album, source;   // source: the sender's name
-    std::vector<uint8_t> cover;                  // JPEG or PNG as sent
-    uint32_t start = 0, current = 0, end = 0;    // RTP timestamps, 44.1 kHz
-    int64_t progress_ns = 0;                     // when start/current/end arrived
-    int64_t cover_ns = 0, track_ns = 0;          // when the cover / a different track arrived
-    uint64_t generation = 0, cover_generation = 0;
 };
 struct ReceiverDiagnostics {
     size_t queue_packets = 0, queue_bytes = 0;

@@ -1,6 +1,8 @@
 #include "shell.h"
 #include "identity.h"
 #include "usage_stats.h"
+#include "now_playing.h"
+#include "secure_data.h"
 #include <SDL_webOS.h>
 #include <SDL_ttf.h>
 #include <dlfcn.h>
@@ -49,7 +51,7 @@ std::string app_directory() {
 // reinstalls. The app folder is no choice there: an install replaces it, and
 // after a restart the TV leaves it writable for everyone, so testing it for
 // write access would switch to an empty state (new identity, default
-// settings). A webOS 3-4 build also stays with var/lib once that exists.
+// settings). Starfish keeps its historical app directory and existing state.
 std::string data_directory() {
     static std::string dir;
     if (!dir.empty()) return dir;
@@ -59,35 +61,39 @@ std::string data_directory() {
 #if defined(UXAIR_MEDIA_NDL)
     const bool use_lib = true;
 #else
-    const bool use_lib = access(lib.c_str(), W_OK) == 0;
+    // Preserve existing PR #10 var/lib state only if no app-local state exists.
+    struct stat local_state,lib_state;
+    const bool use_lib = lstat((app+"/state").c_str(),&local_state)!=0 && errno==ENOENT &&
+                         lstat((lib+"/state").c_str(),&lib_state)==0;
 #endif
-    if (!use_lib && access(app.c_str(), W_OK) == 0) return dir = app;
-    mkdir(lib.c_str(), 0700);
-    if (access(lib.c_str(), W_OK) == 0) {
-        chmod(lib.c_str(), 0700);   // a restart opens it to everyone, too
-        return dir = lib;
-    }
-    if (access(app.c_str(), W_OK) == 0) return dir = app;
-    std::string tmp = "/tmp/" + id;
-    mkdir(tmp.c_str(), 0700);
-    return dir = tmp;
+    const std::string selected=use_lib?lib:app;
+    if(prepare_state(selected,use_lib))return dir=selected;
+    fprintf(stderr,"[state] unsafe or inaccessible persistent directory; refusing temporary identity\n");
+    return "";
 }
-void start_log(const char *name) {
-    std::string p = data_directory() + "/" + name;
+bool start_log(const char *name) {
+    const std::string directory=data_directory();
+    if(directory.empty())return false;
+    std::string p = directory + "/" + name;
     log_path=p;
     rename(p.c_str(), (p+".previous").c_str());
-    freopen(p.c_str(), "w", stderr);
+    int parent=owned_directory(directory,false,false);
+    if(parent<0)return false;
+    int fd=owned_file_at(parent,name,O_WRONLY|O_CREAT);close(parent);
+    if(fd<0)return false;
+    bool ok=ftruncate(fd,0)==0 && dup2(fd,STDERR_FILENO)>=0;close(fd);
+    if(!ok)return false;
     setvbuf(stderr, nullptr, _IOLBF, 0);
     // Proprietary drivers emit high-volume frame diagnostics to stdout.
     // Keep application/errors on stderr, without filling app storage with them.
     int nullfd=open("/dev/null",O_WRONLY);
     if(nullfd>=0){dup2(nullfd,STDOUT_FILENO);close(nullfd);}
+    return true;
 }
 void rotate_log() {
     struct stat s;
     if(!log_path.empty() && fstat(fileno(stderr),&s)==0 && s.st_size>1024*1024) {
-        rename(log_path.c_str(),(log_path+".previous").c_str());
-        freopen(log_path.c_str(),"w",stderr);setvbuf(stderr,nullptr,_IOLBF,0);
+        start_log(log_path.substr(log_path.rfind('/')+1).c_str());
     }
 }
 bool Shell::open() {
@@ -174,14 +180,22 @@ static std::string fit_text(TTF_Font *font,const std::string& s,int max_width) {
 }
 bool Shell::now_playing(const NowPlayingView& v) {
     int w=0,h=0;SDL_GetRendererOutputSize(renderer,&w,&h);
+    bool render_failed=false;
+    TTF_Font *title_font=np_title_?np_title_:large_;
+    TTF_Font *artist_font=np_artist_?np_artist_:font_;
+    TTF_Font *album_font=np_album_?np_album_:small_;
     if(v.cover_generation!=cover_generation_) {
         if(cover_){SDL_DestroyTexture(cover_);cover_=nullptr;}
         cover_tint_=uxair_navy;
-        if(v.cover&&!v.cover->empty()) {
+        if(v.cover && artwork_supported(v.cover->data(),v.cover->size())) {
             SDL_RWops *rw=SDL_RWFromConstMem(v.cover->data(),int(v.cover->size()));
             const load_image_fn load=load_image();
             SDL_Surface *image=rw&&load?load(rw,1):nullptr;
             if(rw&&!load)SDL_RWclose(rw);
+            if(image && !artwork_dimensions(image->w,image->h)) {
+                SDL_FreeSurface(image);image=nullptr;
+                fprintf(stderr,"[now-playing] decoded cover exceeds pixel budget\n");
+            }
             if(image) {
                 // the cover's average colour tints the background
                 SDL_Surface *rgba=SDL_ConvertSurfaceFormat(image,SDL_PIXELFORMAT_RGBA32,0);
@@ -197,6 +211,7 @@ bool Shell::now_playing(const NowPlayingView& v) {
                 }
                 if(rgba)SDL_FreeSurface(rgba);
                 cover_=SDL_CreateTextureFromSurface(renderer,image);
+                if(!cover_)fprintf(stderr,"[now-playing] cover texture: %s\n",SDL_GetError());
                 SDL_FreeSurface(image);
             } else if(load) fprintf(stderr,"[now-playing] cover not decoded: %s\n",SDL_GetError());
         }
@@ -204,33 +219,26 @@ bool Shell::now_playing(const NowPlayingView& v) {
     }
     const float b=std::max(0.f,std::min(1.f,v.brightness));
     auto dim=[&](SDL_Color c,float f){return SDL_Color{Uint8(c.r*b*f),Uint8(c.g*b*f),Uint8(c.b*b*f),c.a};};
-    // background: the cover's colour, darkened, towards black at the bottom
-    // (a 1 x 256 gradient, made once per cover, stretched; dimmed by colour mod)
-    static uint64_t background_generation=~uint64_t(0);
-    if(!background_||background_generation!=cover_generation_) {
-        if(background_)SDL_DestroyTexture(background_);
-        background_=SDL_CreateTexture(renderer,SDL_PIXELFORMAT_RGBA32,SDL_TEXTUREACCESS_STATIC,1,256);
-        Uint8 px[256*4];
-        for(int i=0;i<256;++i) {
-            const float f=0.45f-0.33f*i/255.f;
-            px[i*4]=Uint8(cover_tint_.r*f);px[i*4+1]=Uint8(cover_tint_.g*f);px[i*4+2]=Uint8(cover_tint_.b*f);px[i*4+3]=255;
-        }
-        if(background_)SDL_UpdateTexture(background_,nullptr,px,4);
-        background_generation=cover_generation_;
+    // Diagnostic B7 path: opaque solid colour, with no stretched gradient.
+    if(SDL_SetRenderDrawBlendMode(renderer,SDL_BLENDMODE_NONE))render_failed=true;
+    const SDL_Color background=dim(cover_tint_,0.22f);
+    SDL_SetRenderDrawColor(renderer,background.r,background.g,background.b,255);
+    if(SDL_RenderClear(renderer)) {
+        static bool reported=false;
+        if(!reported)fprintf(stderr,"[now-playing] clear: %s\n",SDL_GetError());
+        reported=true;
     }
-    SDL_SetRenderDrawBlendMode(renderer,SDL_BLENDMODE_NONE);
-    if(background_) {SDL_SetTextureColorMod(background_,Uint8(255*b),Uint8(255*b),Uint8(255*b));SDL_RenderCopy(renderer,background_,nullptr,nullptr);}
-    SDL_SetRenderDrawBlendMode(renderer,SDL_BLENDMODE_BLEND);
-    const int size=h*50/100, cx=w*12/100+v.dx, cy=(h-size)/2+v.dy;
+    if(SDL_SetRenderDrawBlendMode(renderer,SDL_BLENDMODE_BLEND))render_failed=true;
+    const int size=h*50/100, cx=w*12/100, cy=(h-size)/2;
     fill_round_rect(renderer,{cx+12,cy+18,size,size},18,{0,0,0,Uint8(120*b)});
     SDL_Rect art={cx,cy,size,size};
     if(cover_) {
-        SDL_SetTextureColorMod(cover_,Uint8(255*b),Uint8(255*b),Uint8(255*b));
-        SDL_RenderCopy(renderer,cover_,nullptr,&art);
+        if(SDL_SetTextureColorMod(cover_,Uint8(255*b),Uint8(255*b),Uint8(255*b)))render_failed=true;
+        if(SDL_RenderCopy(renderer,cover_,nullptr,&art))render_failed=true;
     } else {
         fill_round_rect(renderer,art,18,dim(uxair_surface,1));
-        int lw=0,lh=0;TTF_SizeUTF8(np_title_,"AirPlay",&lw,&lh);
-        text_at("AirPlay",cx+(size-lw)/2,cy+(size-lh)/2,size,np_title_,dim(uxair_accent,1));
+        int lw=0,lh=0;TTF_SizeUTF8(title_font,"AirPlay",&lw,&lh);
+        text_at("AirPlay",cx+(size-lw)/2,cy+(size-lh)/2,size,title_font,dim(uxair_accent,1));
     }
     const int tx=cx+size+90, tw=w-tx-w*8/100;
     int y=cy+size*12/100;
@@ -240,10 +248,11 @@ bool Shell::now_playing(const NowPlayingView& v) {
     // The title scrolls when too wide: 3 s at the start, glides left until its
     // end shows, 5 s there, glides back, again.
     const std::string title=plain_punctuation(v.title.empty()?"Unknown title":v.title);
-    if(title!=title_text_||!title_) {
+    if(title!=title_text_) {
         if(title_){SDL_DestroyTexture(title_);title_=nullptr;}
-        SDL_Surface *s=TTF_RenderUTF8_Blended(np_title_,title.c_str(),uxair_text);
+        SDL_Surface *s=TTF_RenderUTF8_Blended(title_font,title.c_str(),uxair_text);
         if(s){title_=SDL_CreateTextureFromSurface(renderer,s);title_w_=s->w;title_h_=s->h;SDL_FreeSurface(s);}
+        if(!title_)fprintf(stderr,"[now-playing] title texture: %s\n",SDL_GetError());
         title_text_=title;title_since_=SDL_GetTicks();
     }
     bool animating=false;
@@ -260,13 +269,13 @@ bool Shell::now_playing(const NowPlayingView& v) {
             else if((t-=out)<hold_end) offset=overflow;
             else offset=int(overflow*(1-ease((t-hold_end)/back)));
         }
-        SDL_SetTextureColorMod(title_,Uint8(255*b),Uint8(255*b),Uint8(255*b));
+        if(SDL_SetTextureColorMod(title_,Uint8(255*b),Uint8(255*b),Uint8(255*b)))render_failed=true;
         SDL_Rect src={offset,0,std::min(title_w_,tw),title_h_}, dst={tx,y,src.w,title_h_};
-        SDL_RenderCopy(renderer,title_,&src,&dst);
+        if(SDL_RenderCopy(renderer,title_,&src,&dst))render_failed=true;
     }
-    y+=TTF_FontLineSkip(np_title_)+8;
-    if(!v.artist.empty()) {text_at(fit_text(np_artist_,plain_punctuation(v.artist),tw),tx,y,tw,np_artist_,dim({222,232,242,255},1));y+=TTF_FontLineSkip(np_artist_)+6;}
-    if(!v.album.empty()) text_at(fit_text(np_album_,plain_punctuation(v.album),tw),tx,y,tw,np_album_,dim({160,182,198,255},1));
+    y+=TTF_FontLineSkip(title_font)+8;
+    if(!v.artist.empty()) {text_at(fit_text(artist_font,plain_punctuation(v.artist),tw),tx,y,tw,artist_font,dim({222,232,242,255},1));y+=TTF_FontLineSkip(artist_font)+6;}
+    if(!v.album.empty()) text_at(fit_text(album_font,plain_punctuation(v.album),tw),tx,y,tw,album_font,dim({160,182,198,255},1));
     if(v.duration_s>0) {
         const int py=cy+size*82/100;
         const double fraction=std::max(0.0,std::min(1.0,v.elapsed_s/v.duration_s));
@@ -277,10 +286,16 @@ bool Shell::now_playing(const NowPlayingView& v) {
         text_at(clock_text(v.elapsed_s),tx,py+22,tw/2,small_,dim({170,190,205,255},1));
         text_at(remaining,tx+tw-rw,py+22,rw,small_,dim({170,190,205,255},1));
     }
+    if(render_failed) {
+        static bool reported=false;
+        if(!reported)fprintf(stderr,"[now-playing] texture/blend rendering: %s\n",SDL_GetError());
+        reported=true;
+    }
     SDL_RenderPresent(renderer);
     return animating;
 }
 Action Shell::action() {
+    if(interrupted)return Action::Quit;
     SDL_Event e;
     static Uint32 last_motion_log_ms = 0;
     pointer_select_ = false;
@@ -313,7 +328,7 @@ Action Shell::action() {
             return mapped;
         }
     }
-    return interrupted?Action::Exit:Action::None;
+    return interrupted?Action::Quit:Action::None;
 }
 bool Shell::pointer_select(int& x, int& y) const {
     if (!pointer_select_) return false;
@@ -351,7 +366,7 @@ UiHit Shell::hit_test(int x, int y, int row_count, const UiDialog *dialog, int s
     }
     return {};
 }
-bool Shell::pump() {Action a=action();return a!=Action::Back&&a!=Action::Exit;}
+bool Shell::pump() {Action a=action();return a!=Action::Back&&a!=Action::Exit&&a!=Action::Quit;}
 void Shell::text(const std::string& s,int y,TTF_Font *font,SDL_Color color) {
     SDL_Surface *surface=TTF_RenderUTF8_Blended(font,s.c_str(),color);if(!surface)return;
     SDL_Texture *texture=SDL_CreateTextureFromSurface(renderer,surface);
@@ -643,4 +658,4 @@ void Shell::screen(const std::string& status,const std::string& pin,int delay) {
     text("Same Wi-Fi network  ·  Quality in Settings  ·  Back to exit",h-80,font_,{145,167,185,255});
     SDL_RenderPresent(renderer);
 }
-Shell::~Shell() {if(cover_)SDL_DestroyTexture(cover_);if(background_)SDL_DestroyTexture(background_);if(title_)SDL_DestroyTexture(title_);if(np_title_)TTF_CloseFont(np_title_);if(np_artist_)TTF_CloseFont(np_artist_);if(np_album_)TTF_CloseFont(np_album_);if(donation_icon_)SDL_DestroyTexture(donation_icon_);if(donation_qr_)SDL_DestroyTexture(donation_qr_);if(font_)TTF_CloseFont(font_);if(large_)TTF_CloseFont(large_);if(small_)TTF_CloseFont(small_);if(pin_font_)TTF_CloseFont(pin_font_);if(pin_font_small_)TTF_CloseFont(pin_font_small_);TTF_Quit();if(renderer) SDL_DestroyRenderer(renderer); if(window) SDL_DestroyWindow(window); SDL_Quit(); }
+Shell::~Shell() {if(cover_)SDL_DestroyTexture(cover_);if(title_)SDL_DestroyTexture(title_);if(np_title_)TTF_CloseFont(np_title_);if(np_artist_)TTF_CloseFont(np_artist_);if(np_album_)TTF_CloseFont(np_album_);if(donation_icon_)SDL_DestroyTexture(donation_icon_);if(donation_qr_)SDL_DestroyTexture(donation_qr_);if(font_)TTF_CloseFont(font_);if(large_)TTF_CloseFont(large_);if(small_)TTF_CloseFont(small_);if(pin_font_)TTF_CloseFont(pin_font_);if(pin_font_small_)TTF_CloseFont(pin_font_small_);TTF_Quit();if(renderer) SDL_DestroyRenderer(renderer); if(window) SDL_DestroyWindow(window); SDL_Quit(); }

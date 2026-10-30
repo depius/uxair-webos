@@ -16,21 +16,6 @@ static Receiver& self(void *p) { return *static_cast<Receiver *>(p); }
 static void log_message(void *,int level,const char *text) {
     if (level<=LOGGER_INFO) fprintf(stderr,"[airplay] %s\n",text);
 }
-// DMAP: 4-byte tag, 4-byte big-endian length, data; "mlit" holds the items.
-static void dmap_items(const uint8_t *d,size_t len,NowPlaying& m) {
-    for(size_t o=0;o+8<=len;) {
-        const std::string tag(reinterpret_cast<const char *>(d+o),4);
-        const size_t n=(size_t(d[o+4])<<24)|(size_t(d[o+5])<<16)|(size_t(d[o+6])<<8)|d[o+7];
-        o+=8;
-        if(n>len-o)break;
-        const std::string value(reinterpret_cast<const char *>(d+o),n);
-        if(tag=="mlit")dmap_items(d+o,n,m);
-        else if(tag=="minm")m.title=value;
-        else if(tag=="asar")m.artist=value;
-        else if(tag=="asal")m.album=value;
-        o+=n;
-    }
-}
 NowPlaying Receiver::now_playing() {
     NowPlaying copy;
     {std::lock_guard<std::mutex> l(meta_mutex);copy=meta;}
@@ -235,7 +220,7 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
     };
     cb.audio_set_metadata=[](void *p,const void *buffer,int length){
         Receiver& r=self(p);NowPlaying m;
-        if(buffer&&length>0)dmap_items(static_cast<const uint8_t *>(buffer),size_t(length),m);
+        if(length<0 || !parse_now_playing(buffer,size_t(length),m))return;
         std::lock_guard<std::mutex> l(r.meta_mutex);
         // the cover is kept as it is: iOS sends a track's cover before its text
         if(m.title!=r.meta.title||m.artist!=r.meta.artist)r.meta.track_ns=now_ns();
@@ -243,9 +228,15 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
         fprintf(stderr,"[now-playing] %.60s - %.60s (%.60s)\n",m.artist.c_str(),m.title.c_str(),m.album.c_str());
     };
     cb.audio_set_coverart=[](void *p,const void *buffer,int length){
-        Receiver& r=self(p);std::lock_guard<std::mutex> l(r.meta_mutex);
-        if(buffer&&length>0&&length<8*1024*1024)r.meta.cover.assign(static_cast<const uint8_t *>(buffer),static_cast<const uint8_t *>(buffer)+length);
-        else r.meta.cover.clear();
+        Receiver& r=self(p);
+        // Allocate on the sender callback, outside the metadata lock. Readers
+        // keep an immutable snapshot alive across replacement/disconnect.
+        std::shared_ptr<const std::vector<uint8_t>> cover;
+        const auto *bytes=static_cast<const uint8_t *>(buffer);
+        if(length>0 && artwork_supported(bytes,size_t(length)))
+            cover=std::make_shared<const std::vector<uint8_t>>(bytes,bytes+length);
+        std::lock_guard<std::mutex> l(r.meta_mutex);
+        r.meta.cover=std::move(cover);
         r.meta.cover_ns=now_ns();++r.meta.cover_generation;++r.meta.generation;
         fprintf(stderr,"[now-playing] cover %d bytes\n",length);
     };

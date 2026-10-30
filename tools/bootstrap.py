@@ -18,11 +18,13 @@ def run(*args, **kw):
 def host_toolchain():
     if platform.system() == 'Linux' and platform.machine() == 'x86_64':
         return 'toolchain-linux-x86_64'
-    return 'toolchain'
+    if platform.system() == 'Darwin' and platform.machine() == 'arm64':
+        return 'toolchain'
+    sys.exit('Unsupported build host: use Linux x86-64 (including WSL2) or macOS ARM64 with the pinned webOS ARM SDK.')
 
 def main():
-    CACHE.mkdir(exist_ok=True)
     toolchain = host_toolchain()
+    CACHE.mkdir(exist_ok=True)
     for name, item in LOCK.items():
         if name.startswith('toolchain'):
             if name != toolchain:

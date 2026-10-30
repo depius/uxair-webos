@@ -12,7 +12,7 @@ Action InputMapper::select(SelectSource source, Uint32 now_ms) {
 }
 
 Action InputMapper::map(const SDL_Event& event, Uint32 now_ms) {
-    if (event.type == SDL_QUIT) return Action::Exit;
+    if (event.type == SDL_QUIT) return Action::Quit;
     if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT)
         return select(SelectSource::Mouse, now_ms);
     if (event.type != SDL_KEYDOWN) return Action::None;

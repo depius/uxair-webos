@@ -12,6 +12,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--development', action='store_true', help='Package the separately identified development receiver')
     args = parser.parse_args()
+    backend_marker = ROOT / 'build/media-backend.txt'
+    backend = backend_marker.read_text().strip() if backend_marker.exists() else ''
+    if backend not in ('ndl', 'starfish'):
+        parser.error('missing or invalid media backend marker; rebuild before packaging')
+    platform = {'ndl': 'webos5plus', 'starfish': 'webos3-4'}[backend]
     variant = 'development' if args.development else 'production'
     marker = ROOT / 'build/package-variant.txt'
     if marker.exists() and marker.read_text().strip() != variant:
@@ -52,9 +57,6 @@ def main():
     subprocess.run(['python3', str(ROOT / 'tools/verify-elf.py'), str(stage)], check=True)
     (ROOT / 'dist').mkdir(exist_ok=True)
     # one package per player: ndl for webOS 5 and later, starfish for webOS 3-4
-    backend_marker = ROOT / 'build/media-backend.txt'
-    backend = backend_marker.read_text().strip() if backend_marker.exists() else 'ndl'
-    platform = {'ndl': 'webos5plus', 'starfish': 'webos3-4'}[backend]
     package = ROOT / 'dist' / f"{app['id']}_{app['version']}_arm-{platform}.ipk"
     if shutil.which('ares-package'):
         subprocess.run(['ares-package', str(stage), '-o', str(ROOT / 'dist')], check=True)
