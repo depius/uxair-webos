@@ -59,14 +59,13 @@ std::string data_directory() {
     std::string id = app.substr(app.rfind('/') + 1);
     std::string lib = "/media/developer/apps/var/lib/" + id;
 #if defined(UXAIR_MEDIA_NDL)
-    const bool use_lib = true;
+    const bool ndl=true;
 #else
-    // Preserve existing PR #10 var/lib state only if no app-local state exists.
-    struct stat local_state,lib_state;
-    const bool use_lib = lstat((app+"/state").c_str(),&local_state)!=0 && errno==ENOENT &&
-                         lstat((lib+"/state").c_str(),&lib_state)==0;
+    const bool ndl=false;
 #endif
-    const std::string selected=use_lib?lib:app;
+    const std::string selected=select_state_root(app,lib,ndl);
+    const bool use_lib=selected==lib;
+    state_environment(app,lib,selected,ndl);
     if(prepare_state(selected,use_lib))return dir=selected;
     fprintf(stderr,"[state] unsafe or inaccessible persistent directory; refusing temporary identity\n");
     return "";
@@ -76,13 +75,19 @@ bool start_log(const char *name) {
     if(directory.empty())return false;
     std::string p = directory + "/" + name;
     log_path=p;
-    rename(p.c_str(), (p+".previous").c_str());
+    if(rename(p.c_str(), (p+".previous").c_str()) && errno!=ENOENT)
+        state_rejected(p,"rotate-log",errno);
     int parent=owned_directory(directory,false,false);
     if(parent<0)return false;
-    int fd=owned_file_at(parent,name,O_WRONLY|O_CREAT);close(parent);
+    int fd=owned_file_at(parent,name,O_WRONLY|O_CREAT,p);close(parent);
     if(fd<0)return false;
-    bool ok=ftruncate(fd,0)==0 && dup2(fd,STDERR_FILENO)>=0;close(fd);
-    if(!ok)return false;
+    if(ftruncate(fd,0)) {
+        const int error=errno;close(fd);state_rejected(p,"truncate-log",error);return false;
+    }
+    if(dup2(fd,STDERR_FILENO)<0) {
+        const int error=errno;close(fd);state_rejected(p,"redirect-stderr",error);return false;
+    }
+    close(fd);
     setvbuf(stderr, nullptr, _IOLBF, 0);
     // Proprietary drivers emit high-volume frame diagnostics to stdout.
     // Keep application/errors on stderr, without filling app storage with them.

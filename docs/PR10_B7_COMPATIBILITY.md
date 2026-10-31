@@ -1,5 +1,7 @@
 # PR #10 B7 compatibility fixes — local validation report
 
+> Follow-up 2026-10-31: `72a276c` fails storage validation on the B7. See [the storage diagnostic build](B7_STORAGE_DIAGNOSTICS.md). The report below is historical, not a claim of current TV compatibility.
+
 Date: 2026-10-30. Status: implemented locally; **not ready for release or merge until Linux compilation and TV validation pass**.
 
 This report records the original local validation before the follow-up Actions build. The branch now includes a Starfish-only ARMv7 workflow trigger and stricter archive/control/dependency validation; consult the Actions run for its final result. The hardware-validation requirements below still apply.

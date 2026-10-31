@@ -23,3 +23,7 @@ jobs:
         run: python3 tools/validate-metadata.py
       - name: Run sanitizer-backed host tests
         run: tools/test.sh
+      - name: Reproduce B7 storage rejection across execution UIDs
+        run: |
+          c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -Isrc tests/b7_storage_layout_test.cpp -o build/tests/b7-storage-layout-test
+          sudo build/tests/b7-storage-layout-test
