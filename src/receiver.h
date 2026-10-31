@@ -14,6 +14,7 @@
 struct Packet {
     bool video;
     unsigned codec;
+    unsigned audio_epoch=0;
     uint64_t timestamp;
     int64_t arrival_ns = 0, enqueued_ns = 0, dequeued_ns = 0;
     std::vector<uint8_t> data;
@@ -56,6 +57,7 @@ struct Receiver {
     std::atomic<int64_t> last_video_arrival{0};
     std::atomic<uint64_t> total_video_arrivals{0};
     std::atomic<unsigned> last_audio_codec{0};
+    std::atomic<unsigned> audio_epoch{0};
     std::atomic<unsigned> incoming_video_codec{0}; // 1 H.264, 2 HEVC
     std::atomic<unsigned> overflow{0};
     std::atomic<unsigned> session_resets{0};

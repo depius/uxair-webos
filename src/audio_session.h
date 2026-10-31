@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 
 struct AirPlayAudioIntent {
     unsigned codec;
@@ -20,4 +21,17 @@ inline bool standalone_audio_candidate(const AirPlayAudioIntent& intent, bool mi
 
 inline bool standalone_audio_yield_to_video(bool audio_only_session, bool video_packet) {
     return audio_only_session && video_packet;
+}
+
+// FLUSH invalidates copied/dequeued audio as well as queued packets.
+inline bool current_audio_epoch(unsigned packet,unsigned current) { return packet==current; }
+inline void apply_audio_flush(bool audio_only,bool pending_video,bool& have_pending,
+                              int64_t& retry_since,bool& flush_paused) {
+    if(have_pending && !pending_video)have_pending=false;
+    if(audio_only || !pending_video)retry_since=0;
+    if(audio_only)flush_paused=true;
+}
+
+inline bool feed_retry_expired(int64_t since,int64_t now) {
+    return since!=0 && now-since>3000000000LL;
 }

@@ -189,7 +189,7 @@ int main(int argc,char **argv) {
     DurationWindow video_feed_time, audio_feed_time, media_tick_time, loop_gap_time;
     int64_t previous_loop=0;
     auto finish=[&](bool error=false,bool preserve_receiver=false,bool preserve_pending=false){
-        fprintf(stderr,"[session] finish error=%d opened=%d audio_only=%d preserve_receiver=%d\n",error,opened,audio_only_playback,preserve_receiver);
+        fprintf(stderr,"[session] generation=%u finish error=%d opened=%d audio_only=%d preserve_receiver=%d\n",sessions_started,error,opened,audio_only_playback,preserve_receiver);
         if(opened && media.playing && (video_count || (audio_only_playback && audio_count)))session_success=true;
         if(error && !opened) {++usage.session_errors;save_usage_stats(state_dir+"/usage-v1",usage);history_storage=usage_storage_bytes(state_dir+"/usage-v1");history_dirty=true;}
         if(opened) {
@@ -280,7 +280,18 @@ int main(int argc,char **argv) {
         recover_decoder(failed_hevc,reason);
         receiver.show(std::string(media_open_failure_message(failure))+" Settings remain available; reconnect to retry.");
     };
+    auto flush_audio=[&](){
+        decoder.reset();
+        apply_audio_flush(audio_only_playback,have_pending && pending.video,have_pending,stall,audio_flush_paused);
+        fprintf(stderr,"[session] generation=%u transition=audio-flush epoch=%u paused=%d pending=%d\n",
+                sessions_started,receiver.audio_epoch.load(),int(audio_flush_paused),int(have_pending));
+    };
     auto recover_playback=[&](const char *reason){
+        Settings saved;
+        const bool saved_ok=load_settings(settings_path,saved);
+        fprintf(stderr,"[session] generation=%u recovery=%s runtime=%dx%d/%d codec=%d saved_available=%d saved=%dx%d/%d codec=%d\n",
+                sessions_started,reason,settings.width,settings.height,settings.max_fps,int(settings.codec),int(saved_ok),
+                saved.width,saved.height,saved.max_fps,int(saved.codec));
         const bool audio_only=audio_only_playback;
         const bool failed_hevc=session_codec==MirrorCodec::ExperimentalHevc;
         finish(true);
@@ -576,13 +587,9 @@ int main(int argc,char **argv) {
             fprintf(stderr,"[session] idle timeout\n");
             finish(true);receiver.show("Connection lost. Connect again.");
         }
-        if(receiver.audio_flush.exchange(false)) {
-            decoder.reset();
-            if(have_pending && !pending.video)have_pending=false;
-            if(opened && audio_only_playback) {
-                audio_flush_paused=true;
-                fprintf(stderr,"[audio-only] RAOP FLUSH paused Starfish until the next audio packet\n");
-            }
+        if(receiver.audio_flush.exchange(false))flush_audio();
+        if(have_pending && !pending.video && !current_audio_epoch(pending.audio_epoch,receiver.audio_epoch.load())) {
+            have_pending=false;stall=0;
         }
         if(opened) {
             int64_t tick_begin=now_ns();
@@ -1031,7 +1038,10 @@ int main(int argc,char **argv) {
             if(pending.data.empty()){have_pending=false;continue;}
         }
         if(!pending.video && receiver.audio_flush.exchange(false)) {
-            decoder.reset();have_pending=false;continue;
+            flush_audio();continue;
+        }
+        if(!pending.video && !current_audio_epoch(pending.audio_epoch,receiver.audio_epoch.load())) {
+            have_pending=false;stall=0;continue;
         }
         if(audio_only_playback && !pending.video && audio_flush_paused) {
             audio_flush_paused=false;media.pause(false);last_paused=false;
@@ -1064,10 +1074,21 @@ int main(int argc,char **argv) {
                 video_schedule_late.record(uint64_t(std::max<int64_t>(0,feed_begin-(start+pts))));
                 video_pending_time.record(uint64_t(std::max<int64_t>(0,feed_begin-pending.dequeued_ns)));
             } else {++audio_count;audio_end=pts+int64_t(pending.data.size()/4)*1000000000/44100;}
+            if(stall)fprintf(stderr,"[feed-stall] generation=%u recovered duration_ms=%.1f\n",sessions_started,(now-stall)/1e6);
             have_pending=false;stall=0;
         } else if(result==FeedResult::Retry) {
-            if(!stall)stall=now;
-            if(now-stall>3000000000LL){
+            if(!stall) {
+                stall=now;
+                ReceiverDiagnostics q=receiver.queue_snapshot();
+                fprintf(stderr,"[feed-stall] generation=%u begin video=%d pts_ms=%.1f bytes=%zu queue=%zu/%zu ready=%d playing=%d flush_paused=%d\n",
+                        sessions_started,int(pending.video),pts/1e6,pending.data.size(),q.queue_packets,q.queue_bytes,
+                        int(media.ready.load()),int(media.playing.load()),int(audio_flush_paused));
+            }
+            if(feed_retry_expired(stall,now)){
+                ReceiverDiagnostics q=receiver.queue_snapshot();
+                fprintf(stderr,"[feed-stall] generation=%u timeout duration_ms=%.1f video=%d queue=%zu/%zu retries_audio=%llu ready=%d playing=%d\n",
+                        sessions_started,(now-stall)/1e6,int(pending.video),q.queue_packets,q.queue_bytes,
+                        (unsigned long long)media.feed_audio_retries.load(),int(media.ready.load()),int(media.playing.load()));
                 recover_playback("feed-backpressure-timeout");
             }
             SDL_Delay(5);

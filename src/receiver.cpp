@@ -66,6 +66,7 @@ void Receiver::enqueue(bool video,unsigned codec,uint64_t time,const uint8_t *da
         fprintf(stderr,"[queue] oversized %s packet bytes=%d limit=%zu\n",video?"video":"audio",size,packet_limit);
         reset=true;return;
     }
+    const unsigned epoch=audio_epoch.load();
     const int64_t arrival=now_ns();
     activity=arrival;
     if(video) {last_video_arrival=arrival;++total_video_arrivals;}
@@ -77,10 +78,11 @@ void Receiver::enqueue(bool video,unsigned codec,uint64_t time,const uint8_t *da
         time=offset>=0?time+uint64_t(offset):time-uint64_t(-offset);
     }
     // Copy callback-owned memory before taking the A/V queue lock.
-    Packet p; p.video=video;p.codec=codec;p.timestamp=time;p.arrival_ns=arrival;
+    Packet p; p.audio_epoch=epoch;p.video=video;p.codec=codec;p.timestamp=time;p.arrival_ns=arrival;
     p.data.assign(data,data+size);
     const int64_t copy_done=now_ns();
     std::lock_guard<std::mutex> l(mutex);
+    if(!video && !current_audio_epoch(epoch,audio_epoch.load()))return;
     const int64_t lock_acquired=now_ns();
     ingress_copy.record(uint64_t(std::max<int64_t>(0,copy_done-arrival)));
     queue_lock_wait.record(uint64_t(std::max<int64_t>(0,lock_acquired-copy_done)));
@@ -115,9 +117,10 @@ bool Receiver::pop(Packet& p,uint64_t latest) {
     queue_pop.record(uint64_t(std::max<int64_t>(0,now_ns()-pop_begin)));
     return true;
 }
-void Receiver::clear() { std::lock_guard<std::mutex> l(mutex);packets.clear();bytes=video_packets=video_bytes=0;pairing.reset();client.clear();client_name.clear();video_timing.reset();ingress_to_queue.reset();ingress_copy.reset();queue_lock_wait.reset();queue_pop.reset();video_queue_residence.reset();audio_queue_residence.reset();last_video_arrival=0; }
+void Receiver::clear() { std::lock_guard<std::mutex> l(mutex);++audio_epoch;packets.clear();bytes=video_packets=video_bytes=0;pairing.reset();client.clear();client_name.clear();video_timing.reset();ingress_to_queue.reset();ingress_copy.reset();queue_lock_wait.reset();queue_pop.reset();video_queue_residence.reset();audio_queue_residence.reset();last_video_arrival=0; }
 void Receiver::clear_audio_packets() {
     std::lock_guard<std::mutex> l(mutex);
+    ++audio_epoch;
     for(auto i=packets.begin();i!=packets.end();) {
         if(!i->video) { bytes-=i->data.size(); i=packets.erase(i); }
         else ++i;
@@ -167,7 +170,8 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
     cb.video_reset=[](void *p,reset_type_t reason){fprintf(stderr,"[session] video reset reason=%d\n",int(reason));++self(p).session_resets;self(p).reset=true;};
     cb.video_pause=[](void *p){self(p).paused=true;};
     cb.video_resume=[](void *p){self(p).paused=false;};
-    cb.audio_flush=[](void *p){Receiver& r=self(p);r.clear_audio_packets();r.audio_flush=true;};
+    cb.audio_flush=[](void *p){Receiver& r=self(p);r.clear_audio_packets();r.audio_flush=true;
+        fprintf(stderr,"[session] audio-flush epoch=%u\n",r.audio_epoch.load());};
     // UxPlay also calls video_flush for short-lived discovery HTTP connections.
     // The RTP lifecycle uses video_reset, so that is our session teardown boundary.
     cb.video_flush=[](void *){};
