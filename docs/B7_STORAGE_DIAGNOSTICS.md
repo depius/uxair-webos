@@ -1,3 +1,5 @@
+> Superseded by the focused [B7 storage fix](B7_STORAGE_FIX.md). The diagnostic-only behavior below describes e7fcdd2.
+
 # B7 storage startup diagnostics (2026-10-31)
 
 This is an investigation build, not a confirmed startup fix. It retains the

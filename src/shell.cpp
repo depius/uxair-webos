@@ -66,20 +66,28 @@ std::string data_directory() {
     const std::string selected=select_state_root(app,lib,ndl);
     const bool use_lib=selected==lib;
     state_environment(app,lib,selected,ndl);
-    if(prepare_state(selected,use_lib))return dir=selected;
+    if(prepare_state(selected,use_lib,!ndl && selected==app))return dir=selected;
     fprintf(stderr,"[state] unsafe or inaccessible persistent directory; refusing temporary identity\n");
     return "";
 }
 bool start_log(const char *name) {
-    const std::string directory=data_directory();
+    std::string directory=data_directory();
     if(directory.empty())return false;
+#if !defined(UXAIR_MEDIA_NDL)
+    // Private logs share the existing state directory; old app-root logs stay intact.
+    directory+="/state";
+#endif
     std::string p = directory + "/" + name;
     log_path=p;
+#if defined(UXAIR_MEDIA_NDL)
     if(rename(p.c_str(), (p+".previous").c_str()) && errno!=ENOENT)
         state_rejected(p,"rotate-log",errno);
     int parent=owned_directory(directory,false,false);
     if(parent<0)return false;
     int fd=owned_file_at(parent,name,O_WRONLY|O_CREAT,p);close(parent);
+#else
+    int fd=open_rotated_log(directory,name);
+#endif
     if(fd<0)return false;
     if(ftruncate(fd,0)) {
         const int error=errno;close(fd);state_rejected(p,"truncate-log",error);return false;

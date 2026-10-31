@@ -87,8 +87,14 @@ inline int owned_file_at(int directory,const char *name,int flags,const std::str
     if(reason){close(fd);state_rejected(path,reason,error,strcmp(reason,"fstat-file")?&s:nullptr);return -1;}
     return fd;
 }
-inline bool prepare_state(const std::string& root,bool create_root) {
-    int parent=owned_directory(root,create_root,create_root);
+// Starfish alone may trust its executable installation container, as the old
+// webOS jail requires. This does NOT make writable ancestors a security boundary.
+// State/files remain process-owned; the installation container is never chmodded.
+inline bool prepare_state(const std::string& root,bool create_root,bool starfish_app_container=false) {
+    int parent=starfish_app_container && !create_root
+        ? open(root.c_str(),O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)
+        : owned_directory(root,create_root,create_root);
+    if(parent<0 && starfish_app_container)state_rejected(root,"open-install-container",errno);
     if(parent<0)return false;
     const std::string path=root+"/state";
     if(mkdirat(parent,"state",0700) && errno!=EEXIST) {
@@ -115,4 +121,28 @@ inline bool prepare_state(const std::string& root,bool create_root) {
         close(file);
     }
     closedir(entries);if(!ok)errno=failure;return ok;
+}
+
+// Only call on validated private storage, never the writable install container.
+inline int open_rotated_log(const std::string& directory,const char *name) {
+    if(!name || !*name || strchr(name,'/') || !strcmp(name,".") || !strcmp(name,"..")) {
+        errno=EINVAL;return -1;
+    }
+    int parent=owned_directory(directory,false,false);
+    if(parent<0)return -1;
+    const std::string previous=std::string(name)+".previous";
+    for(const std::string& leaf:{std::string(name),previous}) {
+        struct stat st;
+        if(fstatat(parent,leaf.c_str(),&st,AT_SYMLINK_NOFOLLOW)) {
+            if(errno==ENOENT)continue;
+            const int error=errno;close(parent);state_rejected(directory+"/"+leaf,"stat-log",error);return -1;
+        }
+        int checked=owned_file_at(parent,leaf.c_str(),O_WRONLY,directory+"/"+leaf);
+        if(checked<0){close(parent);return -1;}close(checked);
+    }
+    if(renameat(parent,name,parent,previous.c_str()) && errno!=ENOENT) {
+        const int error=errno;close(parent);state_rejected(directory+"/"+name,"rotate-log",error);return -1;
+    }
+    int fd=owned_file_at(parent,name,O_WRONLY|O_CREAT,directory+"/"+name);close(parent);
+    return fd;
 }
