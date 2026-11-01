@@ -4,7 +4,7 @@ import importlib.util,subprocess
 root=Path(__file__).resolve().parent.parent
 spec=importlib.util.spec_from_file_location('lifecycle',root/'tools/instrument-lifecycle.py')
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-fixture=(root/'tests/fixtures/raop_teardown.h').read_text()
+fixture=(root/'tests/fixtures/raop_teardown.h').read_text(encoding='utf-8')
 handler=m.instrument_handler(fixture)
 assert handler.count('uxair_sender_video_reset(')==2
 try:m.instrument_handler(fixture.replace(m.CALL,''))
@@ -63,7 +63,7 @@ int main(void){
 }
 '''
 source=root/'build/tests/teardown-origin-test.c';source.parent.mkdir(parents=True,exist_ok=True)
-source.write_text(prefix+handler+suffix)
+source.write_text(prefix+handler+suffix,encoding='utf-8')
 exe=root/'build/tests/teardown-origin-test'
 subprocess.run(['cc','-std=c11','-g','-fsanitize=address,undefined',str(source),'-o',str(exe)],check=True)
 subprocess.run([str(exe)],check=True)

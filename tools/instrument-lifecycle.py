@@ -19,10 +19,10 @@ def main():
         data=(lib/name).read_bytes()
         if hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()!=digest:
             raise SystemExit('Unpinned lifecycle input: '+name)
-    source=input_c.read_text()
+    source=input_c.read_text(encoding='utf-8')
     anchor='#include "raop_handlers.h"'
     if source.count(anchor)!=1:raise SystemExit('Lifecycle include changed')
     source=source.replace(anchor,'#include "receiver_lifecycle.h"\n#include "uxair_raop_handlers.h"')
-    (out/'lifecycle-raop.c').write_text(source,newline='\n')
-    (out/'uxair_raop_handlers.h').write_text(instrument_handler((lib/'raop_handlers.h').read_text()),newline='\n')
+    (out/'lifecycle-raop.c').write_text(source,encoding='utf-8',newline='\n')
+    (out/'uxair_raop_handlers.h').write_text(instrument_handler((lib/'raop_handlers.h').read_text(encoding='utf-8')),encoding='utf-8',newline='\n')
 if __name__=='__main__':main()

@@ -1,5 +1,5 @@
 /**
- *  Copyright (C) 2018  Juho V‰h‰-Herttua
+ *  Copyright (C) 2018  Juho V√§h√§-Herttua
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
