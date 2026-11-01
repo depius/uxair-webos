@@ -1,4 +1,5 @@
 #include "receiver.h"
+#include "receiver_lifecycle.h"
 #include "shell.h"
 #include "identity.h"
 #include "capabilities.h"
@@ -13,6 +14,29 @@
 #include <openssl/rand.h>
 
 static Receiver& self(void *p) { return *static_cast<Receiver *>(p); }
+extern "C" void uxair_sender_video_reset(void *p,int reason) {
+    self(p).request_reset(ResetOrigin::SenderTeardown,reason);
+}
+void Receiver::request_reset(ResetOrigin origin,int reason) {
+    std::lock_guard<std::mutex> l(mutex);
+    resets.add(origin,reason,transport_epoch.load());++session_resets;
+    fprintf(stderr,"[session] reset origin=%s reason=%d epoch=%u closing=%d\n",
+        reset_origin_name(origin),reason,transport_epoch.load(),int(ingress.closing));
+}
+ResetNotice Receiver::take_reset() {
+    std::lock_guard<std::mutex> l(mutex);ResetNotice result=resets;resets=ResetNotice();return result;
+}
+void Receiver::begin_close() {
+    std::lock_guard<std::mutex> l(mutex);
+    if(!ingress.closing){ingress.close();++transport_epoch;}
+}
+static void audio_snapshot(const std::deque<Packet>& packets,ReceiverDiagnostics& d) {
+    for(const auto& p:packets)if(!p.video) {
+        ++d.audio_queue_packets;d.audio_queue_bytes+=p.data.size();
+        if(!d.audio_pts_min || p.timestamp<d.audio_pts_min)d.audio_pts_min=p.timestamp;
+        d.audio_pts_max=std::max(d.audio_pts_max,p.timestamp);
+    }
+}
 static void log_message(void *,int level,const char *text) {
     if (level<=LOGGER_INFO) fprintf(stderr,"[airplay] %s\n",text);
 }
@@ -32,6 +56,7 @@ bool Receiver::idle_for_profile_change() {
 ReceiverDiagnostics Receiver::diagnostics() {
     std::lock_guard<std::mutex> l(mutex);
     ReceiverDiagnostics d;
+    audio_snapshot(packets,d);
     d.queue_packets=packets.size();d.queue_bytes=bytes;
     d.peak_queue_packets=peak_packets;d.peak_queue_bytes=peak_bytes;
     d.video_queue_packets=video_packets;d.video_queue_bytes=video_bytes;
@@ -48,6 +73,7 @@ ReceiverDiagnostics Receiver::diagnostics() {
 ReceiverDiagnostics Receiver::queue_snapshot() {
     std::lock_guard<std::mutex> l(mutex);
     ReceiverDiagnostics d;
+    audio_snapshot(packets,d);
     d.queue_packets=packets.size(); d.queue_bytes=bytes;
     d.video_queue_packets=video_packets; d.video_queue_bytes=video_bytes;
     d.dropped_packets=dropped_packets; d.dropped_video_frames=dropped_video_frames;
@@ -59,21 +85,19 @@ VideoTimingSample Receiver::take_video_timing() {
 }
 void Receiver::enqueue(bool video,unsigned codec,uint64_t time,const uint8_t *data,int size) {
     if (!data || size<=0 || !time) return;
-    const size_t packet_limit=video?max_video_packet_bytes:size_t(1024*1024);
-    if (size_t(size)>packet_limit) {
+    unsigned transport,epoch;size_t packet_limit;
+    {
         std::lock_guard<std::mutex> l(mutex);
-        ++overflow;++dropped_packets;if(video)++dropped_video_frames;
-        fprintf(stderr,"[queue] oversized %s packet bytes=%d limit=%zu\n",video?"video":"audio",size,packet_limit);
-        reset=true;return;
+        if(!ingress.accepting)return;
+        transport=transport_epoch.load();epoch=audio_epoch.load();
+        packet_limit=video?max_video_packet_bytes:size_t(1024*1024);
+        if(size_t(size)>packet_limit) {
+            ++overflow;++dropped_packets;if(video)++dropped_video_frames;
+            resets.add(ResetOrigin::Oversize,0,transport);return;
+        }
     }
-    const unsigned transport=transport_epoch.load();
-    const unsigned epoch=audio_epoch.load();
     const int64_t arrival=now_ns();
-    activity=arrival;
-    if(video) {last_video_arrival=arrival;++total_video_arrivals;}
     if(!video) {
-        last_audio_arrival=arrival;
-        last_audio_codec=codec;
         int64_t offset=int64_t(audio_delay_ms.load())*1000000;
         if(offset<0 && time<uint64_t(-offset))return;
         time=offset>=0?time+uint64_t(offset):time-uint64_t(-offset);
@@ -83,15 +107,18 @@ void Receiver::enqueue(bool video,unsigned codec,uint64_t time,const uint8_t *da
     p.data.assign(data,data+size);
     const int64_t copy_done=now_ns();
     std::lock_guard<std::mutex> l(mutex);
-    if(!current_audio_epoch(transport,transport_epoch.load()))return;
+    if(!ingress.accepts(transport,transport_epoch.load()))return;
     if(!video && !current_audio_epoch(epoch,audio_epoch.load()))return;
+    activity=arrival;
+    if(video){last_video_arrival=arrival;++total_video_arrivals;}
+    else {last_audio_arrival=arrival;last_audio_codec=codec;}
     const int64_t lock_acquired=now_ns();
     ingress_copy.record(uint64_t(std::max<int64_t>(0,copy_done-arrival)));
     queue_lock_wait.record(uint64_t(std::max<int64_t>(0,lock_acquired-copy_done)));
     if(video) video_timing.record(time,arrival);
     if (bytes+size>max_queue_bytes || packets.size()>=512) {
         ++overflow;++dropped_packets;if(video)++dropped_video_frames;
-        if(!reset.exchange(true))fprintf(stderr,"[queue] reset-cause=capacity epoch=%u video=%d packets=%zu bytes=%zu incoming=%d limit=%zu\n",
+        if(resets.add(ResetOrigin::Capacity,0,transport))fprintf(stderr,"[queue] reset-cause=capacity epoch=%u video=%d packets=%zu bytes=%zu incoming=%d limit=%zu\n",
             transport_epoch.load(),int(video),packets.size(),bytes,size,max_queue_bytes);
         return;
     }
@@ -171,8 +198,8 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
             r.enqueue(true,d->is_h265?2:0,d->ntp_time_remote,d->data,d->data_len);
     };
     cb.conn_feedback=[](void *p){self(p).activity=now_ns();};
-    cb.conn_reset=[](void *p,int reason){fprintf(stderr,"[session] transport reset reason=%d\n",reason);++self(p).session_resets;self(p).reset=true;};
-    cb.video_reset=[](void *p,reset_type_t reason){fprintf(stderr,"[session] video reset reason=%d\n",int(reason));++self(p).session_resets;self(p).reset=true;};
+    cb.conn_reset=[](void *p,int reason){self(p).request_reset(ResetOrigin::TransportCallback,reason);};
+    cb.video_reset=[](void *p,reset_type_t reason){self(p).request_reset(ResetOrigin::VideoCallback,int(reason));};
     cb.video_pause=[](void *p){self(p).paused=true;};
     cb.video_resume=[](void *p){self(p).paused=false;};
     cb.audio_flush=[](void *p){Receiver& r=self(p);r.clear_audio_packets();r.audio_flush=true;
@@ -223,9 +250,9 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
     cb.mirror_video_running=[](void *p,bool running){self(p).mirror=running;};
     cb.report_client_request=[](void *p,char *id,char *model,char *name,bool *admit){
         Receiver& r=self(p);std::lock_guard<std::mutex> l(r.mutex);
-        *admit=id && (r.client.empty()||r.client==id);
+        *admit=id && !r.ingress.closing && (r.client.empty()||r.client==id);
         fprintf(stderr,"[client] model=%.80s admitted=%d\n",model?model:"unknown",int(*admit));
-        if(*admit) {++r.stream_requests;r.client=id;r.client_name=name?std::string(name).substr(0,80):"";r.message=std::string("Connecting: ")+(name?std::string(name).substr(0,80):"device");r.activity=now_ns();}
+        if(*admit) {r.ingress.admit();++r.stream_requests;r.client=id;r.client_name=name?std::string(name).substr(0,80):"";r.message=std::string("Connecting: ")+(name?std::string(name).substr(0,80):"device");r.activity=now_ns();}
     };
     cb.audio_set_metadata=[](void *p,const void *buffer,int length){
         Receiver& r=self(p);NowPlaying m;
@@ -310,13 +337,16 @@ void Receiver::adjust_audio_delay(int delta) {
     }
 }
 void Receiver::disconnect() {
+    begin_close();
     if(raop) raop_remove_known_connections(raop);
-    clear(); has_audio=false;mirror=false;paused=false;reset=false;audio_flush=false;last_audio_arrival=0;incoming_video_codec=0;
+    clear(); has_audio=false;mirror=false;paused=false;audio_flush=false;last_audio_arrival=0;incoming_video_codec=0;
     audio_using_screen=false;audio_is_media=false;audio_samples_per_frame=audio_format=0;
     {std::lock_guard<std::mutex> l(meta_mutex);const uint64_t g=meta.generation+1,c=meta.cover_generation+1;meta=NowPlaying();meta.generation=g;meta.cover_generation=c;}
+    {std::lock_guard<std::mutex> l(mutex);ingress.disconnected();}
     show("Waiting for a connection");
 }
 void Receiver::stop() {
+    begin_close();
     if(dnssd) {dnssd_unregister_airplay(dnssd);dnssd_unregister_raop(dnssd);}
     if(raop) {raop_destroy(raop);raop=nullptr;}
     if(dnssd) {dnssd_destroy(dnssd);dnssd=nullptr;}

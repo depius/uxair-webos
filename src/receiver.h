@@ -9,6 +9,7 @@
 #include "diagnostics.h"
 #include "settings.h"
 #include "audio_session.h"
+#include "session_lifecycle.h"
 #include "pairing_ui.h"
 #include "now_playing.h"
 struct Packet {
@@ -21,6 +22,8 @@ struct Packet {
 };
 struct ReceiverDiagnostics {
     size_t queue_packets = 0, queue_bytes = 0;
+    size_t audio_queue_packets=0,audio_queue_bytes=0;
+    uint64_t audio_pts_min=0,audio_pts_max=0;
     size_t peak_queue_packets = 0, peak_queue_bytes = 0;
     size_t video_queue_packets = 0, video_queue_bytes = 0;
     size_t peak_video_queue_packets = 0, peak_video_queue_bytes = 0;
@@ -33,6 +36,9 @@ struct Receiver {
     bool start(const std::string& directory, const Settings& settings);
     void stop();
     void disconnect();
+    void begin_close();
+    void request_reset(ResetOrigin origin,int reason);
+    ResetNotice take_reset();
     bool pop(Packet& packet, uint64_t latest = UINT64_MAX);
     void enqueue(bool video, unsigned codec, uint64_t time, const uint8_t *data, int size);
     void clear();
@@ -47,7 +53,9 @@ struct Receiver {
     bool idle_for_profile_change();
     void adjust_audio_delay(int delta_ms);
     std::atomic<int> audio_delay_ms{100};
-    std::atomic<bool> reset{false}, audio_flush{false}, paused{false}, has_audio{false}, mirror{false};
+    ResetNotice resets; // protected by mutex
+    IngressState ingress; // protected by mutex
+    std::atomic<bool> audio_flush{false}, paused{false}, has_audio{false}, mirror{false};
     std::atomic<bool> audio_using_screen{false}, audio_is_media{false};
     std::atomic<unsigned> audio_samples_per_frame{0}, audio_format{0};
     std::atomic<int> width{1280},height{720};

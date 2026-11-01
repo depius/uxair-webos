@@ -90,7 +90,23 @@ if(BUILD_RECEIVER)
             "${CMAKE_SOURCE_DIR}/tools/instrument-uxplay.py"
             "${UX}/lib/raop.c" "${UX}/lib/http_request.c" "${UX}/lib/httpd.c" "${UX}/lib/raop_rtp_mirror.c")
     endif()
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(LIFECYCLE_INPUT "${UX}/lib/raop.c")
+    if(BUILD_DEVELOPMENT_PACKAGE)
+        set(LIFECYCLE_INPUT "${CMAKE_BINARY_DIR}/generated/raop.c")
+    endif()
+    execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/instrument-lifecycle.py"
+        "${UX}/lib" "${LIFECYCLE_INPUT}" "${CMAKE_BINARY_DIR}/generated"
+        RESULT_VARIABLE LIFECYCLE_RESULT)
+    if(NOT LIFECYCLE_RESULT EQUAL 0)
+        message(FATAL_ERROR "Pinned UxPlay lifecycle instrumentation failed")
+    endif()
+    list(REMOVE_ITEM CORE "${UX}/lib/raop.c" "${CMAKE_BINARY_DIR}/generated/raop.c")
+    list(APPEND CORE "${CMAKE_BINARY_DIR}/generated/lifecycle-raop.c")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/tools/instrument-lifecycle.py" "${UX}/lib/raop_handlers.h" "${UX}/lib/raop.c")
     add_library(airplay STATIC ${CORE})
+    target_include_directories(airplay PRIVATE "${CMAKE_SOURCE_DIR}/src")
     if(BUILD_DEVELOPMENT_PACKAGE)
         target_sources(airplay PRIVATE src/direct_request_diag.c)
         target_include_directories(airplay PRIVATE "${CMAKE_SOURCE_DIR}/src")

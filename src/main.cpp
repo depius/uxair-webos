@@ -189,8 +189,10 @@ int main(int argc,char **argv) {
     DurationWindow video_parse_time, video_schedule_late, video_pending_time;
     DurationWindow video_feed_time, audio_feed_time, media_tick_time, loop_gap_time;
     int64_t previous_loop=0;
+    NowPlayingCadence np_cadence;DurationWindow np_render_time;
     auto finish=[&](bool error=false,bool preserve_receiver=false,bool preserve_pending=false){
         fprintf(stderr,"[session] generation=%u finish error=%d opened=%d audio_only=%d preserve_receiver=%d\n",sessions_started,error,opened,audio_only_playback,preserve_receiver);
+        if(!preserve_receiver)receiver.begin_close();
         if(opened && media.playing && (video_count || (audio_only_playback && audio_count)))session_success=true;
         if(error && !opened) {++usage.session_errors;save_usage_stats(state_dir+"/usage-v1",usage);history_storage=usage_storage_bytes(state_dir+"/usage-v1");history_dirty=true;}
         if(opened) {
@@ -573,14 +575,20 @@ int main(int argc,char **argv) {
             }
             last_ui=0;
         }
-        if(receiver.reset.exchange(false)) {
+        const ResetNotice reset=receiver.take_reset();
+        if(reset.pending() && reset.epoch!=receiver.transport_epoch.load())
+            fprintf(stderr,"[session] obsolete-reset sources=%u event_epoch=%u current_epoch=%u video_reason=%d transport_reason=%d\n",
+                reset.sources,reset.epoch,receiver.transport_epoch.load(),reset.video_reason,reset.transport_reason);
+        if(reset.pending() && reset.epoch==receiver.transport_epoch.load()) {
             ReceiverDiagnostics q=receiver.queue_snapshot();
             fprintf(stderr,"[session] transport requested reset generation=%u epoch=%u opened=%d stall_ms=%.1f queue=%zu/%zu\n",
                 sessions_started,receiver.transport_epoch.load(),int(opened),stall?(now-stall)/1e6:0.0,q.queue_packets,q.queue_bytes);
+            fprintf(stderr,"[session] reset-class=%s sources=%u video_reason=%d transport_reason=%d\n",
+                reset.failure()?"failure":"sender-teardown",reset.sources,reset.video_reason,reset.transport_reason);
             audio_only_failed=false;
-            bool hevc_startup=receiver.incoming_video_codec==2 && !opened;
+            bool hevc_startup=reset.failure() && receiver.incoming_video_codec==2 && !opened;
             if(hevc_startup)++hevc_transport_failures;
-            finish(true);
+            finish(reset.failure());
             if(hevc_startup && hevc_transport_failures>=2) {
                 recover_decoder(true,"repeated-transport-reset");
                 hevc_transport_failures=0;
@@ -683,7 +691,8 @@ int main(int argc,char **argv) {
             const std::string track=m.artist+" | "+m.title;
             if(track!=np_track) {np_track=track;np_flash=now;np_drawn=0;}
             if(m.generation!=np_generation) {np_generation=m.generation;np_drawn=0;}
-            if(!np_drawn || now-np_drawn>(np_anim?33000000LL:1000000000LL)) {
+            if(np_cadence.due(now,!np_drawn,np_anim)) {
+                const int64_t render_begin=now_ns();
                 // Playing = audio handed to the player lately. Arrivals do not tell:
                 // AirPlay audio comes in bursts well ahead of playback.
                 const uint64_t fed=media.feed_audio_accepted.load();
@@ -713,14 +722,26 @@ int main(int argc,char **argv) {
                 if(since_track<10)brightness=since_track<8?1.0:1.0-(since_track-8)/2*(1.0-brightness);
                 v.brightness=float(brightness);
                 const bool fading=(idle>=20&&idle<30)||(since_track>=8&&since_track<10);
-                np_anim=shell.now_playing(v)||fading;np_drawn=now;
+                np_anim=shell.now_playing(v)||fading;
+                np_drawn=now_ns();np_cadence.finish(np_drawn);
+                np_render_time.record(uint64_t(std::max<int64_t>(0,np_drawn-render_begin)));
+                now=np_drawn;
             }
         }
+        now=now_ns(); // Renderer/metadata work must not leave packet pacing on an old clock.
         if(now-last_stats>5000000000LL) {
             double window_s=(now-last_stats)/1e9;
             VideoTimingSample timing=receiver.take_video_timing();
             VideoTimingSample fed=video_feed_timing.take_window();
             ReceiverDiagnostics q=receiver.diagnostics();
+            const DurationSample rendered=np_render_time.take_window();
+            if(opened && audio_only_playback)fprintf(stderr,"[now-playing-perf] generation=%u draws=%llu render_ms=%.2f/%.2f audio_queue=%zu/%zu audio_pts_ms=%.1f..%.1f queued_span_ms=%.1f head_due_in_ms=%.1f\n",
+                sessions_started,(unsigned long long)rendered.count,rendered.average_ms(),rendered.maximum_ms(),
+                q.audio_queue_packets,q.audio_queue_bytes,
+                q.audio_queue_packets?(int64_t(q.audio_pts_min)-int64_t(origin))/1e6:0.0,
+                q.audio_queue_packets?(int64_t(q.audio_pts_max)-int64_t(origin))/1e6:0.0,
+                (q.audio_pts_max-q.audio_pts_min)/1e6,
+                q.audio_queue_packets?(int64_t(q.audio_pts_min)-int64_t(origin)-(now-start))/1e6:0.0);
             DurationSample parsed=video_parse_time.take_window(),late=video_schedule_late.take_window();
             DurationSample pending_wait=video_pending_time.take_window(),video_feed=video_feed_time.take_window();
             DurationSample audio_feed=audio_feed_time.take_window(),tick=media_tick_time.take_window(),loop=loop_gap_time.take_window();
@@ -772,6 +793,7 @@ int main(int argc,char **argv) {
             audio_decode_calls=audio_decode_ns=audio_decode_max_ns=0;
             rotate_log();last_stats=now;
         }
+        now=now_ns();
         if(!have_pending) {
             // Leave future packets in the shared queue so late-arriving video can
             // precede deliberately delayed audio. Avoid head-of-line blocking.
