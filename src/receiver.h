@@ -22,6 +22,7 @@ struct Packet {
 };
 struct ReceiverDiagnostics {
     size_t queue_packets = 0, queue_bytes = 0;
+    uint64_t accepted_video_packets=0; // Since last receiver.clear(), including pre-Load ingress.
     size_t audio_queue_packets=0,audio_queue_bytes=0;
     uint64_t audio_pts_min=0,audio_pts_max=0;
     size_t peak_queue_packets = 0, peak_queue_bytes = 0;
@@ -38,6 +39,7 @@ struct Receiver {
     void disconnect();
     void begin_close();
     void request_reset(ResetOrigin origin,int reason);
+    bool record_reset_locked(ResetOrigin origin,int reason,unsigned epoch); // mutex held
     ResetNotice take_reset();
     bool pop(Packet& packet, uint64_t latest = UINT64_MAX);
     void enqueue(bool video, unsigned codec, uint64_t time, const uint8_t *data, int size);
@@ -53,6 +55,9 @@ struct Receiver {
     bool idle_for_profile_change();
     void adjust_audio_delay(int delta_ms);
     std::atomic<int> audio_delay_ms{100};
+    std::atomic<unsigned> diagnostic_generation{0};
+    std::atomic<bool> diagnostic_session_open{false};
+    uint64_t accepted_video_packets=0; // protected by mutex, reset by clear()
     ResetNotice resets; // protected by mutex
     IngressState ingress; // protected by mutex
     std::atomic<bool> audio_flush{false}, paused{false}, has_audio{false}, mirror{false};

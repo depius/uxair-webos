@@ -43,3 +43,23 @@ struct NowPlayingCadence {
     }
     void finish(int64_t end){completed=end;}
 };
+
+inline const char *ingress_video_codec_name(unsigned codec) {
+    return codec==2?"HEVC":codec==1?"H264":"unknown";
+}
+inline const char *reset_notice_origin(const ResetNotice& notice) {
+    if(!notice.pending())return "none";
+    for(unsigned i=0;i<=unsigned(ResetOrigin::Oversize);++i)
+        if(notice.sources==(1u<<i))return reset_origin_name(ResetOrigin(i));
+    return "multiple";
+}
+// Frame callbacks reset on each decoder open. Retain completed decoder instances
+// for a session-wide diagnostic without altering the media backend counters.
+struct DecoderCallbackDiagnostics {
+    uint64_t retired=0;
+    bool live=false;
+    void reset(){retired=0;live=false;}
+    void started(){live=true;}
+    void retire(unsigned callbacks){if(live)retired+=callbacks;live=false;}
+    uint64_t total(unsigned callbacks) const {return retired+(live?callbacks:0);}
+};

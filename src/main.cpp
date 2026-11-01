@@ -190,9 +190,25 @@ int main(int argc,char **argv) {
     DurationWindow video_feed_time, audio_feed_time, media_tick_time, loop_gap_time;
     int64_t previous_loop=0;
     NowPlayingCadence np_cadence;DurationWindow np_render_time;
-    auto finish=[&](bool error=false,bool preserve_receiver=false,bool preserve_pending=false){
-        fprintf(stderr,"[session] generation=%u finish error=%d opened=%d audio_only=%d preserve_receiver=%d\n",sessions_started,error,opened,audio_only_playback,preserve_receiver);
+    DecoderCallbackDiagnostics decoder_callback_diagnostics;
+    auto finish=[&](bool error=false,bool preserve_receiver=false,bool preserve_pending=false,ResetNotice reset_notice=ResetNotice()){
+        const unsigned closing_epoch=receiver.transport_epoch.load();
         if(!preserve_receiver)receiver.begin_close();
+        const ReceiverDiagnostics closing_queue=receiver.queue_snapshot();
+#ifdef UXAIR_MEDIA_STARFISH
+        const uint64_t decoder_callbacks=decoder_callback_diagnostics.total(media.frames.load());
+        const int decoder_callbacks_available=1;
+#else
+        const uint64_t decoder_callbacks=0;
+        const int decoder_callbacks_available=0;
+#endif
+        fprintf(stderr,"[session-close] generation=%u epoch=%u reset_origin=%s reset_sources=%u reset_epoch=%u reset_pending=%d video_packets_accepted_epoch=%llu video_feed_accepted=%u decoder_frame_callbacks=%llu decoder_callbacks_available=%d displayed_frames=unmeasured ready=%d playing=%d\n",
+            sessions_started,closing_epoch,reset_notice_origin(reset_notice),reset_notice.sources,
+            reset_notice.epoch,int(reset_notice.pending()),(unsigned long long)closing_queue.accepted_video_packets,
+            opened?video_count:0,(unsigned long long)decoder_callbacks,decoder_callbacks_available,int(media.ready.load()),int(media.playing.load()));
+        receiver.diagnostic_session_open=false;
+        decoder_callback_diagnostics.reset();
+        fprintf(stderr,"[session] generation=%u finish error=%d opened=%d audio_only=%d preserve_receiver=%d\n",sessions_started,error,opened,audio_only_playback,preserve_receiver);
         if(opened && media.playing && (video_count || (audio_only_playback && audio_count)))session_success=true;
         if(error && !opened) {++usage.session_errors;save_usage_stats(state_dir+"/usage-v1",usage);history_storage=usage_storage_bytes(state_dir+"/usage-v1");history_dirty=true;}
         if(opened) {
@@ -588,7 +604,7 @@ int main(int argc,char **argv) {
             audio_only_failed=false;
             bool hevc_startup=reset.failure() && receiver.incoming_video_codec==2 && !opened;
             if(hevc_startup)++hevc_transport_failures;
-            finish(reset.failure());
+            finish(reset.failure(),false,false,reset);
             if(hevc_startup && hevc_transport_failures>=2) {
                 recover_decoder(true,"repeated-transport-reset");
                 hevc_transport_failures=0;
@@ -822,6 +838,8 @@ int main(int argc,char **argv) {
             }
             opened=true;audio_only_playback=true;session_codec=MirrorCodec::H264;
             origin=pending.timestamp;session_started=start=now_ns();stall=0;++sessions_started;
+            receiver.diagnostic_generation=sessions_started;receiver.diagnostic_session_open=true;
+            decoder_callback_diagnostics.reset();decoder_callback_diagnostics.started();
             session_started_utc=uint64_t(std::time(nullptr));session_success=false;
             ingress_at_start=receiver.total_video_arrivals.load();
             ReceiverDiagnostics initial_queue=receiver.queue_snapshot();
@@ -921,6 +939,8 @@ int main(int argc,char **argv) {
             // Reusing the loop's old `now` would silently consume it in Load().
             opened=true;origin=pending.timestamp;session_started=now_ns();
             start=schedule_start(pending.arrival_ns,session_started,200000000LL);stall=0;++sessions_started;
+            receiver.diagnostic_generation=sessions_started;receiver.diagnostic_session_open=true;
+            decoder_callback_diagnostics.reset();decoder_callback_diagnostics.started();
             if(incoming_hevc)hevc_transport_failures=0;
             session_started_utc=uint64_t(std::time(nullptr));session_success=false;
             ingress_at_start=receiver.total_video_arrivals.load();if(ingress_at_start)--ingress_at_start;
@@ -979,12 +999,13 @@ int main(int argc,char **argv) {
             }
             if(!info.configuration.empty())configuration=info.configuration;
             if(info.width && (width!=info.width||height!=info.height)) {
-                media.close();width=info.width;height=info.height;
+                media.close();decoder_callback_diagnostics.retire(media.frames.load());width=info.width;height=info.height;
                 int64_t open_begin=now_ns();
                 bool media_opened=info.keyframe && media.open(app_id,width,height,true,44100,mirror_limits(settings).video_source_buffer_bytes,
                     std::min(settings.width,1920),std::min(settings.height,1080),MirrorCodec::H264,settings.max_fps);
                 fprintf(stderr,"[media-init] reopen_ms=%.2f success=%d\n",(now_ns()-open_begin)/1e6,int(media_opened));
                 if(!media_opened) {report_media_start_failure(false,"h264-reopen-failed");continue;}
+                decoder_callback_diagnostics.started();
                 origin=pending.timestamp;start=schedule_start(pending.arrival_ns,now_ns(),0);pts=0;audio_end=0;audio_started=false;decoder.reset();
                 video_feed_timing.reset();
                 live_feed_last=0;
@@ -1024,7 +1045,7 @@ int main(int argc,char **argv) {
                 }
                 if(parameter_sets_added)
                     fprintf(stderr,"[codec] restored-cached-parameter-sets bytes=%zu before-random-access-frame\n",pending.data.size());
-                media.close();width=info.width;height=info.height;
+                media.close();decoder_callback_diagnostics.retire(media.frames.load());width=info.width;height=info.height;
                 int64_t open_begin=now_ns();
                 bool media_opened=media.open(app_id,width,height,true,44100,
                     mirror_limits(settings).video_source_buffer_bytes,
@@ -1033,6 +1054,7 @@ int main(int argc,char **argv) {
                 fprintf(stderr,"[codec] reinitialize=%u input=%dx%d load_ms=%.2f success=%d\n",
                     ++decoder_reinitializations,width,height,(now_ns()-open_begin)/1e6,int(media_opened));
                 if(!media_opened) {report_media_start_failure(true,"hevc-reopen-failed");continue;}
+                decoder_callback_diagnostics.started();
                 hevc_startup.accept_load(now_ns());hevc_preroll_wait_logged=hevc_first_feed_logged=false;
                 hevc_schedule_wait_logged=false;stall=0;last_paused=false;
                 fprintf(stderr,"[codec-start] load-accepted=1 reason=parameter-change input=%dx%d\n",width,height);
