@@ -42,22 +42,24 @@ jobs:
           retention-days: 14
   build-ipk:
     needs: native-tests
-    runs-on: macos-15
+    # Branch-local fallback: macOS runner remained unassigned for 15+ minutes.
+    # bootstrap.py selects the already checksum-pinned Linux x86-64 ARM SDK.
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Verify Apple Silicon host
+      - name: Verify supported Linux cross-build host
         run: |
-          test "$(uname -s)" = Darwin
-          test "$(uname -m)" = arm64
-          xcode-select -p
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
           python3 --version
           node --version
       - name: Install build and packaging tools
         run: |
-          brew install cmake ninja pkgconf
+          sudo apt-get update
+          sudo apt-get install --yes build-essential cmake ninja-build pkg-config perl curl git python3 file xz-utils bzip2
           npm install --global @webos-tools/cli@3.2.6
           cmake --version
           ninja --version
