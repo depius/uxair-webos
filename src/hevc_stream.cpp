@@ -12,13 +12,13 @@ size_t start_code(const uint8_t *data, size_t size, size_t from, size_t& prefix)
     return size;
 }
 }
-void HevcStream::reset() {vps_.clear();sps_.clear();pps_.clear();width_=height_=profile_=bit_depth_=0;vps_id_=sps_vps_id_=sps_id_=pps_sps_id_=-1;}
+void HevcStream::reset() {configuration_dirty_=false;vps_.clear();sps_.clear();pps_.clear();width_=height_=profile_=bit_depth_=0;vps_id_=sps_vps_id_=sps_id_=pps_sps_id_=-1;}
 HevcFrameInfo HevcStream::inspect(const uint8_t *data, size_t size) {
     HevcFrameInfo result;
     if(!data || size<6 || size>hevc_probe::kMaxAccessUnit) return result;
     size_t prefix=0, pos=start_code(data,size,0,prefix);
     if(pos!=0) return result;
-    bool vcl=false, changed=false;
+    bool vcl=false, changed=configuration_dirty_;
     std::vector<uint8_t> vps=vps_,sps=sps_,pps=pps_;
     int width=width_,height=height_,profile=profile_,bit_depth=bit_depth_;
     int vps_id=vps_id_,sps_vps_id=sps_vps_id_,sps_id=sps_id_,pps_sps_id=pps_sps_id_;
@@ -60,12 +60,20 @@ HevcFrameInfo HevcStream::inspect(const uint8_t *data, size_t size) {
         if(end==size) break;
         pos=end;prefix=next_prefix;
     }
-    if(count>128 || !vcl || vps.empty() || sps.empty() || pps.empty() || !width ||
-       vps_id<0 || sps_vps_id!=vps_id || sps_id<0 || pps_sps_id!=sps_id) return HevcFrameInfo{};
+    if(count>128) return HevcFrameInfo{};
+    // Validate references when both ends are present. Never commit malformed
+    // parameter sets, but retain individually valid header-only callbacks.
+    if((!vps.empty() && !sps.empty() && sps_vps_id!=vps_id) ||
+       (!sps.empty() && !pps.empty() && pps_sps_id!=sps_id))return HevcFrameInfo{};
+    const bool complete=!vps.empty() && !sps.empty() && !pps.empty() && width &&
+        vps_id>=0 && sps_id>=0;
     vps_.swap(vps);sps_.swap(sps);pps_.swap(pps);
     width_=width;height_=height;profile_=profile;bit_depth_=bit_depth;
     vps_id_=vps_id;sps_vps_id_=sps_vps_id;sps_id_=sps_id;pps_sps_id_=pps_sps_id;
-    result.valid=true;result.configuration_changed=changed;
+    result.configuration_complete=complete;
+    result.waiting_configuration=!complete || !vcl;
+    result.valid=complete && vcl;result.configuration_changed=changed;
+    configuration_dirty_=changed && !result.valid;
     result.width=width_;result.height=height_;result.profile=profile_;result.bit_depth=bit_depth_;
     return result;
 }

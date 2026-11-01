@@ -66,6 +66,7 @@ void Receiver::enqueue(bool video,unsigned codec,uint64_t time,const uint8_t *da
         fprintf(stderr,"[queue] oversized %s packet bytes=%d limit=%zu\n",video?"video":"audio",size,packet_limit);
         reset=true;return;
     }
+    const unsigned transport=transport_epoch.load();
     const unsigned epoch=audio_epoch.load();
     const int64_t arrival=now_ns();
     activity=arrival;
@@ -78,17 +79,21 @@ void Receiver::enqueue(bool video,unsigned codec,uint64_t time,const uint8_t *da
         time=offset>=0?time+uint64_t(offset):time-uint64_t(-offset);
     }
     // Copy callback-owned memory before taking the A/V queue lock.
-    Packet p; p.audio_epoch=epoch;p.video=video;p.codec=codec;p.timestamp=time;p.arrival_ns=arrival;
+    Packet p; p.transport_epoch=transport;p.audio_epoch=epoch;p.video=video;p.codec=codec;p.timestamp=time;p.arrival_ns=arrival;
     p.data.assign(data,data+size);
     const int64_t copy_done=now_ns();
     std::lock_guard<std::mutex> l(mutex);
+    if(!current_audio_epoch(transport,transport_epoch.load()))return;
     if(!video && !current_audio_epoch(epoch,audio_epoch.load()))return;
     const int64_t lock_acquired=now_ns();
     ingress_copy.record(uint64_t(std::max<int64_t>(0,copy_done-arrival)));
     queue_lock_wait.record(uint64_t(std::max<int64_t>(0,lock_acquired-copy_done)));
     if(video) video_timing.record(time,arrival);
     if (bytes+size>max_queue_bytes || packets.size()>=512) {
-        ++overflow;++dropped_packets;if(video)++dropped_video_frames;reset=true;return;
+        ++overflow;++dropped_packets;if(video)++dropped_video_frames;
+        if(!reset.exchange(true))fprintf(stderr,"[queue] reset-cause=capacity epoch=%u video=%d packets=%zu bytes=%zu incoming=%d limit=%zu\n",
+            transport_epoch.load(),int(video),packets.size(),bytes,size,max_queue_bytes);
+        return;
     }
     p.enqueued_ns=now_ns();
     ingress_to_queue.record(uint64_t(std::max<int64_t>(0,p.enqueued_ns-arrival)));
@@ -117,7 +122,7 @@ bool Receiver::pop(Packet& p,uint64_t latest) {
     queue_pop.record(uint64_t(std::max<int64_t>(0,now_ns()-pop_begin)));
     return true;
 }
-void Receiver::clear() { std::lock_guard<std::mutex> l(mutex);++audio_epoch;packets.clear();bytes=video_packets=video_bytes=0;pairing.reset();client.clear();client_name.clear();video_timing.reset();ingress_to_queue.reset();ingress_copy.reset();queue_lock_wait.reset();queue_pop.reset();video_queue_residence.reset();audio_queue_residence.reset();last_video_arrival=0; }
+void Receiver::clear() { std::lock_guard<std::mutex> l(mutex);++transport_epoch;++audio_epoch;packets.clear();bytes=video_packets=video_bytes=0;pairing.reset();client.clear();client_name.clear();video_timing.reset();ingress_to_queue.reset();ingress_copy.reset();queue_lock_wait.reset();queue_pop.reset();video_queue_residence.reset();audio_queue_residence.reset();last_video_arrival=0; }
 void Receiver::clear_audio_packets() {
     std::lock_guard<std::mutex> l(mutex);
     ++audio_epoch;

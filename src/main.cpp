@@ -171,6 +171,7 @@ int main(int argc,char **argv) {
     bool hevc_preroll_wait_logged=false,hevc_keyframe_wait_logged=false;
     bool hevc_schedule_wait_logged=false,hevc_invalid_logged=false;
     bool hevc_first_feed_logged=false;
+    int64_t hevc_configuration_wait=0;
     int width=settings.width,height=settings.height;
     Packet pending;
     std::vector<uint8_t> configuration;
@@ -230,7 +231,7 @@ int main(int argc,char **argv) {
         session_codec=MirrorCodec::H264;hevc_wait_keyframe=false;
         hevc_preroll_wait_logged=hevc_keyframe_wait_logged=false;
         hevc_schedule_wait_logged=hevc_invalid_logged=false;
-        hevc_first_feed_logged=false;
+        hevc_first_feed_logged=false;hevc_configuration_wait=0;
     };
     auto recover_decoder=[&](bool failed_hevc,const char *reason){
         const bool starfish_load_failure=media.open_failure()==MediaOpenFailure::StarfishLoad;
@@ -573,7 +574,9 @@ int main(int argc,char **argv) {
             last_ui=0;
         }
         if(receiver.reset.exchange(false)) {
-            fprintf(stderr,"[session] transport requested reset\n");
+            ReceiverDiagnostics q=receiver.queue_snapshot();
+            fprintf(stderr,"[session] transport requested reset generation=%u epoch=%u opened=%d stall_ms=%.1f queue=%zu/%zu\n",
+                sessions_started,receiver.transport_epoch.load(),int(opened),stall?(now-stall)/1e6:0.0,q.queue_packets,q.queue_bytes);
             audio_only_failed=false;
             bool hevc_startup=receiver.incoming_video_codec==2 && !opened;
             if(hevc_startup)++hevc_transport_failures;
@@ -776,6 +779,11 @@ int main(int argc,char **argv) {
             have_pending=receiver.pop(pending,latest);
         }
         if(!have_pending){SDL_Delay(3);continue;}
+        if(!current_audio_epoch(pending.transport_epoch,receiver.transport_epoch.load())) {
+            fprintf(stderr,"[session] obsolete-packet video=%d packet_epoch=%u current_epoch=%u\n",
+                int(pending.video),pending.transport_epoch,receiver.transport_epoch.load());
+            have_pending=false;stall=0;continue;
+        }
         if(!opened && !pending.video) {
             const AirPlayAudioIntent intent{receiver.last_audio_codec.load(),receiver.audio_samples_per_frame.load(),
                 receiver.audio_using_screen.load(),receiver.audio_is_media.load(),receiver.has_audio.load()};
@@ -822,6 +830,18 @@ int main(int argc,char **argv) {
                 if(!info.configuration.empty())configuration=info.configuration;
             }
             video_parse_time.record(uint64_t(std::max<int64_t>(0,now_ns()-parse_begin)));
+            if(incoming_hevc && hevc_info.waiting_configuration) {
+                if(!hevc_configuration_wait)hevc_configuration_wait=now;
+                if(!hevc_invalid_logged)fprintf(stderr,"[codec-start] waiting-configuration epoch=%u bytes=%zu present=%d/%d/%d complete=%d keyframe=%d\n",
+                    pending.transport_epoch,pending.data.size(),int(hevc_info.has_vps),int(hevc_info.has_sps),int(hevc_info.has_pps),
+                    int(hevc_info.configuration_complete),int(hevc_info.keyframe));
+                hevc_invalid_logged=true;have_pending=false;
+                if(hevc_configuration_wait_expired(hevc_configuration_wait,now)) {
+                    fprintf(stderr,"[codec-start] incomplete-configuration timeout; reconnect required; runtime profile retained\n");
+                    finish(true);receiver.show("HEVC headers missing. Reconnect sender; selected profile retained.");
+                }
+                continue;
+            }
             if(!valid) {
                 if(incoming_hevc && !hevc_invalid_logged) {
                     fprintf(stderr,"[codec-start] waiting-for-valid-parameter-sets\n");
@@ -834,6 +854,7 @@ int main(int argc,char **argv) {
                 }
                 continue;
             }
+            hevc_configuration_wait=0;
             if(incoming_hevc && !supported_hevc_mirror_profile(hevc_info)) {
                 fprintf(stderr,"[codec] unsupported HEVC profile=%d bit-depth=%d; Main 10/HDR10 path disabled\n",
                     hevc_info.profile,hevc_info.bit_depth);
@@ -852,6 +873,13 @@ int main(int argc,char **argv) {
                     hevc_keyframe_wait_logged=true;
                 }
                 have_pending=false;continue;
+            }
+            if(incoming_hevc) {
+                bool added=false;
+                if(!hevc.prepend_missing_parameter_sets(pending.data,hevc_info,added)) {
+                    finish(true);recover_decoder(true,"hevc-parameter-sets-missing");continue;
+                }
+                if(added)fprintf(stderr,"[codec-start] cached-headers prepended before initial Load epoch=%u\n",pending.transport_epoch);
             }
             session_codec=incoming_hevc?MirrorCodec::ExperimentalHevc:MirrorCodec::H264;
             int64_t open_begin=now_ns();
@@ -948,6 +976,7 @@ int main(int argc,char **argv) {
             int64_t parse_begin=now_ns();
             HevcFrameInfo info=hevc.inspect(pending.data.data(),pending.data.size());
             video_parse_time.record(uint64_t(std::max<int64_t>(0,now_ns()-parse_begin)));
+            if(info.waiting_configuration){have_pending=false;continue;}
             if(!info.valid) {
                 have_pending=false;
                 if(++invalid_video>=30) {finish(true);recover_decoder(true,"invalid-access-units");}
