@@ -42,6 +42,8 @@ int main() {
     notice=ResetNotice();notice.add(ResetOrigin::TransportCallback,2,transport);
     notice.add(ResetOrigin::SenderTeardown,1,transport);assert(notice.failure()&&notice.transport_reason==2);
     notice=ResetNotice();notice.add(ResetOrigin::VideoCallback,1,transport);assert(notice.failure());
-    notice.add(ResetOrigin::SenderTeardown,1,transport+1);assert(!notice.failure()&&notice.epoch==transport+1);
+    notice.add(ResetOrigin::TransportCallback,7,transport);
+    notice.add(ResetOrigin::SenderTeardown,1,transport+1);
+    assert(!notice.failure()&&notice.epoch==transport+1&&notice.transport_reason==-1);
     puts("PASS: slow-render queue starvation, cadence, FLUSH/resume, closing ingress, handoffs and reset classification");
 }

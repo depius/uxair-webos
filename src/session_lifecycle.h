@@ -19,7 +19,7 @@ struct ResetNotice {
     bool failure() const {return (sources&~1u)!=0;}
     // Called under the receiver mutex; simultaneous failures take priority.
     bool add(ResetOrigin origin,int reason,unsigned generation=0) {
-        if(sources && epoch!=generation)sources=0;
+        if(sources && epoch!=generation)*this=ResetNotice();
         epoch=generation;
         const bool first=!pending();sources|=1u<<unsigned(origin);
         if(origin==ResetOrigin::VideoCallback || origin==ResetOrigin::SenderTeardown)video_reason=reason;
