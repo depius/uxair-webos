@@ -1,4 +1,4 @@
-name: Verify separate UxAir Starfish and NDL ARMv7 packages
+name: Verify UxAir 1.2.0 Starfish and NDL ARMv7 packages
 
 on:
   push:

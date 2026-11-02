@@ -29,7 +29,7 @@ class IpkPermissionsTest(unittest.TestCase):
         for app_id in ['com.github.depius.uxair','com.github.depius.uxair.dev']:
             with tempfile.TemporaryDirectory() as tmp:
                 tmp=Path(tmp);stage=tmp/'app';(stage/'lib').mkdir(parents=True);(stage/'licenses').mkdir()
-                (stage/'appinfo.json').write_text(json.dumps(dict(id=app_id,version='1.1.0',title='UxAir')))
+                (stage/'appinfo.json').write_text(json.dumps(dict(id=app_id,version=json.loads((ROOT/'packaging/appinfo.json').read_text())['version'],title='UxAir')))
                 (stage/'uxair').write_bytes(b'ELF receiver fixture')
                 (stage/'lib/libstdc++.so.6').write_bytes(b'ELF runtime fixture')
                 (stage/'licenses/LICENSE').write_text('license fixture')

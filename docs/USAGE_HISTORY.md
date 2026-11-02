@@ -8,7 +8,7 @@ History shows lifetime session/playback totals, last-30-day mirroring and music 
 
 An unreadable or oversized history file is preserved and is not overwritten by normal saves. The owner can explicitly confirm **Reset history** to replace it with an empty history. A session already playing is not stopped by reset; if it later completes successfully, it is recorded as a new post-reset session.
 
-## Calendar charts (1.1.0 development)
+## Calendar charts (UxAir 1.2.0; introduced during internal 1.1.0 development)
 
 History charts use the same UTC day boundaries as storage. The left chart shows days 1 through the end of the current calendar month; the right shows January through December of the current year. Both refresh when the UTC date changes. Summary breakdowns and the duration-based distribution remain explicitly labelled Last 30 days; the top summary remains lifetime.
 

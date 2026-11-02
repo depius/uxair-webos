@@ -1,5 +1,7 @@
 # PR #10 B7 compatibility fixes — local validation report
 
+> Historical investigation at the original B7 compatibility stage. Its no-IPK/no-hardware statements below describe that stage, not current release readiness. See [B7_BRANCH_FINAL_REVIEW.md](B7_BRANCH_FINAL_REVIEW.md) for the validated 148bc961 baseline, installer results and the unreleased 1.2.0 foundation.
+
 > Follow-up 2026-10-31: `72a276c` fails storage validation on the B7. See [the storage diagnostic build](B7_STORAGE_DIAGNOSTICS.md). The report below is historical, not a claim of current TV compatibility.
 
 Date: 2026-10-30. Status: implemented locally; **not ready for release or merge until Linux compilation and TV validation pass**.

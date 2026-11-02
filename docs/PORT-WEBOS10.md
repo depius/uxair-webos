@@ -1,83 +1,30 @@
-# webOS 5+ / webOS 10 support
+# webOS 5+ / webOS 10: NDL target
 
-UxAir 1.1.0 plays through `StarfishMediaAPIs` + `AcbAPI`. Neither library
-exists on webOS 10 (LG "webOS 25"), so the app does not start there. webOS 5
-and later have LG's **NDL direct media** API (`libNDL_directmedia.so.1`, API
-version 2, as Moonlight TV uses). This port adds a second player on that API
-and keeps upstream's Starfish player for webOS 3-4.
+UxAir 1.2.0 retains one shared receiver/UI/state codebase and two compile-time backends: Starfish + ACB for webOS 3-4, NDL DirectMedia for webOS 5+. There is no runtime backend switching or universal IPK. NDL is **unvalidated for the final 1.2.0 shared source until physical testing completes**.
 
-Tested on an LG OLED65C48LA (OLED evo C4, 2024, rooted webOS 10.3.1) with
-iPhone and iPad: mirroring
-(HEVC up to 4K, H.264), photos and videos while mirroring, audio-only playback.
-The webOS 3-4 build compiles but has not been tested on a TV.
+The contributor reported successful mirroring, HEVC/H.264, photo/video transitions and audio-only playback on a rooted LG OLED65C48LA C4 (webOS 10.3.1) for PR #10 at 8526f8d. That is historical evidence for the earlier source, not physical acceptance of subsequent B7 fixes, hardening or 1.2.0. Starfish baseline 148bc961 was physically validated on the owner's B7, including a 30-minute transition stress run.
 
-## Two build variants
+## Separate builds
 
-| | `tools/build.sh` (default) | `tools/build.sh --media=starfish` |
-|---|---|---|
-| For | webOS 5 and later | webOS 3-4 (upstream's verified LG B7, webOS 3.9) |
-| Player | NDL direct media: `src/media_ndl.cpp`, `src/ndl_backend.c` | Starfish + ACB: `src/media_starfish.cpp` (upstream's, unchanged) |
-| Timing | anchored to frame arrival, at most 50 ms hold | upstream's 200 ms PTS pre-roll |
-| Package | `dist/<id>_<version>_arm-webos5plus.ipk` | `dist/<id>_<version>_arm-webos3-4.ipk` |
+| Target | Command | Media files | Future 1.2.0 package |
+| --- | --- | --- | --- |
+| webOS 3-4 | `tools/build.sh --media=starfish` | media_starfish.cpp, Starfish/ACB | com.github.depius.uxair_1.2.0_arm-webos3-4.ipk |
+| webOS 5+ (unvalidated) | `tools/build.sh --media=ndl` | media_ndl.cpp, ndl_backend.c | com.github.depius.uxair_1.2.0_arm-webos5plus.ipk |
 
-CMake option `UXAIR_MEDIA=ndl|starfish`. Both share the additions below.
-SDL2_image (cover art) is opened at run time, so a TV without it shows no
-cover instead of failing to start; the system bus code uses `LSGmainAttach`,
-which old luna-service2 versions have as well.
+CMake `UXAIR_MEDIA=starfish|ndl` selects sources, definitions and linked APIs. The current default is ndl; explicit commands avoid ambiguity. Both packages use com.github.depius.uxair and are alternative installations. Full locked setup/verification: [DEVELOPMENT.md](DEVELOPMENT.md). No candidate distribution is authorized by these instructions.
 
-## NDL on webOS 10: what the player needs
+## Existing NDL implementation and physical checks
 
-Found with `src/ndl_probe.c` (a small app that plays a test stream; package
-it with `tools/package-ndl-probe.py <file.h264>`):
+The installed app registers with Luna, creates an SDL exported window, looks up NDL_DirectMediaSetWindowId dynamically, and binds the window before feeding. The C bridge uses LG's API-v2 headers. NDL initialization/window binding lasts for the process; sessions Load/Unload independently to avoid losing the binding. Successful Load counts as ready because LOADCOMPLETED may require data flow. Audio/silence feed is needed for playback progress. Scheduling is arrival-anchored with at most 50 ms hold; Starfish retains its own first-feed/preroll/timeline policy. None of these runtime contracts was changed by the hardening/version work.
 
-1. The player registers on the luna bus, so it only works inside an installed
-   app (from a shell: `LSRegisterPubPriv FAILED`).
-2. The video is bound to an SDL exported window:
-   `SDL_webOSCreateExportedWindow(0)` -> `NDL_DirectMediaSetWindowId(id)` ->
-   `SDL_webOSSetExportedWindow(id, src, dst)`. `NDL_DirectMediaSetWindowId` is
-   exported by the firmware but not by the SDK's stub library, so it is looked
-   up with `dlsym`.
-3. NDL is initialised and bound to the window once per process; a session
-   only loads and unloads a stream. `Quit` + `Init` between sessions loses the
-   binding ("No matching WebOSExported", load event 0x12 "fail to create
-   AVProxy"), e.g. when the sender switches to a full-screen photo.
-4. Playback only advances while audio is fed as well; the main loop already
-   feeds silence when there is none.
-5. NDL renders as data arrives (ns and us timestamps behave the same), so
-   UxAir's scheduling is the only buffer: it is anchored to the first frame's
-   arrival and holds no frame longer than 50 ms.
-6. Load-callback events use Starfish's `PF_EVENT_TYPE_*` codes (0x16 load
-   completed, 0x1a playing, 0x17 unload completed); `LOADCOMPLETED` only
-   arrives once data flows, so a successful `Load` counts as ready.
-7. Audio-only sessions: `NDL_DirectMediaLoad` with no video type, PCM only.
-8. LG's NDL headers only compile as C; `src/ndl_backend.c` wraps them for the
-   C++ code.
+Physical tests must cover startup from an installed package, H.264 and HEVC portrait/4K reopens, audio-only FLUSH/resume/volume, photo browsing with music, rapid audio/mirroring handoffs, sender TEARDOWN versus failures, decoder resource release and late callbacks. Confirm foreground/background/screensaver behavior and remote input, relaunch/reboot, fresh installation and upgrades. Decoder callback timing and actual displayed frames must not be inferred from Feed acceptance.
 
-## Additions (both variants)
+Shared fixes now available to both targets include metadata cadence, RTP origin/reset accounting, epoch/closing ingress protection, split HEVC header retention, private-state validation and production allocation limits. The current NDL-specific backend files remain from the contributor's original implementation; do not reapply those commits over this branch.
 
-- **Data folder:** a jailed native app on webOS 10 runs as its own user over a
-  root-owned app folder; log, pairing keys and settings go to
-  `/media/developer/apps/var/lib/<app-id>` when the app folder is not writable
-  (`data_directory()`).
-- **Now Playing screen** for audio-only sessions (`Shell::now_playing`): cover
-  art, title (scrolls when too long), artist, album, sender name and progress
-  from AirPlay metadata (`md=0,1,2`); the background takes the cover's colour.
-  For OLED panels it dims to 35% after 20 s without a key (a new track shows
-  at full brightness for 8 s) and the layout drifts slowly.
-- **System bus** (`src/system_bus.cpp`):
-  - LG's screen saver is postponed while a session plays (tvpower
-    `registerScreenSaverRequest` / `responseScreenSaverRequest`).
-  - UxAir keeps running in the background and stays discoverable. A device
-    that starts streaming (or needs the PIN) brings it to the front; when the
-    device leaves, the app that was in front before comes back. Back/Exit send
-    UxAir to the background instead of quitting.
-  - Launch parameters `{"background":true,"return_to":"<app-id>"}` start it
-    hidden, e.g. from a boot script.
+## Persistent identity and UI policy
 
-## Building on Linux
+Starfish retains app-local state and the validated B7 container exception. NDL retains process-owned `/media/developer/apps/var/lib/<app-id>` storage and strict ownership validation. Existing NDL var/lib state is reused; a legacy app-local identity with no var/lib state now stops startup rather than silently creating a replacement. Automatic cross-backend migration is not implemented. Preserve private backups and obtain a reviewed migration before attempting that case.
 
-`tools/bootstrap.py` picks the toolchain for the host: the pinned macOS ARM64
-SDK, or on Linux x86-64 the equivalent openlgtv/buildroot-nc4 `webos-d7ed7ee`
-SDK (`toolchain-linux-x86_64` in `dependencies.lock.json`). Without the webOS
-CLI, `tools/package.py` writes the IPK with `tools/make-ipk.py` (same layout
-as `ares-package`).
+Now Playing and system-bus integration are shared. Cover images use optional SDL2_image and are bounded before decoding. Whole-layout drift is currently disabled; title scrolling and dimming remain. Background mode defaults on for NDL and off for Starfish; Starfish remote Exit still terminates. SDL_QUIT/process signals remain real termination paths. NDL background/return-to-app behavior needs renewed hardware validation.
+
+The independent NDL/HEVC probe apps retain their own diagnostic IDs and versions; they are not UxAir 1.2.0 production packages. PR #9's experimental Direct Video/HLS work is not part of this release and has no NDL media integration here.

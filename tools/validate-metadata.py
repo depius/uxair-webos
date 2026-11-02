@@ -79,8 +79,8 @@ def main():
     if APP['main'] != 'uxair':
         fail('unexpected executable name')
     version = APP['version']
-    if version != '1.1.0' or not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', version):
-        fail('release version must be 1.1.0 SemVer')
+    if version != '1.2.0' or not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', version):
+        fail('release version must be 1.2.0 SemVer')
     changelog = (ROOT / 'CHANGELOG.md').read_text()
     if f'## [{version}]' not in changelog:
         fail('CHANGELOG does not contain the current version')

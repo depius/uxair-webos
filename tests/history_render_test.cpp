@@ -34,7 +34,7 @@ struct HistoryRenderTest {
     static void about(Shell& shell,SDL_Surface *surface) {
         int tw=0;TTF_SizeUTF8(shell.font_,"Matej Skuhala (@depius)",&tw,nullptr);assert(tw<=(1920-512)*30/100);
         std::vector<UiRow> rows;
-        rows.emplace_back("UxAir","1.1.0 Dev","AirPlay Receiver for webOS",false);
+        rows.emplace_back("UxAir","1.2.0 Dev","AirPlay Receiver for webOS",false);
         rows.emplace_back("Developer","Matej Skuhala (@depius)","Based on UxPlay by FDH2; uxplay-webOS by @danlflh",false);
         rows.emplace_back("License","GPL-3.0-or-later","See bundled license and third-party notices",false);
         rows.emplace_back("Enjoying UxAir? Buy me a coffee","","Support development · UxAir is free and open source");
