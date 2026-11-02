@@ -2,6 +2,7 @@
 #include "h264.h"
 #include "hevc_stream.h"
 #include "hevc_startup.h"
+#include "hevc_schedule.h"
 #include "media.h"
 #include "receiver.h"
 #include "shell.h"
@@ -191,7 +192,10 @@ int main(int argc,char **argv) {
     int64_t previous_loop=0;
     NowPlayingCadence np_cadence;DurationWindow np_render_time;
     DecoderCallbackDiagnostics decoder_callback_diagnostics;
+    StarfishHevcSchedule hevc_feed_schedule;
+    PrerollVideoHold<Packet> preroll_video_hold;
     auto finish=[&](bool error=false,bool preserve_receiver=false,bool preserve_pending=false,ResetNotice reset_notice=ResetNotice()){
+        preroll_video_hold.clear();hevc_feed_schedule.reset();
         const unsigned closing_epoch=receiver.transport_epoch.load();
         if(!preserve_receiver)receiver.begin_close();
         const ReceiverDiagnostics closing_queue=receiver.queue_snapshot();
@@ -814,7 +818,10 @@ int main(int argc,char **argv) {
             // Leave future packets in the shared queue so late-arriving video can
             // precede deliberately delayed audio. Avoid head-of-line blocking.
             uint64_t latest=opened?origin+uint64_t(std::max<int64_t>(0,now-start)):UINT64_MAX;
-            have_pending=receiver.pop(pending,latest);
+            have_pending=preroll_video_hold.restore_if_ready(pending,media.ready.load(),receiver.transport_epoch.load());
+            if(have_pending)
+                fprintf(stderr,"[codec-start] deferred-video resumed epoch=%u bytes=%zu\n",pending.transport_epoch,pending.data.size());
+            else have_pending=receiver.pop(pending,latest,preroll_video_hold.pending());
         }
         if(!have_pending){SDL_Delay(3);continue;}
         if(!current_audio_epoch(pending.transport_epoch,receiver.transport_epoch.load())) {
@@ -969,9 +976,13 @@ int main(int argc,char **argv) {
         // the picture.
         if(kMaxHoldNs && pending.video && pending.arrival_ns && start+pts>pending.arrival_ns+kMaxHoldNs)
             start=pending.arrival_ns+kMaxHoldNs-pts;
-        if(now<start+pts) {
+        int64_t packet_due=start+pts;
+#if !defined(UXAIR_MEDIA_NDL)
+        if(pending.video && session_codec==MirrorCodec::ExperimentalHevc)packet_due=hevc_feed_schedule.feed_due(packet_due);
+#endif
+        if(now<packet_due) {
             if(session_codec==MirrorCodec::ExperimentalHevc && video_count==0 && !hevc_schedule_wait_logged) {
-                fprintf(stderr,"[codec-start] feed-wait reason=pts-schedule remaining_ms=%.0f\n",(start+pts-now)/1e6);
+                fprintf(stderr,"[codec-start] feed-wait reason=pts-schedule remaining_ms=%.0f\n",(packet_due-now)/1e6);
                 hevc_schedule_wait_logged=true;
             }
             SDL_Delay(2);continue;
@@ -1059,7 +1070,17 @@ int main(int argc,char **argv) {
                 hevc_schedule_wait_logged=false;stall=0;last_paused=false;
                 fprintf(stderr,"[codec-start] load-accepted=1 reason=parameter-change input=%dx%d\n",width,height);
                 hevc_wait_keyframe=false;
-                origin=pending.timestamp;start=schedule_start(pending.arrival_ns,now_ns(),200000000LL);pts=0;audio_end=0;audio_started=false;decoder.reset();
+                const int64_t reopen_done=now_ns();
+#if defined(UXAIR_MEDIA_NDL)
+                start=schedule_start(pending.arrival_ns,reopen_done,200000000LL);
+#else
+                const int64_t previous_due=start+pts;
+                start=hevc_feed_schedule.reinitialize(start,pts,reopen_done);
+                fprintf(stderr,"[codec-start] reinit-schedule timeline_shift_ms=%.1f first_feed_delay_ms=%.0f keyframe_age_ms=%.1f epoch=%u\n",
+                    (start-previous_due)/1e6,(hevc_feed_schedule.feed_due(start)-reopen_done)/1e6,
+                    pending.arrival_ns?(reopen_done-pending.arrival_ns)/1e6:0.0,pending.transport_epoch);
+#endif
+                origin=pending.timestamp;pts=0;audio_end=0;audio_started=false;decoder.reset();
                 video_feed_timing.reset();live_feed_last=0;
                 last_decoder_events=0;last_feed_video=last_feed_audio=0;
                 last_feed_video_retries=last_feed_audio_retries=0;
@@ -1071,7 +1092,7 @@ int main(int argc,char **argv) {
             pending.codec=3; // Parsed; retain AU unchanged across Feed retries.
             if(reopened) {
                 fprintf(stderr,"[codec-start] reinit-keyframe retained=1 bytes=%zu pts_ns=0\n",pending.data.size());
-                continue; // The next loop honors the new schedule (Starfish: its 200 ms PTS pre-roll).
+                continue; // Retain the keyframe through the per-Load first-feed delay.
             }
         }
         HevcFeedStage hevc_feed_stage=HevcFeedStage::Loaded;
@@ -1079,11 +1100,12 @@ int main(int argc,char **argv) {
             hevc_feed_stage=hevc_startup.video_stage(media.ready.load(),media.failed.load(),pending.data.size());
             if(hevc_feed_stage==HevcFeedStage::WaitingForLoad) {
                 if(!hevc_preroll_wait_logged) {
-                    fprintf(stderr,"[codec-start] feed-wait reason=preroll-limit accepted=%u bytes=%zu ready=0\n",
+                    fprintf(stderr,"[codec-start] feed-wait reason=preroll-limit accepted=%u bytes=%zu ready=0 audio-progress=enabled\n",
                         hevc_startup.preroll_frames(),hevc_startup.preroll_bytes());
                     hevc_preroll_wait_logged=true;
                 }
-                SDL_Delay(5);continue;
+                preroll_video_hold.defer(std::move(pending));have_pending=false;
+                continue;
             }
             if(hevc_feed_stage==HevcFeedStage::NoLoad || hevc_feed_stage==HevcFeedStage::Failed) {
                 fprintf(stderr,"[codec-start] feed-blocked reason=%s\n",

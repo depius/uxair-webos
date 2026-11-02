@@ -41,7 +41,7 @@ struct Receiver {
     void request_reset(ResetOrigin origin,int reason);
     bool record_reset_locked(ResetOrigin origin,int reason,unsigned epoch); // mutex held
     ResetNotice take_reset();
-    bool pop(Packet& packet, uint64_t latest = UINT64_MAX);
+    bool pop(Packet& packet, uint64_t latest = UINT64_MAX, bool audio_only = false);
     void enqueue(bool video, unsigned codec, uint64_t time, const uint8_t *data, int size);
     void clear();
     void clear_audio_packets();

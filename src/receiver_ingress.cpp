@@ -80,3 +80,25 @@ void Receiver::enqueue(bool video,unsigned codec,uint64_t time,const uint8_t *da
         peak_video_bytes=std::max(peak_video_bytes,video_bytes);
     }
 }
+
+bool Receiver::pop(Packet& p,uint64_t latest,bool audio_only) {
+    const int64_t pop_begin=now_ns();
+    std::lock_guard<std::mutex> l(mutex);
+    if(packets.empty()) return false;
+    // A/V callbacks arrive on different threads. Select the oldest presentation time.
+    auto i=packets.end();
+    for(auto candidate=packets.begin();candidate!=packets.end();++candidate) {
+        if(audio_only && candidate->video)continue;
+        if(i==packets.end() || candidate->timestamp<i->timestamp)i=candidate;
+    }
+    if(i==packets.end() || i->timestamp>latest)return false;
+    p=std::move(*i);bytes-=p.data.size();packets.erase(i);
+    p.dequeued_ns=now_ns();
+    uint64_t residence=uint64_t(std::max<int64_t>(0,p.dequeued_ns-p.enqueued_ns));
+    if(p.video) {
+        --video_packets;video_bytes-=p.data.size();
+        video_queue_residence.record(residence);
+    } else audio_queue_residence.record(residence);
+    queue_pop.record(uint64_t(std::max<int64_t>(0,now_ns()-pop_begin)));
+    return true;
+}

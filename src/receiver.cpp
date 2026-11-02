@@ -72,23 +72,6 @@ VideoTimingSample Receiver::take_video_timing() {
     std::lock_guard<std::mutex> l(mutex);
     return video_timing.take_window();
 }
-bool Receiver::pop(Packet& p,uint64_t latest) {
-    const int64_t pop_begin=now_ns();
-    std::lock_guard<std::mutex> l(mutex);
-    if(packets.empty()) return false;
-    // A/V callbacks arrive on different threads. Select the oldest presentation time.
-    auto i=std::min_element(packets.begin(),packets.end(),[](const Packet& a,const Packet& b){return a.timestamp<b.timestamp;});
-    if(i->timestamp>latest)return false;
-    p=std::move(*i);bytes-=p.data.size();packets.erase(i);
-    p.dequeued_ns=now_ns();
-    uint64_t residence=uint64_t(std::max<int64_t>(0,p.dequeued_ns-p.enqueued_ns));
-    if(p.video) {
-        --video_packets;video_bytes-=p.data.size();
-        video_queue_residence.record(residence);
-    } else audio_queue_residence.record(residence);
-    queue_pop.record(uint64_t(std::max<int64_t>(0,now_ns()-pop_begin)));
-    return true;
-}
 void Receiver::clear() { std::lock_guard<std::mutex> l(mutex);++transport_epoch;++audio_epoch;packets.clear();bytes=video_packets=video_bytes=0;accepted_video_packets=0;pairing.reset();client.clear();client_name.clear();video_timing.reset();ingress_to_queue.reset();ingress_copy.reset();queue_lock_wait.reset();queue_pop.reset();video_queue_residence.reset();audio_queue_residence.reset();last_video_arrival=0; }
 void Receiver::clear_audio_packets() {
     std::lock_guard<std::mutex> l(mutex);

@@ -84,15 +84,7 @@ jobs:
           (cd dist && shasum -a 256 *.ipk *-source.tar.gz > SHA256SUMS)
           (cd dist && shasum -a 256 -c SHA256SUMS)
           cat dist/BUILD_COMMIT.txt dist/SHA256SUMS dist/ELF_REPORT.txt
-      - name: Upload verified UxAir 1.1.0 production package and source
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: uxair-1.1.0-production-armv7-${{ github.sha }}
-          path: |
-            dist/*.ipk
-            dist/*-source.tar.gz
-            dist/SHA256SUMS
-            dist/BUILD_COMMIT.txt
-            dist/ELF_REPORT.txt
-          if-no-files-found: error
-          retention-days: 14
+      - name: Hold package distribution pending B7 and security assessment
+        run: |
+          echo "ARMv7 Starfish build verified; no IPK/source artifact uploaded."
+          echo "Release hold: physical B7 validation and dc3fe475 browser Malware verdict remain unresolved."
