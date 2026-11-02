@@ -5,6 +5,8 @@ import io
 import json
 import pathlib
 import re
+import subprocess
+import sys
 import tarfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -60,6 +62,7 @@ def main():
     package = ROOT / 'dist' / f"{app['id']}_{app['version']}_arm-{platform}.ipk"
     if not package.is_file():
         fail(f'missing {package.name}')
+    subprocess.run([sys.executable, str(ROOT / 'tools/ipk_permissions.py'), str(package), '--app-id', app['id'], '--check'], check=True)
     members = ar_members(package)
     if members.get('debian-binary') != b'2.0\n':
         fail('missing Debian package format version')

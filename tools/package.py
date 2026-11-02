@@ -66,6 +66,7 @@ def main():
         subprocess.run(['python3', str(ROOT / 'tools/make-ipk.py'), str(stage), str(package)], check=True)
     if not package.is_file() or not package.stat().st_size:
         raise SystemExit(f'Expected nonempty package was not produced: {package}')
+    subprocess.run(['python3', str(ROOT / 'tools/ipk_permissions.py'), str(package), '--app-id', app['id']], check=True)
     print(f'Packaged {package}')
 
 if __name__ == '__main__':

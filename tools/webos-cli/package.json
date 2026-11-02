@@ -1,0 +1,8 @@
+{
+  "name": "uxair-packaging-tools",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@webos-tools/cli": "3.2.6"
+  }
+}

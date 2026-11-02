@@ -11,3 +11,4 @@ paired.keys
 server.key
 device.id
 audio-delay-ms
+tools/webos-cli/node_modules/

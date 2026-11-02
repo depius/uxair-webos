@@ -1,4 +1,4 @@
-name: Build UxAir 1.1.0 B7 Starfish ARMv7 package
+name: Verify separate UxAir Starfish and NDL ARMv7 packages
 
 on:
   push:
@@ -33,14 +33,16 @@ jobs:
         run: |
           c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -Isrc tests/b7_storage_layout_test.cpp src/settings.cpp src/usage_stats.cpp -o build/tests/b7-storage-layout-test
           sudo build/tests/b7-storage-layout-test
-      - name: Upload host SDL History previews
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: history-render-previews-${{ github.sha }}
-          path: build/tests/history-*.bmp
-          if-no-files-found: error
-          retention-days: 14
   build-ipk:
+    name: ARMv7 ${{ matrix.media }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - media: starfish
+            platform: webos3-4
+          - media: ndl
+            platform: webos5plus
     needs: native-tests
     # Branch-local fallback: macOS runner remained unassigned for 15+ minutes.
     # bootstrap.py selects the already checksum-pinned Linux x86-64 ARM SDK.
@@ -60,24 +62,25 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes build-essential cmake ninja-build pkg-config perl curl git python3 file xz-utils bzip2
-          npm install --global @webos-tools/cli@3.2.6
+          npm ci --prefix tools/webos-cli --ignore-scripts --no-audit --no-fund
+          echo "$GITHUB_WORKSPACE/tools/webos-cli/node_modules/.bin" >> "$GITHUB_PATH"
           cmake --version
           ninja --version
           pkg-config --version
-          ares -V
-          command -v ares-package
+          tools/webos-cli/node_modules/.bin/ares -V
+          test -x tools/webos-cli/node_modules/.bin/ares-package
       - name: Validate source metadata
         run: python3 tools/validate-metadata.py
-      # Branch-local B7 validation: build only production Starfish for webOS 3-4.
-      - name: Build and verify the webOS 3-4 (Starfish) IPK
+      # Separate link targets/packages; NDL hardware acceptance remains pending.
+      - name: Build and verify the backend-specific IPK
         run: |
-          tools/build.sh --media=starfish
-          python3 tools/verify-elf.py build/app | tee dist/ELF_REPORT-webos3-4.txt
+          tools/build.sh --media=${{ matrix.media }}
+          python3 tools/verify-elf.py build/app | tee dist/ELF_REPORT-${{ matrix.platform }}.txt
           python3 tools/validate-ipk.py
       - name: Build corresponding source archive
         run: tools/source-package.py
-      - name: Preserve Starfish ELF report
-        run: cp dist/ELF_REPORT-webos3-4.txt dist/ELF_REPORT.txt
+      - name: Preserve backend ELF report
+        run: cp dist/ELF_REPORT-${{ matrix.platform }}.txt dist/ELF_REPORT.txt
       - name: Record source commit and package checksum
         run: |
           git rev-parse HEAD > dist/BUILD_COMMIT.txt
@@ -86,5 +89,5 @@ jobs:
           cat dist/BUILD_COMMIT.txt dist/SHA256SUMS dist/ELF_REPORT.txt
       - name: Hold package distribution pending B7 and security assessment
         run: |
-          echo "ARMv7 Starfish build verified; no IPK/source artifact uploaded."
-          echo "Release hold: physical B7 validation and dc3fe475 browser Malware verdict remain unresolved."
+          echo "ARMv7 ${{ matrix.media }} build verified; no IPK/source artifact uploaded."
+          echo "Release hold: hardening needs renewed physical validation; dc3fe475 browser Malware verdict remains unresolved."

@@ -2,6 +2,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/tests
+python3 tests/network_bounds_test.py
+python3 tests/ipk_permissions_test.py
+python3 tests/source_package_test.py
 c++ -std=c++11 -g -fsanitize=address,undefined -Isrc tests/session_lifecycle_test.cpp -o build/tests/session-lifecycle-test
 build/tests/session-lifecycle-test
 python3 tests/teardown_origin_test.py

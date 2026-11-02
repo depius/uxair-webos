@@ -87,10 +87,25 @@ if(BUILD_RECEIVER)
             list(APPEND CORE "${CMAKE_BINARY_DIR}/generated/${PROBE_FILE}")
         endforeach()
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-            "${CMAKE_SOURCE_DIR}/tools/instrument-uxplay.py"
+            "${CMAKE_SOURCE_DIR}/tools/instrument-uxplay.py" "${CMAKE_SOURCE_DIR}/tools/harden-network.py"
             "${UX}/lib/raop.c" "${UX}/lib/http_request.c" "${UX}/lib/httpd.c" "${UX}/lib/raop_rtp_mirror.c")
     endif()
+    # Development already guards mirror allocations; production needs the
+    # same wire/body ceilings before upstream allocations, for either backend.
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    if(NOT BUILD_DEVELOPMENT_PACKAGE)
+        execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/harden-network.py"
+            "${UX}/lib" "${CMAKE_BINARY_DIR}/generated" RESULT_VARIABLE BOUNDS_RESULT)
+        if(NOT BOUNDS_RESULT EQUAL 0)
+            message(FATAL_ERROR "Pinned UxPlay allocation hardening failed")
+        endif()
+        foreach(BOUNDED_FILE raop_rtp_mirror.c http_request.c)
+            list(REMOVE_ITEM CORE "${UX}/lib/${BOUNDED_FILE}")
+            list(APPEND CORE "${CMAKE_BINARY_DIR}/generated/bounded-${BOUNDED_FILE}")
+        endforeach()
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+            "${CMAKE_SOURCE_DIR}/tools/harden-network.py" "${UX}/lib/raop_rtp_mirror.c" "${UX}/lib/http_request.c")
+    endif()
     set(LIFECYCLE_INPUT "${UX}/lib/raop.c")
     if(BUILD_DEVELOPMENT_PACKAGE)
         set(LIFECYCLE_INPUT "${CMAKE_BINARY_DIR}/generated/raop.c")
