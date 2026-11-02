@@ -13,7 +13,10 @@ int main() {
     assert(select_state_root(root,lib,false)==lib);
     assert(prepare_state(root,false));
     assert(select_state_root(root,lib,false)==root); // Existing local identity wins.
+    assert(select_state_root(root,lib,true)==lib); // Existing NDL storage remains selected.
     rmdir((lib+"/state").c_str());rmdir(lib.c_str());
+    assert(select_state_root(root,lib,true).empty()); // Legacy state never becomes a new identity.
+    assert(access(lib.c_str(),F_OK)!=0); // Selection did not create a destination or migrate files.
     int fd=open(file.c_str(),O_CREAT|O_WRONLY,0666);assert(fd>=0);close(fd);
     chmod(state.c_str(),0777);assert(prepare_state(root,false));
     struct stat s;assert(!stat(state.c_str(),&s)&&(s.st_mode&0777)==0700);

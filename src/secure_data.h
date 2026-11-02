@@ -45,10 +45,21 @@ inline void state_environment(const std::string& app,const std::string& lib,cons
             ndl?"NDL persistent var/lib":selected==lib?"reuse existing var/lib state":"Starfish app-local state");
     fflush(stderr);
 }
-// Selection policy is unchanged. An inaccessible or unsafe existing local
-// identity must not cause a switch to a new identity elsewhere.
+// An inaccessible or unsafe existing identity must not cause a switch to
+// newly initialized storage elsewhere.
 inline std::string select_state_root(const std::string& app,const std::string& lib,bool ndl) {
-    if(ndl)return lib;
+    if(ndl) {
+        // A backend upgrade must not silently replace a legacy app-local
+        // identity with new keys in var/lib. Leave migration explicit.
+        struct stat prior;
+        const bool lib_missing=lstat((lib+"/state").c_str(),&prior)!=0 && errno==ENOENT;
+        const bool local_missing=lstat((app+"/state").c_str(),&prior)!=0 && errno==ENOENT;
+        if(lib_missing && !local_missing) {
+            state_rejected(app+"/state","legacy-identity-migration-required",EEXIST);
+            return "";
+        }
+        return lib;
+    }
     struct stat local_state,lib_state;
     const bool use_lib=lstat((app+"/state").c_str(),&local_state)!=0 && errno==ENOENT &&
                        lstat((lib+"/state").c_str(),&lib_state)==0;

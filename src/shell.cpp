@@ -64,6 +64,7 @@ std::string data_directory() {
     const bool ndl=false;
 #endif
     const std::string selected=select_state_root(app,lib,ndl);
+    if(selected.empty())return ""; // Preserve the legacy identity; no alternate initialization.
     const bool use_lib=selected==lib;
     state_environment(app,lib,selected,ndl);
     if(prepare_state(selected,use_lib,!ndl && selected==app))return dir=selected;
