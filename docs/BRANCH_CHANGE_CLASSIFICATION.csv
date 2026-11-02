@@ -16,6 +16,7 @@ docs/B7_STORAGE_DIAGNOSTICS.md,Diagnostic or test-only changes,Starfish,Historic
 docs/B7_STORAGE_FIX.md,Diagnostic or test-only changes,Starfish,Historical B7 investigation and exact test evidence; final status in branch review
 docs/BRANCH_CHANGE_CLASSIFICATION.csv,Diagnostic or test-only changes,Both,Exhaustive path inventory for this branch review
 docs/DEVELOPMENT.md,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
+docs/PACKAGING_DEPENDENCY_AUDIT.md,Shared UxAir functionality,Both host build targets,Remaining host-only advisory assessment; no dependency upgrade or TV payload change
 docs/PORT-WEBOS10.md,NDL-specific functionality,NDL,Included contributor foundation; current shared-source physical validation pending
 docs/PR10_B7_COMPATIBILITY.md,Diagnostic or test-only changes,Starfish,Historical B7 investigation and exact test evidence; final status in branch review
 docs/RELEASING.md,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
