@@ -30,6 +30,8 @@ No demonstrated Critical-severity NDL crash, memory-corruption exploit or pairin
 
 Run the complete `tools/test.sh`, metadata validation and cross-UID storage tests, then both ARM matrix targets. Keep package contents, metadata/version, permissions, private-state exclusion, ARMv7 soft-float, backend libraries, GLIBC <=2.19 and checksums checked. Both matrix jobs check out the same GitHub source SHA. No artifact uploads occur under the security hold.
 
+Use explicit backend options: the existing unqualified build default remains NDL. A stable-candidate build must specify `--media=starfish`. No default or runtime backend behavior was changed.
+
 Explicit build commands from one exact source revision:
 
 ```sh
@@ -46,7 +48,7 @@ Expected separate packages are `com.github.depius.uxair_1.2.0_arm-webos3-4.ipk` 
 1. Freeze this development scope and record the exact successful test/build SHA and known limitations. No NDL hardware requirement is added to this scope; future hardware results may improve Beta status.
 2. Preserve the 148bc961 B7 rollback baseline. Obtain approval before distributing the final hardened Starfish test candidate; complete B7 playback, fresh/upgrade, pairing/settings and reboot checks on its exact source.
 3. Keep the global security release hold: obtain the original browser verdict's independent assessment or explicit owner-reviewed security disposition, including remaining parser, installation-container and host-tool risks. CI success and a Beta label do not resolve those findings.
-4. After explicit owner approval for integration, integrate this foundation once into main, preserving contributor attribution and the complete shared-fix chain. PR #10's head is already an ancestor; do not apply it a second time. Keep PR #9 Direct Video/HLS outside 1.2.0.
+4. After explicit owner approval for integration, integrate this foundation once into main, preserving contributor attribution and the complete shared-fix chain. PR #10's head is already an ancestor; do not apply it a second time. Keep PR #9 Direct Video/HLS outside 1.2.0. Approval must cover any resulting PR-state effects of integrating existing contributor commits; inspect those effects before performing an approved merge.
 5. Run the full automated matrix on the actual resulting main SHA. Confirm both outputs use that same revision and retain Starfish stable-candidate / NDL Beta labels. NDL hardware testing remains deferred, not a closure prerequisite.
 6. Publication, PR closure and branch/worktree deletion are separate owner-approved actions. Record checksums, corresponding sources, support labels, security disposition and rollback reference before any approved release. Do not delete this branch/worktree until the owner explicitly approves cleanup; no such action is performed here.
 
@@ -55,3 +57,15 @@ Expected separate packages are `com.github.depius.uxair_1.2.0_arm-webos3-4.ipk` 
 See [SECURITY_HARDENING.md](SECURITY_HARDENING.md) and [PACKAGING_DEPENDENCY_AUDIT.md](PACKAGING_DEPENDENCY_AUDIT.md). Writable platform-managed ancestors, remaining upstream malformed-media parsing, partial loader hardening and incomplete build attestation remain documented. The host CLI audit reports 18 affected package entries (including a conditional server-oriented critical advisory); package-only CI does not establish their exploitability or repair them.
 
 The original dc3fe475 ZIP has SHA-256 `cec8ec73fb66bd4c0f1abfd59e82fd0d1111a4aa7b02d6e5e9d6b3e8767ebb70`. Firefox's Malware verdict remains unresolved, Defender scans were clean, and no verified vendor analyst verdict/case reference has been supplied. Neither confirmed malware nor confirmed false positive is established. Preserve the original sample and browser protections. No release or artifact distribution is authorized by this scope decision.
+
+## Completed automated acceptance
+
+Test/build revision: `03242d26ec6a5aba7b2c84f93f8ec75a131339d7`.
+
+- [Full sanitizer-backed Validate workflow](https://github.com/depius/uxair-webos/actions/runs/41668703529): success, including cross-UID storage tests and the new actual-source NDL mock tests.
+- [Independent native tests and both ARMv7 package jobs](https://github.com/depius/uxair-webos/actions/runs/41668703360): success. Both backend logs record the same source SHA, valid app ID/version, package permission/content checks and max required GLIBC 2.7 <=2.19.
+- Starfish linked libplayerAPIs.so.1/libAcbAPI.so.1; NDL linked libNDL_directmedia.so.1. These are distinct compile/link/package targets from the same revision.
+- Mock tests observed all documented retired-callback, unchecked binding/placement and ignored cleanup-error limitations without ASan/UBSan failures. This does not resolve those limitations or validate firmware playback/threading.
+- GitHub artifact listing is empty. No new artifact distribution, TV installation, release, merge or branch/PR closure occurred.
+
+The final result-recording follow-up is documentation-only; production source, app identity/version and build/test logic remain identical to the tested revision. Development scope is complete with Starfish stable-candidate / NDL Beta maturity. Security disposition, hardened B7 physical acceptance and explicit owner approval still govern integration/publication/cleanup; unavailable NDL hardware testing does not.

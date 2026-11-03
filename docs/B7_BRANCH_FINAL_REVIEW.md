@@ -84,3 +84,9 @@ Legacy-identity guard `b8fced2747125786a513e2896adbf0be1d948585`: [full Validate
 Code/metadata commit `d27fe4e840a2438378cbb862747ff03a906e0367` passed [full sanitizers and cross-UID storage validation](https://github.com/depius/uxair-webos/actions/runs/41546997117) and [separate Starfish/NDL ARMv7 builds](https://github.com/depius/uxair-webos/actions/runs/41546997122). Both 1.2.0 IPKs passed package identity/content/permission checks and ELF validation, with max required GLIBC 2.7 <=2.19. Starfish linked libplayerAPIs/libAcbAPI; NDL linked libNDL_directmedia. GitHub's artifact listing is empty. No candidate is distributed.
 
 The subsequent remaining-advisory/report commit is documentation-only; runtime source, build logic, dependency graph and app metadata are byte-identical to d27fe4e. Physical acceptance and the security-release hold are unchanged by these CI results.
+
+## Final owner-approved development scope
+
+The 2026-11-03 [scope decision and NDL source review](UXAIR_1_2_SCOPE.md) supersede the former NDL hardware gate: Starfish is the stable release candidate pending hardened B7 validation; NDL is Beta/Experimental with no current-build physical validation. The owner has no webOS 5+ TV, so NDL hardware testing is deferred rather than required for this scope's completion. Confirmed unchecked paths and callback-lifetime uncertainty remain disclosed.
+
+Revision 03242d26ec6a5aba7b2c84f93f8ec75a131339d7 passed [full sanitizer validation](https://github.com/depius/uxair-webos/actions/runs/41668703529) and [both same-revision ARM package builds](https://github.com/depius/uxair-webos/actions/runs/41668703360), including the new actual-source NDL tests with mocked APIs. No production source was changed by this scope-finalization step, and no artifacts were uploaded. Main integration, PR/branch closure and release publication still require explicit owner approval; the security release hold remains active.
