@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 typedef void (*ndl_test_event_fn)(int, long long, const char *);
+typedef ndl_test_event_fn NDLMediaLoadCallback;
 typedef struct {
     struct { int width, height, type; } video;
     struct { struct { int type; const char *format, *channelMode; int sampleRate; } pcm; } audio;

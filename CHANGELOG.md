@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [1.2.0] - Unreleased; security hold active
 
-Version 1.1.0 was internal development/testing. This is the next planned official minor release after 1.0.0; no 1.2.0 release or artifact distribution is approved.
+Version 1.1.0 was internal development/testing. This is the next planned official minor release after 1.0.0; no public 1.2.0 release is approved. Temporary TEST candidates are authorized for final Starfish validation and NDL Beta preparation.
 
 ### Compatibility and security
 
@@ -14,6 +14,7 @@ Version 1.1.0 was internal development/testing. This is the next planned officia
 - B7 private-state compatibility, RAOP FLUSH/resume and normal sender TEARDOWN classification, closing-generation ingress protection, split HEVC headers and bounded-preroll audio progress.
 - Shared Now Playing cover/title/progress with corrected render scheduling; Starfish remote Exit and opt-in background policy retained.
 - Bound production sender-controlled allocations before use, validate allocation failures, reduce package-internal writable permissions, lock packaging dependencies and disable npm lifecycle scripts.
+- NDL-only callback retirement waits for active dispatch and rejects retired session identities; checked window binding/placement and partial Load cleanup; failed Unload/Quit prevents unsafe reuse. A finite 1024-Load callback-identity budget requires process restart rather than recycling identities without a vendor quiescence guarantee.
 - Preserve the production app ID and existing settings/pairing paths and formats. Refuse silent NDL identity replacement when legacy app-local state needs migration.
 - Browser Malware assessment remains unresolved. The physical B7 baseline at 148bc961 passed; hardened/versioned candidates require renewed hardware acceptance before release.
 

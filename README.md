@@ -18,7 +18,7 @@ The Starfish baseline at `148bc961` passed 30 minutes of repeated orientation ch
 | webOS 3-4 | Starfish + ACB | `com.github.depius.uxair_1.2.0_arm-webos3-4.ipk` | Stable release candidate; final hardened B7 validation pending |
 | webOS 5+ | NDL DirectMedia | `com.github.depius.uxair_1.2.0_arm-webos5plus.ipk` | **Beta / Experimental; no current-build physical validation** |
 
-NDL hardware is unavailable to the owner. Its lack of physical validation is accepted for Beta/Experimental scope and does not by itself block Starfish completion. See [final development scope](docs/UXAIR_1_2_SCOPE.md) for known NDL defects and the integration/closure plan.
+NDL hardware is unavailable to the owner. Its lack of physical validation is accepted for Beta/Experimental scope and does not by itself block Starfish completion. See [final development scope](docs/UXAIR_1_2_SCOPE.md) for the integration/closure plan. The confirmed callback, placement and cleanup defects are addressed by the [NDL lifecycle fixes](docs/NDL_LIFECYCLE_FIX.md); firmware limitations remain explicit. Volunteer testers: [Beta test and log-reporting guide](docs/NDL_BETA_TESTING.md).
 
 The packages use the same application ID and are alternative installations. Backend selection is at build time; there is no universal IPK or runtime switch. The contributor's earlier C4/webOS 10.3.1 results apply to PR #10's older source. Details and pending NDL tests: [PORT-WEBOS10.md](docs/PORT-WEBOS10.md).
 
@@ -63,7 +63,7 @@ In UxAir 1.2.0, a fresh installation defaults to H.264 at 1920×1080 and 30 FPS.
 
 ### Download UxAir
 
-Published versions remain on [GitHub Releases](https://github.com/depius/uxair-webos/releases/latest). **There is no published 1.2.0 download.** Use the installation examples below only for an explicitly approved candidate or released package, choosing its backend from the table above. Do not distribute a new candidate or bypass a browser warning while the hold is active.
+Published versions remain on [GitHub Releases](https://github.com/depius/uxair-webos/releases/latest). **There is no published 1.2.0 download.** Use the installation examples below only for an explicitly approved candidate or released package, choosing its backend from the table above. The owner has authorized temporary TEST candidates for this validation round, not a public release. Do not bypass browser or antivirus warnings. See [final B7 test instructions](docs/B7_FINAL_TEST.md).
 
 ### Method 1 — webOS CLI (verified on the B7 baseline)
 
@@ -121,7 +121,7 @@ python3 tools/validate-ipk.py
 tools/source-package.py
 ```
 
-Validate each target before the next build changes staging. CI runs host sanitizers and both ARM targets but uploads no artifacts under the hold. No compile result establishes physical NDL support. Review [release gates](docs/RELEASING.md), [security findings](docs/SECURITY_HARDENING.md), and [branch integration review](docs/B7_BRANCH_FINAL_REVIEW.md).
+Validate each target before the next build changes staging. CI runs host sanitizers and both ARM targets. Ordinary runs upload no artifacts; the branch-only, explicit `prepare_test_assets` dispatch retains authenticated TEST artifacts for one day. Public release remains on hold. Prepared asset names are `UxAir-1.2.0-webOS3-4-Starfish.ipk` and `UxAir-1.2.0-webOS5plus-NDL-Beta.ipk`; both embed the same source revision. No compile result establishes physical NDL support. Review [release gates](docs/RELEASING.md), [security findings](docs/SECURITY_HARDENING.md), and [branch integration review](docs/B7_BRANCH_FINAL_REVIEW.md).
 
 ## Known limitations and troubleshooting
 

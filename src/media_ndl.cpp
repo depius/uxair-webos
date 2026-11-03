@@ -15,8 +15,7 @@ enum {
     EV_LOADCOMPLETED = 0x16, EV_UNLOADCOMPLETED = 0x17, EV_PLAYING = 0x1a, EV_ENDOFSTREAM = 0x1c,
     EV_NEED_DATA = 0x26, EV_ENOUGH_DATA = 0x27, EV_BUFFERLOW = 0x2c
 };
-// NDL is one player per process and its callback carries no user pointer.
-static std::atomic<Media *> current_media{nullptr};
+// The C bridge pins this Media context while dispatching an active Load callback.
 
 static int video_info_number(const char *message, const char *field) {
     if(!message) return 0;
@@ -33,15 +32,16 @@ static int64_t monotonic_ns() { timespec t; clock_gettime(CLOCK_MONOTONIC,&t); r
 Media::Media() {}
 Media::~Media() {
     close();
-    ndlb_quit();
-    if (!window_id_.empty()) { SDL_webOSDestroyExportedWindow(window_id_.c_str()); window_id_.clear(); }
+    const bool released=ndlb_quit()==0;
+    if(!released)fprintf(stderr,"[ndl] cleanup-unconfirmed: exported window retained until process exit\n");
+    if (released && !window_id_.empty()) { SDL_webOSDestroyExportedWindow(window_id_.c_str()); window_id_.clear(); }
 }
-void Media::event(int type, long long value, const char *message) {
-    Media *m = current_media.load();
+void Media::event(void *context, int type, long long value, const char *message) {
+    Media *m = static_cast<Media *>(context);
     if (!m) return;
     if (type == EV_FRAMEREADY) { m->last_frame_event_ns=monotonic_ns(); return; }
     if (type == EV_NEED_DATA || type == EV_ENOUGH_DATA || type == EV_BUFFERLOW || type == 0x2a) return;
-    fprintf(stderr, "[ndl] event=0x%x value=%lld %s\n", type, value, message ? message : "");
+    fprintf(stderr, "[ndl] event=0x%x value=%lld %.200s\n", type, value, message ? message : "");
     switch (type) {
     case EV_LOADCOMPLETED: m->ready = true; break;
     case EV_PLAYING:
@@ -109,25 +109,28 @@ bool Media::open(const char *app_id, int width, int height, bool audio, int rate
         window_id_=id;
         SDL_PumpEvents();    // let the compositor learn the new window before NDL refers to it
     }
-    current_media=this;
     const int video_codec=audio_only?NDLB_VIDEO_NONE:codec==MirrorCodec::ExperimentalHevc?NDLB_VIDEO_H265:NDLB_VIDEO_H264;
     const char *video_window=audio_only||window_id_.empty()?nullptr:window_id_.c_str();
     fprintf(stderr,"[media] Load mode=%s max_fps=%d app=%s %dx%d codec=%s window=%s\n",audio_only?"audio-only":"mirroring",max_fps,app_id,
             width,height,video_codec==NDLB_VIDEO_H265?"H265":video_codec==NDLB_VIDEO_H264?"H264":"none",video_window?video_window:"none");
-    if (ndlb_open(app_id,video_window,video_codec,width,height,audio?rate:0,&Media::event)) {
+    if (ndlb_open(app_id,video_window,video_codec,width,height,audio?rate:0,&Media::event,this)) {
         open_failure_=MediaOpenFailure::StarfishLoad;
-        close();
+        failed=true;close();
         return false;
     }
     loaded_=true;
     // NDL reports LOADCOMPLETED only once data flows; the caller waits for ready
     // before it feeds, so a successful Load counts as loaded.
+    if(failed || ended) {open_failure_=MediaOpenFailure::StarfishLoad;close();return false;}
     ready=true;
     if(!audio_only) {
         SDL_Rect source={0,0,width,height}, target={window.x,window.y,window.width,window.height};
         bool placed=SDL_webOSSetExportedWindow(window_id_.c_str(),&source,&target);
         fprintf(stderr,"[media-init] video window=%d,%d %dx%d source=%dx%d placed=%d\n",
                 window.x,window.y,window.width,window.height,width,height,int(placed));
+        if(!placed) {
+            open_failure_=MediaOpenFailure::InvalidConfiguration;failed=true;close();return false;
+        }
     }
     fprintf(stderr,"[media-init] NDL ready ms=%.2f\n",(monotonic_ns()-phase)/1e6);
     return true;
@@ -171,8 +174,8 @@ void Media::eos() {}
 void Media::pause(bool) {}
 // The exported video window outlives a session (see open); only the destructor drops it.
 void Media::close() {
-    if (loaded_) { ndlb_close(); fprintf(stderr, "[media] unloaded\n"); }
-    loaded_ = false;
-    Media *self=this;
-    current_media.compare_exchange_strong(self,nullptr);
+    // The bridge retires/waits for callbacks even after a partially failed Load.
+    const int result=ndlb_close();
+    if(result) {failed=true;fprintf(stderr,"[ndl] close-failed: restart required\n");}
+    loaded_=false;ready=false;playing=false;
 }

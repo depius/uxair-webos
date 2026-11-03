@@ -5,6 +5,7 @@ mkdir -p build/tests
 python3 tests/network_bounds_test.py
 python3 tests/ipk_permissions_test.py
 python3 tests/source_package_test.py
+python3 tests/candidate_assets_test.py
 c++ -std=c++11 -g -fsanitize=address,undefined -Isrc tests/session_lifecycle_test.cpp -o build/tests/session-lifecycle-test
 build/tests/session-lifecycle-test
 python3 tests/teardown_origin_test.py
@@ -112,8 +113,8 @@ c++ -std=c++11 -g -fsanitize=address,undefined -Isrc $ffmpeg_cflags \
 build/tests/media-test build/tests/landscape.h264 build/tests/portrait.h264 build/tests/audio.aac build/tests/full-hd.h264 build/tests/full-hd-portrait.h264 build/tests/unsupported.h264
 
 # Actual NDL sources with host-only vendor stubs; not firmware playback validation.
-cc -std=c11 -g -Wall -Wextra -fsanitize=address,undefined -Ddlsym=ndl_test_dlsym -Itests/ndl_stub -Isrc \
+cc -std=c11 -g -Wall -Wextra -fsanitize=address,undefined -pthread -Ddlsym=ndl_test_dlsym -Itests/ndl_stub -Isrc \
   -c src/ndl_backend.c -o build/tests/ndl-backend-test.o
-c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -DUXAIR_MEDIA_NDL -Itests/ndl_stub -Isrc $(pkg-config --cflags sdl2) \
+c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -pthread -DUXAIR_MEDIA_NDL -Itests/ndl_stub -Isrc $(pkg-config --cflags sdl2) \
   tests/ndl_media_test.cpp src/media_ndl.cpp src/settings.cpp build/tests/ndl-backend-test.o -o build/tests/ndl-media-test
 build/tests/ndl-media-test

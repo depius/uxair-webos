@@ -7,6 +7,7 @@ CMakeLists.txt,Shared UxAir functionality,Both,Mixed shared/interface file with 
 README.md,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
 dependencies.lock.json,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
 docs/B7_BRANCH_FINAL_REVIEW.md,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
+docs/B7_FINAL_TEST.md,Shared UxAir functionality,Starfish,Final TEST candidate verification or NDL Beta lifecycle regression; no new playback feature
 docs/B7_HEVC_CAPACITY_INVESTIGATION.md,Diagnostic or test-only changes,Starfish,Historical B7 investigation and exact test evidence; final status in branch review
 docs/B7_HEVC_RESET_INVESTIGATION.md,Diagnostic or test-only changes,Starfish,Historical B7 investigation and exact test evidence; final status in branch review
 docs/B7_LIFECYCLE_FIX.md,Diagnostic or test-only changes,Starfish,Historical B7 investigation and exact test evidence; final status in branch review
@@ -16,6 +17,8 @@ docs/B7_STORAGE_DIAGNOSTICS.md,Diagnostic or test-only changes,Starfish,Historic
 docs/B7_STORAGE_FIX.md,Diagnostic or test-only changes,Starfish,Historical B7 investigation and exact test evidence; final status in branch review
 docs/BRANCH_CHANGE_CLASSIFICATION.csv,Diagnostic or test-only changes,Both,Exhaustive path inventory for this branch review
 docs/DEVELOPMENT.md,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
+docs/NDL_BETA_TESTING.md,NDL-specific functionality,NDL,Final TEST candidate verification or NDL Beta lifecycle regression; no new playback feature
+docs/NDL_LIFECYCLE_FIX.md,NDL-specific functionality,NDL,Final TEST candidate verification or NDL Beta lifecycle regression; no new playback feature
 docs/PACKAGING_DEPENDENCY_AUDIT.md,Shared UxAir functionality,Both host build targets,Remaining host-only advisory assessment; no dependency upgrade or TV payload change
 docs/PORT-WEBOS10.md,NDL-specific functionality,NDL,Included contributor foundation; current shared-source physical validation pending
 docs/PR10_B7_COMPATIBILITY.md,Diagnostic or test-only changes,Starfish,Historical B7 investigation and exact test evidence; final status in branch review
@@ -54,6 +57,7 @@ src/system_bus.h,Shared UxAir functionality,Both,Shared source/build/release doc
 tests/audio_session_test.cpp,Diagnostic or test-only changes,Both,Regression or CI validation; no installed standalone feature
 tests/b7_storage_layout_test.cpp,Diagnostic or test-only changes,Both,Regression or CI validation; no installed standalone feature
 tests/build_platform_test.py,Diagnostic or test-only changes,Both,Regression or CI validation; no installed standalone feature
+tests/candidate_assets_test.py,Diagnostic or test-only changes,Both,Final TEST candidate verification or NDL Beta lifecycle regression; no new playback feature
 tests/fixtures/pinned_mirror_allocations.c,Diagnostic or test-only changes,Both,Regression or CI validation; no installed standalone feature
 tests/fixtures/raop_teardown.h,Diagnostic or test-only changes,Both,Regression or CI validation; no installed standalone feature
 tests/hevc_reinit_test.cpp,Diagnostic or test-only changes,Both,Regression or CI validation; no installed standalone feature
@@ -86,6 +90,7 @@ tools/ipk_permissions.py,Shared UxAir functionality,Both,Shared narrow security/
 tools/make-ipk.py,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
 tools/package-ndl-probe.py,Diagnostic or test-only changes,NDL,Independent manually launched probe; not production package/version
 tools/package.py,Shared UxAir functionality,Both,Shared narrow security/build correctness; production both backends; no TV artifact distribution
+tools/prepare-candidate.py,Shared UxAir functionality,Both,Final TEST candidate verification or NDL Beta lifecycle regression; no new playback feature
 tools/source-package.py,Shared UxAir functionality,Both,Shared narrow security/build correctness; production both backends; no TV artifact distribution
 tools/test.sh,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
 tools/tv.sh,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain

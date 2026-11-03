@@ -9,6 +9,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      prepare_test_assets:
+        description: Prepare owner-requested unreleased TEST assets (branch only)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -91,5 +96,16 @@ jobs:
           cat dist/BUILD_COMMIT.txt dist/SHA256SUMS dist/ELF_REPORT.txt
       - name: Hold package distribution pending B7 and security assessment
         run: |
-          echo "ARMv7 ${{ matrix.media }} build verified; no IPK/source artifact uploaded."
+          echo "ARMv7 ${{ matrix.media }} verified; ordinary runs upload no IPK/source artifact. Explicit TEST dispatch is separate."
           echo "Release hold: hardening needs renewed physical validation; dc3fe475 browser Malware verdict remains unresolved."
+      - name: Prepare explicitly requested TEST assets
+        if: github.event_name == 'workflow_dispatch' && inputs.prepare_test_assets && github.ref == 'refs/heads/fix/pr10-b7-compatibility'
+        run: python3 tools/prepare-candidate.py --backend=${{ matrix.media }}
+      - name: Retain temporary TEST candidate (not a release)
+        if: github.event_name == 'workflow_dispatch' && inputs.prepare_test_assets && github.ref == 'refs/heads/fix/pr10-b7-compatibility'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: TEST-ONLY-UxAir-1.2.0-${{ matrix.media }}-${{ github.sha }}
+          path: dist/test-candidates/${{ matrix.media }}/*
+          if-no-files-found: error
+          retention-days: 1

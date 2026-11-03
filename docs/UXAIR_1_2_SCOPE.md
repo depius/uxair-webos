@@ -1,6 +1,6 @@
 # UxAir 1.2.0: final development scope and integration plan
 
-Status set by the owner on 2026-11-03. Application ID and version remain `com.github.depius.uxair`, `1.2.0`. No new playback functionality or runtime fix is part of this scope-finalization change.
+Status updated for the owner's final TEST/Beta preparation request. See [NDL lifecycle fixes](NDL_LIFECYCLE_FIX.md), [B7 acceptance](B7_FINAL_TEST.md) and [temporary TEST artifact procedure](RELEASING.md#authorized-temporary-test-preparation). The confirmed NDL defects in the historical review below are now corrected in source and regression tests; that review is retained as before-fix evidence. Application ID and version remain `com.github.depius.uxair`, `1.2.0`. No new playback functionality is added. Targeted NDL lifecycle fixes are included in final candidate preparation.
 
 | Target | Maturity | Acceptance for this scope |
 | --- | --- | --- |
@@ -9,7 +9,7 @@ Status set by the owner on 2026-11-03. Application ID and version remain `com.gi
 
 Historical contributor C4/webOS 10.3.1 results belong to the earlier 8526f8d source and are not presented as validation of this build. NDL must retain its Beta/Experimental label and known limitations in any later approved release description. Beta is not a waiver of a confirmed critical defect or the global security hold.
 
-## Final NDL source review
+## Historical NDL source review at d452b12
 
 Reviewed actual `src/media_ndl.cpp`, `src/ndl_backend.c/h`, shared startup/persistence/pairing/audio/video paths, and the API-v2 declarations from the retained checksum-pinned SDK. No production source was changed for this review.
 
@@ -24,7 +24,7 @@ Reviewed actual `src/media_ndl.cpp`, `src/ndl_backend.c/h`, shared startup/persi
 
 No demonstrated Critical-severity NDL crash, memory-corruption exploit or pairing-data destruction was established by this review. This is not a clean bill of health: the callback-lifetime contract is an unresolved potential memory-safety concern, and the functional/cleanup defects above are confirmed unchecked paths. NDL remains Beta/Experimental; do not claim production-grade safety or playback support. A future concrete confirmed critical issue must be fixed or the affected Beta asset withheld, rather than hidden behind the label.
 
-## Automated acceptance and limits
+## Historical automated acceptance and limits
 
 `tests/ndl_media_test.cpp` compiles the actual NDL C++ media and C bridge with host-only SDL/vendor stubs under ASan/UBSan. It exercises initialization failures, audio-only/H.264/HEVC setup, PCM mapping, timestamps, audio buffer/retry handling, the video retry bound, retained binding across reopens and cleanup. Explicit characterization checks reproduce the retired-callback, ignored binding/placement and cleanup-error limitations. **Passing characterization checks means those limitations were observed, not fixed.** Stubs do not validate the firmware ABI, decoder, compositor, callback threading, jail or actual playback; the separate ARM matrix compiles/links with real SDK headers/libraries.
 
@@ -46,7 +46,7 @@ Expected separate packages are `com.github.depius.uxair_1.2.0_arm-webos3-4.ipk` 
 ## Integration and branch closure (plan only)
 
 1. Freeze this development scope and record the exact successful test/build SHA and known limitations. No NDL hardware requirement is added to this scope; future hardware results may improve Beta status.
-2. Preserve the 148bc961 B7 rollback baseline. Obtain approval before distributing the final hardened Starfish test candidate; complete B7 playback, fresh/upgrade, pairing/settings and reboot checks on its exact source.
+2. Preserve the 148bc961 B7 rollback baseline. The later owner request authorizes the final hardened Starfish TEST candidate; complete B7 playback, fresh/upgrade, pairing/settings and reboot checks on its exact source.
 3. Keep the global security release hold: obtain the original browser verdict's independent assessment or explicit owner-reviewed security disposition, including remaining parser, installation-container and host-tool risks. CI success and a Beta label do not resolve those findings.
 4. After explicit owner approval for integration, integrate this foundation once into main, preserving contributor attribution and the complete shared-fix chain. PR #10's head is already an ancestor; do not apply it a second time. Keep PR #9 Direct Video/HLS outside 1.2.0. Approval must cover any resulting PR-state effects of integrating existing contributor commits; inspect those effects before performing an approved merge.
 5. Run the full automated matrix on the actual resulting main SHA. Confirm both outputs use that same revision and retain Starfish stable-candidate / NDL Beta labels. NDL hardware testing remains deferred, not a closure prerequisite.
@@ -56,9 +56,9 @@ Expected separate packages are `com.github.depius.uxair_1.2.0_arm-webos3-4.ipk` 
 
 See [SECURITY_HARDENING.md](SECURITY_HARDENING.md) and [PACKAGING_DEPENDENCY_AUDIT.md](PACKAGING_DEPENDENCY_AUDIT.md). Writable platform-managed ancestors, remaining upstream malformed-media parsing, partial loader hardening and incomplete build attestation remain documented. The host CLI audit reports 18 affected package entries (including a conditional server-oriented critical advisory); package-only CI does not establish their exploitability or repair them.
 
-The original dc3fe475 ZIP has SHA-256 `cec8ec73fb66bd4c0f1abfd59e82fd0d1111a4aa7b02d6e5e9d6b3e8767ebb70`. Firefox's Malware verdict remains unresolved, Defender scans were clean, and no verified vendor analyst verdict/case reference has been supplied. Neither confirmed malware nor confirmed false positive is established. Preserve the original sample and browser protections. No release or artifact distribution is authorized by this scope decision.
+The original dc3fe475 ZIP has SHA-256 `cec8ec73fb66bd4c0f1abfd59e82fd0d1111a4aa7b02d6e5e9d6b3e8767ebb70`. Firefox's Malware verdict remains unresolved, Defender scans were clean, and no verified vendor analyst verdict/case reference has been supplied. Neither confirmed malware nor confirmed false positive is established. Preserve the original sample and browser protections. The historical scope decision authorized no distribution; the later owner request explicitly authorizes temporary TEST candidates only, as described in RELEASING.md.
 
-## Completed automated acceptance
+## Previous automated acceptance
 
 Test/build revision: `03242d26ec6a5aba7b2c84f93f8ec75a131339d7`.
 

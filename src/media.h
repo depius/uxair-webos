@@ -40,7 +40,7 @@ public:
     std::atomic<uint64_t> feed_time_ns{0}, feed_max_time_ns{0};
 private:
 #if defined(UXAIR_MEDIA_NDL)
-    static void event(int type, long long value, const char *message);
+    static void event(void *context, int type, long long value, const char *message);
     bool loaded_ = false;
     std::string window_id_;          // SDL exported window the video is bound to
     unsigned video_failures_ = 0;    // refused video frames in a row
