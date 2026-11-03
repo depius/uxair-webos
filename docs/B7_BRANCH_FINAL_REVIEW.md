@@ -6,7 +6,7 @@
 
 Baseline `148bc9616f3edfff3d63ec6181f081322d1017fd` passed the owner's 30-minute test: repeated orientation and resolution changes, video, photos, mirroring and audio, with no observed errors. Earlier tests confirmed saved 4K/60 HEVC, pairing, settings, music/Now Playing, photos with background music, sender TEARDOWN classification and remote Exit. Displayed FPS/native 4K scanout and every individual negotiated audio codec were not independently measured.
 
-The hardening/version commits are later source and need renewed acceptance before an authorized final candidate. NDL is **unvalidated for 1.2.0**. The contributor's C4/webOS 10.3.1 report at `8526f8d5547709eec43c7993e1243f20f93ae2a3` applies only to that earlier source.
+The hardening/version commits are later source and need renewed acceptance before an authorized final candidate. NDL is **Beta / Experimental; no physical validation of the current 1.2.0 build has been performed**. The owner has no compatible TV; NDL hardware testing is deferred, not a development-scope or Starfish-release prerequisite. [UXAIR_1_2_SCOPE.md](UXAIR_1_2_SCOPE.md) is the final maturity/NDL review and closure policy. The contributor's C4/webOS 10.3.1 report at `8526f8d5547709eec43c7993e1243f20f93ae2a3` applies only to that earlier source.
 
 ## 2. Security disposition
 
@@ -43,7 +43,7 @@ Known cross-backend regression surfaces are NDL late callbacks during rapid reop
 
 1. Keep the validated baseline commit and this isolated branch/history intact while security assessment and renewed physical tests are pending. Do not merge now.
 2. After the owner approves the exact final commit, integrate this reviewed foundation once, retaining contributor attribution and the complete dependency chain. The original five PR #10 commits (`60e30c8` through `8526f8d`) are already ancestors of this branch. Do not merge/cherry-pick the NDL implementation a second time or apply only the final B7 scheduling commit over main.
-3. Prefer a single reviewed foundation integration over selecting isolated runtime hunks. If selective integration is required, first take the original build/backend foundation, then all B7 storage/lifecycle/FLUSH/header/cadence/reset/ingress fixes in original order through 148bc961, followed by the minimal security and version commits and their tests. Re-run the entire matrix and both hardware gates on the resulting history. The temporary c894a17 TEST workflow and its removal need not be recreated in a selective sequence.
+3. Prefer a single reviewed foundation integration over selecting isolated runtime hunks. If selective integration is required, first take the original build/backend foundation, then all B7 storage/lifecycle/FLUSH/header/cadence/reset/ingress fixes in original order through 148bc961, followed by the minimal security and version commits and their tests. Re-run the entire matrix and the Starfish physical gate and NDL Beta disclosure on the resulting history. The temporary c894a17 TEST workflow and its removal need not be recreated in a selective sequence.
 4. Once that foundation is approved/integrated, future NDL work should branch/rebase onto the new shared main. The current contributor NDL head itself requires no reapplication: it has no commits beyond the included 8526f8d in the inspected PR. Coordinate later changes on a separate branch; do not rewrite the contributor's current PR branch as part of this task.
 5. Keep PR #9 separate. Its experimental Direct Video/Starfish work must later be rebased/selectively integrated over the accepted foundation with explicit backend gating and a separately chosen future release version. Its existing 1.2 development naming does not authorize including those features in this 1.2.0 foundation. Do not merge either existing PR automatically.
 
@@ -58,7 +58,7 @@ tools/test.sh
 tools/build.sh --media=starfish
 python3 tools/verify-elf.py build/app
 python3 tools/validate-ipk.py
-# Separate NDL DirectMedia target, webOS 5+; physical validation pending
+# Separate NDL DirectMedia Beta / Experimental target; no physical validation
 tools/build.sh --media=ndl
 python3 tools/verify-elf.py build/app
 python3 tools/validate-ipk.py
@@ -70,7 +70,7 @@ Expected files: com.github.depius.uxair_1.2.0_arm-webos3-4.ipk and com.github.de
 
 - Independent assessment of the unchanged browser-flagged ZIP, with a verifiable case reference and outcome; explicit acceptance of remaining security risks.
 - Approval before distribution of one final Starfish physical-test candidate, then renewed B7 stress, pairing/settings, fresh install and 1.0.0/1.1.0 upgrade/reboot tests on that exact hardened 1.2.0 source.
-- NDL physical webOS 5+ testing: installed-app startup/window binding, H.264/HEVC portrait/4K and repeated reopens, audio-only and music/photo coexistence, FLUSH/resume, volume/mute, rapid handoffs, sender TEARDOWN/failures/late callbacks, foreground/background/screensaver/Exit, var/lib persistence, fresh installation and upgrades. Legacy app-local state requires an explicitly reviewed migration, not new keys.
+- Deferred optional NDL Beta hardware follow-up (not a 1.2.0 closure gate): installed-app startup/window binding, H.264/HEVC portrait/4K and repeated reopens, audio-only and music/photo coexistence, FLUSH/resume, volume/mute, rapid handoffs, sender TEARDOWN/failures/late callbacks, foreground/background/screensaver/Exit, var/lib persistence, fresh installation and upgrades. Legacy app-local state requires an explicitly reviewed migration, not new keys.
 - Owner approval of the final integration, tag and publication. No merge, worktree deletion, PR closure, release or new artifact distribution was performed here.
 
 ## Automated evidence before version preparation

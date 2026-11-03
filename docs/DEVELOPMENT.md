@@ -1,6 +1,6 @@
 # Development and build environments
 
-Current application version: **UxAir 1.2.0, unreleased**. Security release hold applies; build/validation commands do not authorize installation, artifact distribution, merging or publication. NDL remains physically unvalidated for this release.
+Current application version: **UxAir 1.2.0, unreleased**. Security release hold applies; build/validation commands do not authorize installation, artifact distribution, merging or publication. NDL is Beta/Experimental with no physical validation of the current release source; unavailable NDL hardware is not a development-scope completion gate.
 
 ## Supported hosts and inputs
 
@@ -38,7 +38,7 @@ c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -Isrc tests/b7_stor
 sudo build/tests/b7-storage-layout-test
 ```
 
-The root fixture models different owner/execution UIDs; it does not emulate firmware jail mounts. The full suite includes real generated allocation guards, private storage, pairing, queue/epoch handling, RAOP lifecycle, HEVC split headers/reopens, UI and IPK/source packaging. `tools/test.sh --diagnostics-only` is a shorter diagnostic subset, not release validation.
+The root fixture models different owner/execution UIDs; it does not emulate firmware jail mounts. The full suite includes mocked-API tests of the actual NDL sources (not firmware playback), real generated allocation guards, private storage, pairing, queue/epoch handling, RAOP lifecycle, HEVC split headers/reopens, UI and IPK/source packaging. `tools/test.sh --diagnostics-only` is a shorter diagnostic subset, not release validation.
 
 ## Two explicit ARM build targets
 
@@ -54,7 +54,7 @@ python3 tools/validate-ipk.py
 
 Output: `dist/com.github.depius.uxair_1.2.0_arm-webos3-4.ipk`. It depends on libplayerAPIs/ACB and must not acquire an NDL dependency.
 
-NDL DirectMedia, webOS 5+ (**physical validation pending**):
+NDL DirectMedia, webOS 5+ (**Beta / Experimental; no physical validation**):
 
 ```sh
 tools/build.sh --media=ndl

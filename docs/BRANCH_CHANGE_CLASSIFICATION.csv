@@ -22,6 +22,7 @@ docs/PR10_B7_COMPATIBILITY.md,Diagnostic or test-only changes,Starfish,Historica
 docs/RELEASING.md,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
 docs/SECURITY_HARDENING.md,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
 docs/USAGE_HISTORY.md,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
+docs/UXAIR_1_2_SCOPE.md,Shared UxAir functionality,Both,"Owner-approved stable Starfish RC and NDL Beta scope; deferred hardware, source review and approval-only closure plan"
 packaging/appinfo.json,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
 packaging/ndl-probe-appinfo.json,Diagnostic or test-only changes,NDL,Independent manually launched probe; not production package/version
 src/audio_session.h,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
@@ -62,6 +63,9 @@ tests/input_test.cpp,Diagnostic or test-only changes,Both,Regression or CI valid
 tests/ipk_permissions_test.py,Diagnostic or test-only changes,Both,Regression or CI validation; no installed standalone feature
 tests/media_failure_path_test.py,Diagnostic or test-only changes,Both,Regression or CI validation; no installed standalone feature
 tests/media_identity_test.py,Diagnostic or test-only changes,Both,Regression or CI validation; no installed standalone feature
+tests/ndl_media_test.cpp,Diagnostic or test-only changes,NDL,"Actual NDL sources with host mocks; known limitations characterized, no firmware playback claim"
+tests/ndl_stub/NDL_directmedia.h,Diagnostic or test-only changes,NDL,"Actual NDL sources with host mocks; known limitations characterized, no firmware playback claim"
+tests/ndl_stub/SDL_webOS.h,Diagnostic or test-only changes,NDL,"Actual NDL sources with host mocks; known limitations characterized, no firmware playback claim"
 tests/network_bounds_test.py,Diagnostic or test-only changes,Both,Regression or CI validation; no installed standalone feature
 tests/now_playing_test.cpp,Diagnostic or test-only changes,Both,Regression or CI validation; no installed standalone feature
 tests/receiver_ingress_log_test.py,Diagnostic or test-only changes,Both,Regression or CI validation; no installed standalone feature

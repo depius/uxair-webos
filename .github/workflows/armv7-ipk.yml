@@ -34,15 +34,17 @@ jobs:
           c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -Isrc tests/b7_storage_layout_test.cpp src/settings.cpp src/usage_stats.cpp -o build/tests/b7-storage-layout-test
           sudo build/tests/b7-storage-layout-test
   build-ipk:
-    name: ARMv7 ${{ matrix.media }}
+    name: ARMv7 ${{ matrix.media }} (${{ matrix.maturity }})
     strategy:
       fail-fast: false
       matrix:
         include:
           - media: starfish
             platform: webos3-4
+            maturity: Stable RC
           - media: ndl
             platform: webos5plus
+            maturity: Beta-Experimental
     needs: native-tests
     # Branch-local fallback: macOS runner remained unassigned for 15+ minutes.
     # bootstrap.py selects the already checksum-pinned Linux x86-64 ARM SDK.

@@ -1,6 +1,6 @@
 # webOS 5+ / webOS 10: NDL target
 
-UxAir 1.2.0 retains one shared receiver/UI/state codebase and two compile-time backends: Starfish + ACB for webOS 3-4, NDL DirectMedia for webOS 5+. There is no runtime backend switching or universal IPK. NDL is **unvalidated for the final 1.2.0 shared source until physical testing completes**.
+UxAir 1.2.0 retains one shared receiver/UI/state codebase and two compile-time backends: Starfish + ACB for webOS 3-4, NDL DirectMedia for webOS 5+. There is no runtime backend switching or universal IPK. NDL is **Beta / Experimental: no physical validation of the current 1.2.0 shared source has been performed**. The owner has no webOS 5+ television; that unavailable testing is deferred and does not block development-scope completion or Starfish release by itself. See [the final scope/review](UXAIR_1_2_SCOPE.md) for known NDL issues and approval gates.
 
 The contributor reported successful mirroring, HEVC/H.264, photo/video transitions and audio-only playback on a rooted LG OLED65C48LA C4 (webOS 10.3.1) for PR #10 at 8526f8d. That is historical evidence for the earlier source, not physical acceptance of subsequent B7 fixes, hardening or 1.2.0. Starfish baseline 148bc961 was physically validated on the owner's B7, including a 30-minute transition stress run.
 
@@ -9,7 +9,7 @@ The contributor reported successful mirroring, HEVC/H.264, photo/video transitio
 | Target | Command | Media files | Future 1.2.0 package |
 | --- | --- | --- | --- |
 | webOS 3-4 | `tools/build.sh --media=starfish` | media_starfish.cpp, Starfish/ACB | com.github.depius.uxair_1.2.0_arm-webos3-4.ipk |
-| webOS 5+ (unvalidated) | `tools/build.sh --media=ndl` | media_ndl.cpp, ndl_backend.c | com.github.depius.uxair_1.2.0_arm-webos5plus.ipk |
+| webOS 5+ (Beta / Experimental) | `tools/build.sh --media=ndl` | media_ndl.cpp, ndl_backend.c | com.github.depius.uxair_1.2.0_arm-webos5plus.ipk |
 
 CMake `UXAIR_MEDIA=starfish|ndl` selects sources, definitions and linked APIs. The current default is ndl; explicit commands avoid ambiguity. Both packages use com.github.depius.uxair and are alternative installations. Full locked setup/verification: [DEVELOPMENT.md](DEVELOPMENT.md). No candidate distribution is authorized by these instructions.
 
@@ -17,7 +17,7 @@ CMake `UXAIR_MEDIA=starfish|ndl` selects sources, definitions and linked APIs. T
 
 The installed app registers with Luna, creates an SDL exported window, looks up NDL_DirectMediaSetWindowId dynamically, and binds the window before feeding. The C bridge uses LG's API-v2 headers. NDL initialization/window binding lasts for the process; sessions Load/Unload independently to avoid losing the binding. Successful Load counts as ready because LOADCOMPLETED may require data flow. Audio/silence feed is needed for playback progress. Scheduling is arrival-anchored with at most 50 ms hold; Starfish retains its own first-feed/preroll/timeline policy. None of these runtime contracts was changed by the hardening/version work.
 
-Physical tests must cover startup from an installed package, H.264 and HEVC portrait/4K reopens, audio-only FLUSH/resume/volume, photo browsing with music, rapid audio/mirroring handoffs, sender TEARDOWN versus failures, decoder resource release and late callbacks. Confirm foreground/background/screensaver behavior and remote input, relaunch/reboot, fresh installation and upgrades. Decoder callback timing and actual displayed frames must not be inferred from Feed acceptance.
+Future optional physical tests should cover startup from an installed package, H.264 and HEVC portrait/4K reopens, audio-only FLUSH/resume/volume, photo browsing with music, rapid audio/mirroring handoffs, sender TEARDOWN versus failures, decoder resource release and late callbacks. Confirm foreground/background/screensaver behavior and remote input, relaunch/reboot, fresh installation and upgrades. Decoder callback timing and actual displayed frames must not be inferred from Feed acceptance.
 
 Shared fixes now available to both targets include metadata cadence, RTP origin/reset accounting, epoch/closing ingress protection, split HEVC header retention, private-state validation and production allocation limits. The current NDL-specific backend files remain from the contributor's original implementation; do not reapply those commits over this branch.
 

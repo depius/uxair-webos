@@ -15,8 +15,10 @@ The Starfish baseline at `148bc961` passed 30 minutes of repeated orientation ch
 
 | Target | Backend | Expected 1.2.0 filename | Hardware status |
 | --- | --- | --- | --- |
-| webOS 3-4 | Starfish + ACB | `com.github.depius.uxair_1.2.0_arm-webos3-4.ipk` | B7 baseline validated; final hardened build pending |
-| webOS 5+ | NDL DirectMedia | `com.github.depius.uxair_1.2.0_arm-webos5plus.ipk` | **Unvalidated for 1.2.0** |
+| webOS 3-4 | Starfish + ACB | `com.github.depius.uxair_1.2.0_arm-webos3-4.ipk` | Stable release candidate; final hardened B7 validation pending |
+| webOS 5+ | NDL DirectMedia | `com.github.depius.uxair_1.2.0_arm-webos5plus.ipk` | **Beta / Experimental; no current-build physical validation** |
+
+NDL hardware is unavailable to the owner. Its lack of physical validation is accepted for Beta/Experimental scope and does not by itself block Starfish completion. See [final development scope](docs/UXAIR_1_2_SCOPE.md) for known NDL defects and the integration/closure plan.
 
 The packages use the same application ID and are alternative installations. Backend selection is at build time; there is no universal IPK or runtime switch. The contributor's earlier C4/webOS 10.3.1 results apply to PR #10's older source. Details and pending NDL tests: [PORT-WEBOS10.md](docs/PORT-WEBOS10.md).
 
@@ -54,7 +56,7 @@ In UxAir 1.2.0, a fresh installation defaults to H.264 at 1920×1080 and 30 FPS.
 - A compatible rooted LG webOS TV with native application development enabled.
 - A TV and sender on the same local network with multicast/mDNS discovery available.
 - Tested on LG OLED B7 (2017) running rooted webOS 3.9. Other LG webOS models may be compatible but have not yet been verified.
-- The current NDL package is physically unvalidated. The contributor reported earlier C4/webOS 10.3.1 testing before these shared follow-ups.
+- The current NDL package is Beta/Experimental and physically unvalidated. The contributor reported earlier C4/webOS 10.3.1 testing before these shared follow-ups.
 - The ARMv7 build uses the pinned webOS Brew toolchain. CI performs host tests and builds/validates the ARMv7 IPK.
 
 ## Install and use
