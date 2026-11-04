@@ -55,7 +55,7 @@ In UxAir 1.2.0, a fresh installation defaults to H.264 at 1920×1080 and 30 FPS.
 
 ### Download and install
 
-On [GitHub Releases](https://github.com/depius/uxair-webos/releases), look for version 1.2.0 and select the IPK for your webOS version from the table above. Match its SHA-256 against the release's `SHA256SUMS` before installing. If 1.2.0 is absent, publication is still pending. Follow any browser or antivirus warning and see the [documented security findings](docs/SECURITY_HARDENING.md).
+On [GitHub Releases](https://github.com/depius/uxair-webos/releases), look for version 1.2.0 and select the IPK for your webOS version from the table above. Match its SHA-256 against the release's `SHA256SUMS` before installing. If 1.2.0 is absent, publication is still pending. See [security hardening details](docs/SECURITY_HARDENING.md).
 
 With the webOS CLI and a configured target named `YOUR_TV`, run the install command for your package:
 
