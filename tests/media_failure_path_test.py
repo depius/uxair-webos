@@ -3,7 +3,7 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-media = (ROOT / 'src/media.cpp').read_text()
+media = (ROOT / 'src/media_starfish.cpp').read_text()   # the webOS 3-4 player
 main = (ROOT / 'src/main.cpp').read_text()
 
 assert 'open_failure_=MediaOpenFailure::StarfishLoad;close(); return false;' in media

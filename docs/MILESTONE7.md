@@ -1,5 +1,7 @@
 # Milestone 7: codec profiles, HDR status and UI cleanup
 
+> Historical development record. See [UxAir 1.2.0 scope](UXAIR_1_2_SCOPE.md) for current release and validation status.
+
 Baseline: `89eb306908be460d2f1fa20e69a16c0cf90f9a44`. Target: LG OLED B7, webOS 3.9, ARMv7.
 
 ## Codec and resolution profiles

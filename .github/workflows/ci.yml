@@ -1,4 +1,4 @@
-name: Validate
+name: Validate UxAir 1.2.0
 
 on:
   push:
@@ -18,8 +18,12 @@ jobs:
       - name: Install native test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes build-essential ffmpeg pkg-config libsdl2-dev libsdl2-ttf-dev fonts-dejavu-core libavcodec-dev libavutil-dev libswresample-dev
+          sudo apt-get install --yes build-essential ffmpeg pkg-config libsdl2-dev libsdl2-ttf-dev libsdl2-image-2.0-0 fonts-dejavu-core libavcodec-dev libavutil-dev libswresample-dev
       - name: Validate release metadata and documentation
         run: python3 tools/validate-metadata.py
       - name: Run sanitizer-backed host tests
         run: tools/test.sh
+      - name: Validate B7 storage compatibility across execution UIDs
+        run: |
+          c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -Isrc tests/b7_storage_layout_test.cpp src/settings.cpp src/usage_stats.cpp -o build/tests/b7-storage-layout-test
+          sudo build/tests/b7-storage-layout-test

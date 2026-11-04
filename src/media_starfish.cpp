@@ -11,7 +11,7 @@
 
 // This firmware exports a three-argument wrapper; the NDK declaration omits taskId.
 extern "C" int acb_video_info(long, const char *, long *) __asm__("AcbAPI_setMediaVideoData");
-struct Media::Impl { std::mutex mutex; std::string video_info; };
+struct Media::Impl { std::mutex mutex; std::string video_info; bool retrying=false; };
 static int video_info_number(const char *message, const char *field) {
     if(!message) return 0;
     std::string text(message);
@@ -94,7 +94,7 @@ bool Media::open(const char *app_id, int width, int height, bool audio, int rate
     feed_video_rejected=0;
     feed_calls=0;
     feed_time_ns=feed_max_time_ns=0;
-    play_attempts_=0;
+    play_attempts_=0;impl_->retrying=false;
     int64_t phase=monotonic_ns();
     fprintf(stderr,"[media-init] ACB create begin\n");
     acb_ = AcbAPI_create();
@@ -186,10 +186,15 @@ FeedResult Media::feed(const void *data, size_t size, int64_t pts_ns, bool video
     uint64_t previous=feed_max_time_ns.load();
     while(previous<elapsed&&!feed_max_time_ns.compare_exchange_weak(previous,elapsed)) {}
     if (reply.find("Ok") != std::string::npos) {
+        impl_->retrying=false;
         (video?feed_video_accepted:feed_audio_accepted).fetch_add(1);
         return FeedResult::Accepted;
     }
     if (reply.find("BufferFull") != std::string::npos || reply.find("Pending") != std::string::npos) {
+        if(!impl_->retrying)fprintf(stderr,"[media] feed retry kind=%s reply_class=%s ready=%d playing=%d\n",
+            video?"video":"audio",reply.find("BufferFull")!=std::string::npos?"BufferFull":"Pending",
+            int(ready.load()),int(playing.load()));
+        impl_->retrying=true;
         (video?feed_video_retries:feed_audio_retries).fetch_add(1);
         return FeedResult::Retry;
     }
@@ -198,7 +203,7 @@ FeedResult Media::feed(const void *data, size_t size, int64_t pts_ns, bool video
     return FeedResult::Error;
 }
 void Media::eos() { if (api_ && loaded_) api_->pushEOS(); }
-void Media::pause(bool paused) {if(api_&&loaded_) {if(paused)api_->Pause();else api_->Play();}}
+void Media::pause(bool paused) {if(api_&&loaded_) {fprintf(stderr,"[media-state] pause-request=%d ready=%d playing=%d\n",int(paused),int(ready.load()),int(playing.load()));if(paused)api_->Pause();else api_->Play();}}
 void Media::close() {
     if(acb_ && loaded_) AcbAPI_setState(acb_,APPSTATE_FOREGROUND,PLAYSTATE_UNLOADED,&task_);
     if (api_) {

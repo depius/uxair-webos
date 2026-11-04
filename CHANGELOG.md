@@ -4,7 +4,19 @@ All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.0] - Pending publication
+## [1.2.0]
+
+Starfish is Stable for webOS 3–4. The owner accepted the exact Starfish build at `9af36d1b2e3902bfa26ab349140af394b3b95a3f` on an LG OLED B7 with webOS 3.9. NDL for webOS 5+ is Public Beta / Experimental with no current-build physical validation. The 1.1.0 development series and its [published GitHub release](https://github.com/depius/uxair-webos/releases/tag/v1.1.0) remain part of the project history.
+
+### Compatibility and security
+
+- One shared source tree with separate Starfish/ACB webOS 3-4 and NDL DirectMedia webOS 5+ packages. NDL remains physically unvalidated for this release.
+- B7 private-state compatibility, RAOP FLUSH/resume and normal sender TEARDOWN classification, closing-generation ingress protection, split HEVC headers and bounded-preroll audio progress.
+- Shared Now Playing cover/title/progress with corrected render scheduling; Starfish remote Exit and opt-in background policy retained.
+- Bound production sender-controlled allocations before use, validate allocation failures, reduce package-internal writable permissions, lock packaging dependencies and disable npm lifecycle scripts.
+- NDL-only callback retirement waits for active dispatch and rejects retired session identities; checked window binding/placement and partial Load cleanup; failed Unload/Quit prevents unsafe reuse. A finite 1024-Load callback-identity budget requires process restart rather than recycling identities without a vendor quiescence guarantee.
+- Preserve the production app ID and existing settings/pairing paths and formats. Refuse silent NDL identity replacement when legacy app-local state needs migration.
+- Security hardening and remaining technical limitations are documented in [SECURITY_HARDENING.md](docs/SECURITY_HARDENING.md).
 
 ### Added
 

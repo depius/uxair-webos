@@ -85,6 +85,46 @@ int main(int argc,char **argv) {
     const auto& second=sample.units[1];
     assert(!stream.inspect(bytes.data()+second.offset,second.size).valid); // no VPS/SPS/PPS after reconnect
     const auto& first=sample.units[0];
+    // Header-only callbacks arrive separately after a reconnect. Cache all three,
+    // then admit a keyframe without repeated headers and prefix it for Starfish.
+    std::vector<std::vector<uint8_t>> headers;
+    const size_t end_first=first.offset+first.size;
+    auto find_start=[&](size_t from,size_t& prefix)->size_t {
+        for(size_t i=from;i+3<=end_first;++i) {
+            if(bytes[i]||bytes[i+1])continue;
+            if(bytes[i+2]==1){prefix=3;return i;}
+            if(i+4<=end_first&&!bytes[i+2]&&bytes[i+3]==1){prefix=4;return i;}
+        }
+        return end_first;
+    };
+    size_t prefix=0,pos=find_start(first.offset,prefix);
+    while(pos<end_first) {
+        const size_t begin=pos+prefix;size_t next_prefix=0;
+        const size_t end=find_start(begin,next_prefix);
+        const unsigned type=(bytes[begin]>>1)&63;
+        if(type>=32 && type<=34)headers.emplace_back(bytes.begin()+pos,bytes.begin()+end);
+        pos=end;prefix=next_prefix;
+    }
+    assert(headers.size()==3);
+    stream.reset();
+    for(const auto& header:headers) {
+        const auto info=stream.inspect(header.data(),header.size());
+        assert(!info.valid && info.waiting_configuration);
+    }
+    std::vector<uint8_t> random_access(bytes.begin()+second.offset,bytes.begin()+second.offset+second.size);
+    assert(set_first_vcl_type(random_access,19));
+    auto cached=stream.inspect(random_access.data(),random_access.size());
+    assert(cached.valid&&cached.keyframe&&cached.configuration_changed&&cached.configuration_complete);
+    bool prefixed=false;assert(stream.prepend_missing_parameter_sets(random_access,cached,prefixed)&&prefixed);
+    HevcStream fresh;assert(fresh.inspect(random_access.data(),random_access.size()).valid);
+    stream.reset();
+    auto missing=stream.inspect(bytes.data()+second.offset,second.size);
+    assert(!missing.valid&&missing.waiting_configuration&&!missing.configuration_complete);
+    const uint8_t broken[]={0xff,0,0,1,0x26,1,0x80};
+    auto rejected=stream.inspect(broken,sizeof(broken));assert(!rejected.valid&&!rejected.waiting_configuration);
+    assert(!hevc_configuration_wait_expired(1,15000000001LL));
+    assert(hevc_configuration_wait_expired(1,15000000002LL));
+
     assert(!stream.inspect(bytes.data()+first.offset,hevc_probe::kMaxAccessUnit+1).valid);
     assert(!stream.inspect(nullptr,first.size).valid);
     std::vector<uint8_t> malformed(bytes.begin()+first.offset,bytes.begin()+first.offset+first.size);

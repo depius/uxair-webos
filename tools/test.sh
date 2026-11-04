@@ -2,6 +2,22 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/tests
+python3 tests/network_bounds_test.py
+python3 tests/ipk_permissions_test.py
+python3 tests/source_package_test.py
+python3 tests/candidate_assets_test.py
+c++ -std=c++11 -g -fsanitize=address,undefined -Isrc tests/session_lifecycle_test.cpp -o build/tests/session-lifecycle-test
+build/tests/session-lifecycle-test
+python3 tests/teardown_origin_test.py
+c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -pthread -Itests/receiver_stub -Isrc tests/receiver_ingress_test.cpp src/receiver_ingress.cpp src/settings.cpp -o build/tests/receiver-ingress-test
+python3 tests/receiver_ingress_log_test.py
+c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -pthread -Itests/receiver_stub -Isrc tests/hevc_reinit_test.cpp src/receiver_ingress.cpp src/settings.cpp -o build/tests/hevc-reinit-test
+build/tests/hevc-reinit-test
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc tests/now_playing_test.cpp -o build/tests/now-playing-test
+build/tests/now-playing-test
+c++ -std=c++11 -g -fsanitize=address,undefined -Isrc tests/secure_data_test.cpp -o build/tests/secure-data-test
+build/tests/secure-data-test
+python3 tests/build_platform_test.py
 c++ -std=c++11 -g -fsanitize=address,undefined -Isrc tests/diagnostics_test.cpp -o build/tests/diagnostics-test
 build/tests/diagnostics-test
 echo 'PASS: arrival/PTS gap attribution, timing windows, duration samples and reset'
@@ -33,6 +49,11 @@ c++ -std=c++11 -g -fsanitize=address,undefined -Isrc -Itests/sdl_stub $(pkg-conf
   tests/history_render_test.cpp src/shell.cpp src/input.cpp src/ui_navigation.cpp src/usage_stats.cpp \
   $(pkg-config --libs sdl2 SDL2_ttf) -o build/tests/history-render-test
 timeout 30s build/tests/history-render-test
+c++ -std=c++11 -g -fsanitize=address,undefined -Isrc -Itests/sdl_stub $(pkg-config --cflags sdl2 SDL2_ttf) \
+  tests/shell_signal_test.cpp src/shell.cpp src/input.cpp src/ui_navigation.cpp src/usage_stats.cpp \
+  $(pkg-config --libs sdl2 SDL2_ttf) -o build/tests/shell-signal-test
+timeout 10s build/tests/shell-signal-test term
+timeout 10s build/tests/shell-signal-test int
 c++ -std=c++11 -g -fsanitize=address,undefined -Isrc \
   tests/pairing_ui_test.cpp src/ui_navigation.cpp -o build/tests/pairing-ui-test
 build/tests/pairing-ui-test
@@ -90,3 +111,10 @@ c++ -std=c++11 -g -fsanitize=address,undefined -Isrc $ffmpeg_cflags \
   tests/media_test.cpp src/h264.cpp src/audio.cpp \
   $ffmpeg_libs -o build/tests/media-test
 build/tests/media-test build/tests/landscape.h264 build/tests/portrait.h264 build/tests/audio.aac build/tests/full-hd.h264 build/tests/full-hd-portrait.h264 build/tests/unsupported.h264
+
+# Actual NDL sources with host-only vendor stubs; not firmware playback validation.
+cc -std=c11 -g -Wall -Wextra -fsanitize=address,undefined -pthread -Ddlsym=ndl_test_dlsym -Itests/ndl_stub -Isrc \
+  -c src/ndl_backend.c -o build/tests/ndl-backend-test.o
+c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -pthread -DUXAIR_MEDIA_NDL -Itests/ndl_stub -Isrc $(pkg-config --cflags sdl2) \
+  tests/ndl_media_test.cpp src/media_ndl.cpp src/settings.cpp build/tests/ndl-backend-test.o -o build/tests/ndl-media-test
+build/tests/ndl-media-test

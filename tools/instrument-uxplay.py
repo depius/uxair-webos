@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Create a development-only, exact-source-checked UxPlay request probe copy."""
 import hashlib
+import importlib.util
 import pathlib
 import sys
 
@@ -64,16 +65,10 @@ def instrument_raop(source):
 
 
 def instrument_http_request(source):
-    anchor = '    request->data = realloc(request->data, request->datalen + length);\n'
-    if source.count(anchor) != 1:
-        raise ValueError('pinned UxPlay HTTP body parser changed; refuse to instrument')
-    # This also prevents int overflow in request->datalen before realloc.
-    guard = ('    if (request->datalen < 0 || length > 33554432U ||\n'
-             '        (size_t) request->datalen > 33554432U - length) {\n'
-             '        direct_request_diag_body_limit();\n'
-             '        return -1;\n'
-             '    }\n')
-    return '#include "direct_request_diag.h"\n' + source.replace(anchor, guard + anchor, 1)
+    spec = importlib.util.spec_from_file_location('network_bounds', pathlib.Path(__file__).with_name('harden-network.py'))
+    bounds = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bounds)
+    return '#include "direct_request_diag.h"\n' + bounds.bound_http_request(source, 'direct_request_diag_body_limit();')
 
 
 def instrument_httpd(source):

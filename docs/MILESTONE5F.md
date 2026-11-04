@@ -1,5 +1,7 @@
 # Milestone 5F: separate manual launches for UHD HEVC testing
 
+> Historical development record. See [UxAir 1.2.0 scope](UXAIR_1_2_SCOPE.md) for current release and validation status.
+
 ## What the B7 evidence shows
 
 Probe 0.1.2 completed its fresh 1080p control path (30/30 Feed acceptance, seven `FRAMEREADY` callbacks, matching 1920×1080 video-info, and successful cleanup). A SIGTERM (15) arrived during the following 500 ms in-process pause. UHD never began. The probe source did not send SIGTERM; its 45-second watchdog uses SIGALRM. The available `/var/log/messages` excerpt does not identify the sender. Application Manager, a media service, or another process remain hypotheses. Neither the 1080p callback nor UHD SPS alone proves decoded pictures or native presentation.

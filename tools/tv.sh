@@ -15,9 +15,15 @@ require_ssh() { [ -n "$tv_host" ] && [ -n "$tv_key" ] || { echo 'TV_HOST and TV_
 case "${1:-}" in
   install)
     require_device
-    python3 tools/package.py
     version="$(python3 -c 'import json;print(json.load(open("packaging/appinfo.json"))["version"])')"
-    ares-install -d "$tv_device" "dist/${app_id}_${version}_arm.ipk"
+    backend="$(cat build/media-backend.txt)"
+    case "$backend" in
+      starfish) platform=webos3-4 ;;
+      ndl) platform=webos5plus ;;
+      *) echo 'Unknown media backend; rebuild before installing.' >&2; exit 2 ;;
+    esac
+    python3 tools/package.py
+    ares-install -d "$tv_device" "dist/${app_id}_${version}_arm-${platform}.ipk"
     ;;
   launch) require_device; ares-launch -d "$tv_device" "$app_id" ;;
   close) require_device; ares-launch -d "$tv_device" -c "$app_id" ;;

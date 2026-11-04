@@ -2,14 +2,18 @@
 #include "h264.h"
 #include "hevc_stream.h"
 #include "hevc_startup.h"
+#include "hevc_schedule.h"
 #include "media.h"
 #include "receiver.h"
 #include "shell.h"
 #include "identity.h"
 #include "settings.h"
 #include "usage_stats.h"
+#include "system_bus.h"
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <algorithm>
 #include <fstream>
 #include <ctime>
@@ -49,11 +53,23 @@ static std::string utc_text(uint64_t epoch) {
     char text[48];strftime(text,sizeof(text),"%Y-%m-%d %H:%M UTC",&value);return text;
 }
 
-int main() {
-    umask(0077);start_log("uxair.log");
+// When frames are due. Starfish (webOS 3-4) needs a PTS pre-roll after Load
+// and paces by PTS itself. NDL (webOS 5+) renders as data arrives: the schedule
+// is anchored to the first frame's arrival, so frames queued during Load go out
+// at once, and no video frame waits more than 50 ms after it arrived.
+#if defined(UXAIR_MEDIA_NDL)
+static int64_t schedule_start(int64_t arrival_ns,int64_t now,int64_t) {return arrival_ns?arrival_ns:now;}
+static const int64_t kMaxHoldNs=50000000LL;
+#else
+static int64_t schedule_start(int64_t,int64_t now,int64_t preroll_ns) {return now+preroll_ns;}
+static const int64_t kMaxHoldNs=0;
+#endif
+
+int main(int argc,char **argv) {
+    umask(0077);if(!start_log("uxair.log"))return 1;
     Shell shell;if(!shell.open())return 1;
     shell.screen("Starting AirPlay receiver","");
-    const std::string state_dir=app_directory()+"/state";
+    const std::string state_dir=data_directory()+"/state";
     std::string build_commit="Unknown",build_version="Unknown";
     {
         std::ifstream build_info((app_directory()+"/build-info.txt").c_str());
@@ -110,6 +126,28 @@ int main() {
             runtime_app_id&&*runtime_app_id?"APPID":"compiled-fallback",app_id,UXAIR_APP_ID,
             int(std::string(app_id)==UXAIR_APP_ID));
     Media media;AudioDecoder decoder;HevcStream hevc;HevcStartupGate hevc_startup;
+    // the TV's system bus: screen saver, coming to the front, going back
+    SystemBus bus;
+    const bool bus_ready=bus.start(app_id);
+#if defined(UXAIR_MEDIA_NDL)
+    bool background_enabled=true;
+#else
+    bool background_enabled=false;
+#endif
+    if(const char *option=getenv("UXAIR_BACKGROUND"))background_enabled=strcmp(option,"1")==0;
+    background_enabled=background_enabled && bus_ready;
+    unsigned seen_stream_requests=0;
+    // started at boot with {"background":true}: stay discoverable behind the Home
+    // screen. Asked once the window is up - earlier, UxAir's own window comes to
+    // the front after the Home screen.
+    bool start_in_background=background_enabled && argc>1 && strstr(argv[1],"\"background\":true");
+    std::string return_to;   // {"return_to":"<app>"}: the app that was in front then
+    if(argc>1) {
+        const char *r=strstr(argv[1],"\"return_to\"");
+        const char *q=r?strchr(r+11,'"'):nullptr;
+        const char *e=q?strchr(q+1,'"'):nullptr;
+        if(e)return_to.assign(q+1,e);
+    }
     UiNavigation nav;
     UiPage& page=nav.page;
     int& focus=nav.focus;
@@ -134,6 +172,7 @@ int main() {
     bool hevc_preroll_wait_logged=false,hevc_keyframe_wait_logged=false;
     bool hevc_schedule_wait_logged=false,hevc_invalid_logged=false;
     bool hevc_first_feed_logged=false;
+    int64_t hevc_configuration_wait=0;
     int width=settings.width,height=settings.height;
     Packet pending;
     std::vector<uint8_t> configuration;
@@ -141,6 +180,8 @@ int main() {
     int64_t audio_end=0;
     std::vector<uint8_t> silence(441*4,0);
     int64_t start=0,last_ui=0,last_stats=now_ns(),last_live=last_stats,stall=0,session_started=0,app_started=last_stats;
+    // Now Playing (audio-only): last draw, last full-brightness moment, shown track and progress
+    int64_t np_drawn=0,np_bright=0,np_flash=0,np_tick=0,np_progress_seen=0,np_fed_at=0;uint64_t np_generation=0,np_fed=0;double np_elapsed=0;std::string np_track;bool np_anim=false;
     unsigned video_count=0,audio_count=0,decode_errors=0,late_audio=0,silence_blocks=0,invalid_video=0;
     unsigned sessions_started=0,sessions_ended=0,last_decoder_events=0,hevc_transport_failures=0;
     uint64_t last_feed_video=0,last_feed_audio=0,last_feed_video_retries=0,last_feed_audio_retries=0;
@@ -149,7 +190,29 @@ int main() {
     DurationWindow video_parse_time, video_schedule_late, video_pending_time;
     DurationWindow video_feed_time, audio_feed_time, media_tick_time, loop_gap_time;
     int64_t previous_loop=0;
-    auto finish=[&](bool error=false,bool preserve_receiver=false,bool preserve_pending=false){
+    NowPlayingCadence np_cadence;DurationWindow np_render_time;
+    DecoderCallbackDiagnostics decoder_callback_diagnostics;
+    StarfishHevcSchedule hevc_feed_schedule;
+    PrerollVideoHold<Packet> preroll_video_hold;
+    auto finish=[&](bool error=false,bool preserve_receiver=false,bool preserve_pending=false,ResetNotice reset_notice=ResetNotice()){
+        preroll_video_hold.clear();hevc_feed_schedule.reset();
+        const unsigned closing_epoch=receiver.transport_epoch.load();
+        if(!preserve_receiver)receiver.begin_close();
+        const ReceiverDiagnostics closing_queue=receiver.queue_snapshot();
+#ifdef UXAIR_MEDIA_STARFISH
+        const uint64_t decoder_callbacks=decoder_callback_diagnostics.total(media.frames.load());
+        const int decoder_callbacks_available=1;
+#else
+        const uint64_t decoder_callbacks=0;
+        const int decoder_callbacks_available=0;
+#endif
+        fprintf(stderr,"[session-close] generation=%u epoch=%u reset_origin=%s reset_sources=%u reset_epoch=%u reset_pending=%d video_packets_accepted_epoch=%llu video_feed_accepted=%u decoder_frame_callbacks=%llu decoder_callbacks_available=%d displayed_frames=unmeasured ready=%d playing=%d\n",
+            sessions_started,closing_epoch,reset_notice_origin(reset_notice),reset_notice.sources,
+            reset_notice.epoch,int(reset_notice.pending()),(unsigned long long)closing_queue.accepted_video_packets,
+            opened?video_count:0,(unsigned long long)decoder_callbacks,decoder_callbacks_available,int(media.ready.load()),int(media.playing.load()));
+        receiver.diagnostic_session_open=false;
+        decoder_callback_diagnostics.reset();
+        fprintf(stderr,"[session] generation=%u finish error=%d opened=%d audio_only=%d preserve_receiver=%d\n",sessions_started,error,opened,audio_only_playback,preserve_receiver);
         if(opened && media.playing && (video_count || (audio_only_playback && audio_count)))session_success=true;
         if(error && !opened) {++usage.session_errors;save_usage_stats(state_dir+"/usage-v1",usage);history_storage=usage_storage_bytes(state_dir+"/usage-v1");history_dirty=true;}
         if(opened) {
@@ -180,17 +243,17 @@ int main() {
             if(!save_usage_stats(state_dir+"/usage-v1",usage))fprintf(stderr,"[stats] could not save usage history\n");
             history_storage=usage_storage_bytes(state_dir+"/usage-v1");history_dirty=true;
         }
-        media.close();decoder.reset();hevc.reset();hevc_startup.reset();if(!preserve_receiver)receiver.disconnect();opened=false;have_pending=preserve_pending;
+        media.close();decoder.reset();hevc.reset();hevc_startup.reset();if(!preserve_receiver){receiver.disconnect();if(background_enabled)bus.return_to_previous();}opened=false;have_pending=preserve_pending;
         origin=0;start=0;stall=0;session_started=0;audio_end=0;configuration.clear();last_ui=0;last_paused=false;audio_started=false;audio_only_playback=false;audio_flush_paused=false;
         session_success=false;session_started_utc=0;observed_width=observed_height=0;hardware_decoder_errors=0;
-        nav=UiNavigation();ui_visible=true;
+        nav=UiNavigation();ui_visible=true;np_drawn=np_progress_seen=np_flash=np_tick=np_fed_at=0;np_fed=0;np_anim=false;np_elapsed=0;np_track.clear();
         video_feed_timing.reset();video_parse_time.reset();video_schedule_late.reset();video_pending_time.reset();
         video_feed_time.reset();audio_feed_time.reset();media_tick_time.reset();
         width=settings.width;height=settings.height;
         session_codec=MirrorCodec::H264;hevc_wait_keyframe=false;
         hevc_preroll_wait_logged=hevc_keyframe_wait_logged=false;
         hevc_schedule_wait_logged=hevc_invalid_logged=false;
-        hevc_first_feed_logged=false;
+        hevc_first_feed_logged=false;hevc_configuration_wait=0;
     };
     auto recover_decoder=[&](bool failed_hevc,const char *reason){
         const bool starfish_load_failure=media.open_failure()==MediaOpenFailure::StarfishLoad;
@@ -240,7 +303,18 @@ int main() {
         recover_decoder(failed_hevc,reason);
         receiver.show(std::string(media_open_failure_message(failure))+" Settings remain available; reconnect to retry.");
     };
+    auto flush_audio=[&](){
+        decoder.reset();
+        apply_audio_flush(audio_only_playback,have_pending && pending.video,have_pending,stall,audio_flush_paused);
+        fprintf(stderr,"[session] generation=%u transition=audio-flush epoch=%u paused=%d pending=%d\n",
+                sessions_started,receiver.audio_epoch.load(),int(audio_flush_paused),int(have_pending));
+    };
     auto recover_playback=[&](const char *reason){
+        Settings saved;
+        const bool saved_ok=load_settings(settings_path,saved);
+        fprintf(stderr,"[session] generation=%u recovery=%s runtime=%dx%d/%d codec=%d saved_available=%d saved=%dx%d/%d codec=%d\n",
+                sessions_started,reason,settings.width,settings.height,settings.max_fps,int(settings.codec),int(saved_ok),
+                saved.width,saved.height,saved.max_fps,int(saved.codec));
         const bool audio_only=audio_only_playback;
         const bool failed_hevc=session_codec==MirrorCodec::ExperimentalHevc;
         finish(true);
@@ -421,18 +495,36 @@ int main() {
         if(previous_loop)loop_gap_time.record(uint64_t(std::max<int64_t>(0,now-previous_loop)));
         previous_loop=now;
         Action action=shell.action();
+        if(action==Action::Quit || (action==Action::Exit && !background_enabled))break;
+        if(action!=Action::None)np_bright=now;   // any key brightens Now Playing again
+        bus.block_screen_saver(opened && media.playing && !last_paused && !audio_flush_paused && !ui_visible);
+        const unsigned stream_requests=receiver.stream_requests.load();
+        if(stream_requests!=seen_stream_requests || action!=Action::None || !receiver.pin().empty())start_in_background=false;
+        if(start_in_background && now-app_started>2500000000LL) {
+            start_in_background=false;fprintf(stderr,"[bus] started in the background\n");
+            bus.to_background(return_to.empty()?nullptr:return_to.c_str());
+        }
+        // a device starts streaming (or needs the PIN): to the front, as LG's AirPlay
+        if(stream_requests!=seen_stream_requests) {seen_stream_requests=stream_requests;if(background_enabled)bus.bring_to_front();}
         if(shell.take_pointer_motion()&&ui_visible&&page==UiPage::History)last_ui=0;
-        if(action==Action::Exit)break;
+        // Background execution is opt-in for the Starfish/webOS 3-4 build.
+        if(action==Action::Exit) {
+            if(opened||receiver.mirror||!receiver.pin().empty())finish();
+            else bus.to_background();
+            action=Action::None;
+        }
         std::string pairing_pin=receiver.pin();
         const bool pairing_changed=pairing_pin!=last_rendered_pin;
         if(pairing_changed) {
             fprintf(stderr,"[pairing] UI observed prompt=%s\n",pairing_pin.empty()?"dismissed":"shown");
             last_rendered_pin=pairing_pin;last_ui=0;
             if(opened && !ui_visible)pairing_overlay_dirty=true;
+            if(!pairing_pin.empty() && background_enabled)bus.bring_to_front();
         }
         const PairingInputResult pairing_input=pairing_input_result(!pairing_pin.empty(),action==Action::Back,action==Action::Exit);
         if((pairing_input==PairingInputResult::Consumed || donation_open) && action!=Action::Back)action=Action::None;
         if(opened && !ui_visible && action==Action::Select) {
+            fprintf(stderr,"[ui] remote opened session settings\n");
             ui_visible=true;nav.category(3);action=Action::None;last_ui=0;
         }
         if(action==Action::Select && ui_visible) {
@@ -459,9 +551,10 @@ int main() {
             }
             else if(donation_open) {donation_open=false;last_ui=0;}
             else if(ui_visible && nav.dialog!=UiDialogKind::None) {nav.back();last_ui=0;}
-            else if(opened && ui_visible) {ui_visible=false;shell.transparent();last_ui=0;}
+            else if(opened && ui_visible) {ui_visible=false;shell.transparent();last_ui=0;np_drawn=0;}
             else if(ui_visible && nav.back()) {last_ui=0;}
             else if(opened||receiver.mirror||!receiver.pin().empty())finish();
+            else if(background_enabled)bus.to_background();
             else break;
         }
         if(ui_visible && (action==Action::Up||action==Action::Down)) {
@@ -502,11 +595,20 @@ int main() {
             }
             last_ui=0;
         }
-        if(receiver.reset.exchange(false)) {
+        const ResetNotice reset=receiver.take_reset();
+        if(reset.pending() && reset.epoch!=receiver.transport_epoch.load())
+            fprintf(stderr,"[session] obsolete-reset sources=%u event_epoch=%u current_epoch=%u video_reason=%d transport_reason=%d\n",
+                reset.sources,reset.epoch,receiver.transport_epoch.load(),reset.video_reason,reset.transport_reason);
+        if(reset.pending() && reset.epoch==receiver.transport_epoch.load()) {
+            ReceiverDiagnostics q=receiver.queue_snapshot();
+            fprintf(stderr,"[session] transport requested reset generation=%u epoch=%u opened=%d stall_ms=%.1f queue=%zu/%zu\n",
+                sessions_started,receiver.transport_epoch.load(),int(opened),stall?(now-stall)/1e6:0.0,q.queue_packets,q.queue_bytes);
+            fprintf(stderr,"[session] reset-class=%s sources=%u video_reason=%d transport_reason=%d\n",
+                reset.failure()?"failure":"sender-teardown",reset.sources,reset.video_reason,reset.transport_reason);
             audio_only_failed=false;
-            bool hevc_startup=receiver.incoming_video_codec==2 && !opened;
+            bool hevc_startup=reset.failure() && receiver.incoming_video_codec==2 && !opened;
             if(hevc_startup)++hevc_transport_failures;
-            finish(true);
+            finish(reset.failure(),false,false,reset);
             if(hevc_startup && hevc_transport_failures>=2) {
                 recover_decoder(true,"repeated-transport-reset");
                 hevc_transport_failures=0;
@@ -516,13 +618,9 @@ int main() {
             fprintf(stderr,"[session] idle timeout\n");
             finish(true);receiver.show("Connection lost. Connect again.");
         }
-        if(receiver.audio_flush.exchange(false)) {
-            decoder.reset();
-            if(have_pending && !pending.video)have_pending=false;
-            if(opened && audio_only_playback) {
-                audio_flush_paused=true;
-                fprintf(stderr,"[audio-only] RAOP FLUSH paused Starfish until the next audio packet\n");
-            }
+        if(receiver.audio_flush.exchange(false))flush_audio();
+        if(have_pending && !pending.video && !current_audio_epoch(pending.audio_epoch,receiver.audio_epoch.load())) {
+            have_pending=false;stall=0;
         }
         if(opened) {
             int64_t tick_begin=now_ns();
@@ -570,7 +668,7 @@ int main() {
             live_feed_fps=opened?(feed>=live_feed_last?feed-live_feed_last:feed)/seconds:0;
             live_ingress_last=ingress;live_feed_last=feed;
             live_queue=receiver.queue_snapshot();live_rss_kb=process_rss_kb();last_live=now;
-            if(opened && !ui_visible && settings.diagnostics!=DiagnosticsMode::Off && pairing_pin.empty()) {
+            if(opened && !ui_visible && !audio_only_playback && settings.diagnostics!=DiagnosticsMode::Off && pairing_pin.empty()) {
                     std::vector<std::string> lines;
                     if(audio_only_playback) {
                         lines.push_back(std::string("AirPlay audio ")+audio_codec_name(receiver.last_audio_codec.load())+"  -  "+(media.playing?"Playing":media.ready?"Loaded":"Loading"));
@@ -605,11 +703,65 @@ int main() {
             shell.overlay(last_overlay_lines,pairing_pin);
             pairing_overlay_dirty=false;
         }
+        // Audio-only: the Now Playing screen (as LG's own AirPlay shows), redrawn
+        // Every second for progress, and immediately on metadata changes.
+        // OLED dimming remains; whole-layout drift is disabled for B7 diagnosis.
+        if(opened && audio_only_playback && !ui_visible && pairing_pin.empty()) {
+            NowPlaying m=receiver.now_playing();
+            const std::string track=m.artist+" | "+m.title;
+            if(track!=np_track) {np_track=track;np_flash=now;np_drawn=0;}
+            if(m.generation!=np_generation) {np_generation=m.generation;np_drawn=0;}
+            if(np_cadence.due(now,!np_drawn,np_anim)) {
+                const int64_t render_begin=now_ns();
+                // Playing = audio handed to the player lately. Arrivals do not tell:
+                // AirPlay audio comes in bursts well ahead of playback.
+                const uint64_t fed=media.feed_audio_accepted.load();
+                if(fed!=np_fed) {np_fed=fed;np_fed_at=now;}
+                const bool playing=np_fed_at && now-np_fed_at<1500000000LL;
+                const uint32_t length=m.end-m.start;   // RTP timestamps wrap; unsigned difference
+                if(m.progress_ns && m.progress_ns!=np_progress_seen) {
+                    np_progress_seen=m.progress_ns;
+                    np_elapsed=uint32_t(m.current-m.start)/44100.0+(playing?(now-m.progress_ns)/1e9:0);
+                } else if(playing && np_tick) np_elapsed+=(now-np_tick)/1e9;
+                np_tick=now;
+                NowPlayingView v;
+                v.title=m.title;v.artist=m.artist;v.album=m.album;v.source=m.source;
+                // A cover from before the current track (one that came without
+                // artwork) is hidden; iOS sends a track's cover just before its text.
+                static const std::vector<uint8_t> no_cover;
+                const bool stale_cover=m.track_ns>m.cover_ns+5000000000LL && now>m.track_ns+5000000000LL;
+                v.cover=stale_cover||!m.cover?&no_cover:m.cover.get();
+                v.cover_generation=stale_cover?(m.cover_generation|(uint64_t(1)<<63)):m.cover_generation;
+                if(length) {v.duration_s=length/44100.0;v.elapsed_s=std::min(v.duration_s,np_elapsed);}
+                // Dimming follows the remote only: 20 s without a key, then down to
+                // 35% within 10 s. A new track shows at full brightness for 8 s and
+                // fades back over 2 s. Fades redraw at 30 fps.
+                const double idle=(now-np_bright)/1e9;
+                double brightness=idle<20?1.0:std::max(0.35,1.0-(idle-20)/10*0.65);
+                const double since_track=np_flash?(now-np_flash)/1e9:1e9;
+                if(since_track<10)brightness=since_track<8?1.0:1.0-(since_track-8)/2*(1.0-brightness);
+                v.brightness=float(brightness);
+                const bool fading=(idle>=20&&idle<30)||(since_track>=8&&since_track<10);
+                np_anim=shell.now_playing(v)||fading;
+                np_drawn=now_ns();np_cadence.finish(np_drawn);
+                np_render_time.record(uint64_t(std::max<int64_t>(0,np_drawn-render_begin)));
+                now=np_drawn;
+            }
+        }
+        now=now_ns(); // Renderer/metadata work must not leave packet pacing on an old clock.
         if(now-last_stats>5000000000LL) {
             double window_s=(now-last_stats)/1e9;
             VideoTimingSample timing=receiver.take_video_timing();
             VideoTimingSample fed=video_feed_timing.take_window();
             ReceiverDiagnostics q=receiver.diagnostics();
+            const DurationSample rendered=np_render_time.take_window();
+            if(opened && audio_only_playback)fprintf(stderr,"[now-playing-perf] generation=%u draws=%llu render_ms=%.2f/%.2f audio_queue=%zu/%zu audio_pts_ms=%.1f..%.1f queued_span_ms=%.1f head_due_in_ms=%.1f\n",
+                sessions_started,(unsigned long long)rendered.count,rendered.average_ms(),rendered.maximum_ms(),
+                q.audio_queue_packets,q.audio_queue_bytes,
+                q.audio_queue_packets?(int64_t(q.audio_pts_min)-int64_t(origin))/1e6:0.0,
+                q.audio_queue_packets?(int64_t(q.audio_pts_max)-int64_t(origin))/1e6:0.0,
+                (q.audio_pts_max-q.audio_pts_min)/1e6,
+                q.audio_queue_packets?(int64_t(q.audio_pts_min)-int64_t(origin)-(now-start))/1e6:0.0);
             DurationSample parsed=video_parse_time.take_window(),late=video_schedule_late.take_window();
             DurationSample pending_wait=video_pending_time.take_window(),video_feed=video_feed_time.take_window();
             DurationSample audio_feed=audio_feed_time.take_window(),tick=media_tick_time.take_window(),loop=loop_gap_time.take_window();
@@ -661,13 +813,22 @@ int main() {
             audio_decode_calls=audio_decode_ns=audio_decode_max_ns=0;
             rotate_log();last_stats=now;
         }
+        now=now_ns();
         if(!have_pending) {
             // Leave future packets in the shared queue so late-arriving video can
             // precede deliberately delayed audio. Avoid head-of-line blocking.
             uint64_t latest=opened?origin+uint64_t(std::max<int64_t>(0,now-start)):UINT64_MAX;
-            have_pending=receiver.pop(pending,latest);
+            have_pending=preroll_video_hold.restore_if_ready(pending,media.ready.load(),receiver.transport_epoch.load());
+            if(have_pending)
+                fprintf(stderr,"[codec-start] deferred-video resumed epoch=%u bytes=%zu\n",pending.transport_epoch,pending.data.size());
+            else have_pending=receiver.pop(pending,latest,preroll_video_hold.pending());
         }
         if(!have_pending){SDL_Delay(3);continue;}
+        if(!current_audio_epoch(pending.transport_epoch,receiver.transport_epoch.load())) {
+            fprintf(stderr,"[session] obsolete-packet video=%d packet_epoch=%u current_epoch=%u\n",
+                int(pending.video),pending.transport_epoch,receiver.transport_epoch.load());
+            have_pending=false;stall=0;continue;
+        }
         if(!opened && !pending.video) {
             const AirPlayAudioIntent intent{receiver.last_audio_codec.load(),receiver.audio_samples_per_frame.load(),
                 receiver.audio_using_screen.load(),receiver.audio_is_media.load(),receiver.has_audio.load()};
@@ -684,6 +845,8 @@ int main() {
             }
             opened=true;audio_only_playback=true;session_codec=MirrorCodec::H264;
             origin=pending.timestamp;session_started=start=now_ns();stall=0;++sessions_started;
+            receiver.diagnostic_generation=sessions_started;receiver.diagnostic_session_open=true;
+            decoder_callback_diagnostics.reset();decoder_callback_diagnostics.started();
             session_started_utc=uint64_t(std::time(nullptr));session_success=false;
             ingress_at_start=receiver.total_video_arrivals.load();
             ReceiverDiagnostics initial_queue=receiver.queue_snapshot();
@@ -691,7 +854,7 @@ int main() {
             video_count=audio_count=decode_errors=late_audio=silence_blocks=invalid_video=0;
             audio_end=0;audio_started=false;audio_decode_calls=audio_decode_ns=audio_decode_max_ns=0;
             last_decoder_events=0;last_feed_video=last_feed_audio=0;last_feed_video_retries=last_feed_audio_retries=0;
-            ui_visible=false;shell.transparent();
+            ui_visible=false;shell.transparent();np_drawn=0;np_bright=now_ns();
             fprintf(stderr,"[audio-only] session started codec=%u sample_rate=44100 output=PCM-stereo timestamps=remote-ntp\n",intent.codec);
         }
         if(!opened && pending.video) {
@@ -714,6 +877,18 @@ int main() {
                 if(!info.configuration.empty())configuration=info.configuration;
             }
             video_parse_time.record(uint64_t(std::max<int64_t>(0,now_ns()-parse_begin)));
+            if(incoming_hevc && hevc_info.waiting_configuration) {
+                if(!hevc_configuration_wait)hevc_configuration_wait=now;
+                if(!hevc_invalid_logged)fprintf(stderr,"[codec-start] waiting-configuration epoch=%u bytes=%zu present=%d/%d/%d complete=%d keyframe=%d\n",
+                    pending.transport_epoch,pending.data.size(),int(hevc_info.has_vps),int(hevc_info.has_sps),int(hevc_info.has_pps),
+                    int(hevc_info.configuration_complete),int(hevc_info.keyframe));
+                hevc_invalid_logged=true;have_pending=false;
+                if(hevc_configuration_wait_expired(hevc_configuration_wait,now)) {
+                    fprintf(stderr,"[codec-start] incomplete-configuration timeout; reconnect required; runtime profile retained\n");
+                    finish(true);receiver.show("HEVC headers missing. Reconnect sender; selected profile retained.");
+                }
+                continue;
+            }
             if(!valid) {
                 if(incoming_hevc && !hevc_invalid_logged) {
                     fprintf(stderr,"[codec-start] waiting-for-valid-parameter-sets\n");
@@ -726,6 +901,7 @@ int main() {
                 }
                 continue;
             }
+            hevc_configuration_wait=0;
             if(incoming_hevc && !supported_hevc_mirror_profile(hevc_info)) {
                 fprintf(stderr,"[codec] unsupported HEVC profile=%d bit-depth=%d; Main 10/HDR10 path disabled\n",
                     hevc_info.profile,hevc_info.bit_depth);
@@ -745,6 +921,13 @@ int main() {
                 }
                 have_pending=false;continue;
             }
+            if(incoming_hevc) {
+                bool added=false;
+                if(!hevc.prepend_missing_parameter_sets(pending.data,hevc_info,added)) {
+                    finish(true);recover_decoder(true,"hevc-parameter-sets-missing");continue;
+                }
+                if(added)fprintf(stderr,"[codec-start] cached-headers prepended before initial Load epoch=%u\n",pending.transport_epoch);
+            }
             session_codec=incoming_hevc?MirrorCodec::ExperimentalHevc:MirrorCodec::H264;
             int64_t open_begin=now_ns();
             bool media_opened=media.open(app_id,width,height,true,44100,mirror_limits(settings).video_source_buffer_bytes,
@@ -761,7 +944,10 @@ int main() {
             }
             // The pre-roll starts after synchronous decoder initialization.
             // Reusing the loop's old `now` would silently consume it in Load().
-            opened=true;origin=pending.timestamp;session_started=now_ns();start=session_started+200000000;stall=0;++sessions_started;
+            opened=true;origin=pending.timestamp;session_started=now_ns();
+            start=schedule_start(pending.arrival_ns,session_started,200000000LL);stall=0;++sessions_started;
+            receiver.diagnostic_generation=sessions_started;receiver.diagnostic_session_open=true;
+            decoder_callback_diagnostics.reset();decoder_callback_diagnostics.started();
             if(incoming_hevc)hevc_transport_failures=0;
             session_started_utc=uint64_t(std::time(nullptr));session_success=false;
             ingress_at_start=receiver.total_video_arrivals.load();if(ingress_at_start)--ingress_at_start;
@@ -785,9 +971,18 @@ int main() {
         if(pts<0){have_pending=false;continue;}
         // Large clock discontinuities require a fresh AirPlay session, not an unbounded queue.
         if(pts>now-start+5000000000LL) {fprintf(stderr,"[session] timestamp discontinuity\n");finish(true);receiver.show("Device clock changed. Connect again.");continue;}
-        if(now<start+pts) {
+        // NDL: a schedule that fell behind (anchored to a keyframe held over a
+        // reinit) catches up; audio shares the same start, so it shifts with
+        // the picture.
+        if(kMaxHoldNs && pending.video && pending.arrival_ns && start+pts>pending.arrival_ns+kMaxHoldNs)
+            start=pending.arrival_ns+kMaxHoldNs-pts;
+        int64_t packet_due=start+pts;
+#if !defined(UXAIR_MEDIA_NDL)
+        if(pending.video && session_codec==MirrorCodec::ExperimentalHevc)packet_due=hevc_feed_schedule.feed_due(packet_due);
+#endif
+        if(now<packet_due) {
             if(session_codec==MirrorCodec::ExperimentalHevc && video_count==0 && !hevc_schedule_wait_logged) {
-                fprintf(stderr,"[codec-start] feed-wait reason=pts-schedule remaining_ms=%.0f\n",(start+pts-now)/1e6);
+                fprintf(stderr,"[codec-start] feed-wait reason=pts-schedule remaining_ms=%.0f\n",(packet_due-now)/1e6);
                 hevc_schedule_wait_logged=true;
             }
             SDL_Delay(2);continue;
@@ -815,13 +1010,14 @@ int main() {
             }
             if(!info.configuration.empty())configuration=info.configuration;
             if(info.width && (width!=info.width||height!=info.height)) {
-                media.close();width=info.width;height=info.height;
+                media.close();decoder_callback_diagnostics.retire(media.frames.load());width=info.width;height=info.height;
                 int64_t open_begin=now_ns();
                 bool media_opened=info.keyframe && media.open(app_id,width,height,true,44100,mirror_limits(settings).video_source_buffer_bytes,
                     std::min(settings.width,1920),std::min(settings.height,1080),MirrorCodec::H264,settings.max_fps);
                 fprintf(stderr,"[media-init] reopen_ms=%.2f success=%d\n",(now_ns()-open_begin)/1e6,int(media_opened));
                 if(!media_opened) {report_media_start_failure(false,"h264-reopen-failed");continue;}
-                origin=pending.timestamp;start=now_ns();pts=0;audio_end=0;audio_started=false;decoder.reset();
+                decoder_callback_diagnostics.started();
+                origin=pending.timestamp;start=schedule_start(pending.arrival_ns,now_ns(),0);pts=0;audio_end=0;audio_started=false;decoder.reset();
                 video_feed_timing.reset();
                 live_feed_last=0;
                 last_decoder_events=0;last_feed_video=last_feed_audio=0;last_feed_video_retries=last_feed_audio_retries=0;
@@ -834,6 +1030,7 @@ int main() {
             int64_t parse_begin=now_ns();
             HevcFrameInfo info=hevc.inspect(pending.data.data(),pending.data.size());
             video_parse_time.record(uint64_t(std::max<int64_t>(0,now_ns()-parse_begin)));
+            if(info.waiting_configuration){have_pending=false;continue;}
             if(!info.valid) {
                 have_pending=false;
                 if(++invalid_video>=30) {finish(true);recover_decoder(true,"invalid-access-units");}
@@ -859,7 +1056,7 @@ int main() {
                 }
                 if(parameter_sets_added)
                     fprintf(stderr,"[codec] restored-cached-parameter-sets bytes=%zu before-random-access-frame\n",pending.data.size());
-                media.close();width=info.width;height=info.height;
+                media.close();decoder_callback_diagnostics.retire(media.frames.load());width=info.width;height=info.height;
                 int64_t open_begin=now_ns();
                 bool media_opened=media.open(app_id,width,height,true,44100,
                     mirror_limits(settings).video_source_buffer_bytes,
@@ -868,11 +1065,22 @@ int main() {
                 fprintf(stderr,"[codec] reinitialize=%u input=%dx%d load_ms=%.2f success=%d\n",
                     ++decoder_reinitializations,width,height,(now_ns()-open_begin)/1e6,int(media_opened));
                 if(!media_opened) {report_media_start_failure(true,"hevc-reopen-failed");continue;}
+                decoder_callback_diagnostics.started();
                 hevc_startup.accept_load(now_ns());hevc_preroll_wait_logged=hevc_first_feed_logged=false;
                 hevc_schedule_wait_logged=false;stall=0;last_paused=false;
                 fprintf(stderr,"[codec-start] load-accepted=1 reason=parameter-change input=%dx%d\n",width,height);
                 hevc_wait_keyframe=false;
-                origin=pending.timestamp;start=now_ns()+200000000;pts=0;audio_end=0;audio_started=false;decoder.reset();
+                const int64_t reopen_done=now_ns();
+#if defined(UXAIR_MEDIA_NDL)
+                start=schedule_start(pending.arrival_ns,reopen_done,200000000LL);
+#else
+                const int64_t previous_due=start+pts;
+                start=hevc_feed_schedule.reinitialize(start,pts,reopen_done);
+                fprintf(stderr,"[codec-start] reinit-schedule timeline_shift_ms=%.1f first_feed_delay_ms=%.0f keyframe_age_ms=%.1f epoch=%u\n",
+                    (start-previous_due)/1e6,(hevc_feed_schedule.feed_due(start)-reopen_done)/1e6,
+                    pending.arrival_ns?(reopen_done-pending.arrival_ns)/1e6:0.0,pending.transport_epoch);
+#endif
+                origin=pending.timestamp;pts=0;audio_end=0;audio_started=false;decoder.reset();
                 video_feed_timing.reset();live_feed_last=0;
                 last_decoder_events=0;last_feed_video=last_feed_audio=0;
                 last_feed_video_retries=last_feed_audio_retries=0;
@@ -884,7 +1092,7 @@ int main() {
             pending.codec=3; // Parsed; retain AU unchanged across Feed retries.
             if(reopened) {
                 fprintf(stderr,"[codec-start] reinit-keyframe retained=1 bytes=%zu pts_ns=0\n",pending.data.size());
-                continue; // The next loop honors the new 200 ms PTS preroll.
+                continue; // Retain the keyframe through the per-Load first-feed delay.
             }
         }
         HevcFeedStage hevc_feed_stage=HevcFeedStage::Loaded;
@@ -892,11 +1100,12 @@ int main() {
             hevc_feed_stage=hevc_startup.video_stage(media.ready.load(),media.failed.load(),pending.data.size());
             if(hevc_feed_stage==HevcFeedStage::WaitingForLoad) {
                 if(!hevc_preroll_wait_logged) {
-                    fprintf(stderr,"[codec-start] feed-wait reason=preroll-limit accepted=%u bytes=%zu ready=0\n",
+                    fprintf(stderr,"[codec-start] feed-wait reason=preroll-limit accepted=%u bytes=%zu ready=0 audio-progress=enabled\n",
                         hevc_startup.preroll_frames(),hevc_startup.preroll_bytes());
                     hevc_preroll_wait_logged=true;
                 }
-                SDL_Delay(5);continue;
+                preroll_video_hold.defer(std::move(pending));have_pending=false;
+                continue;
             }
             if(hevc_feed_stage==HevcFeedStage::NoLoad || hevc_feed_stage==HevcFeedStage::Failed) {
                 fprintf(stderr,"[codec-start] feed-blocked reason=%s\n",
@@ -924,7 +1133,10 @@ int main() {
             if(pending.data.empty()){have_pending=false;continue;}
         }
         if(!pending.video && receiver.audio_flush.exchange(false)) {
-            decoder.reset();have_pending=false;continue;
+            flush_audio();continue;
+        }
+        if(!pending.video && !current_audio_epoch(pending.audio_epoch,receiver.audio_epoch.load())) {
+            have_pending=false;stall=0;continue;
         }
         if(audio_only_playback && !pending.video && audio_flush_paused) {
             audio_flush_paused=false;media.pause(false);last_paused=false;
@@ -957,10 +1169,21 @@ int main() {
                 video_schedule_late.record(uint64_t(std::max<int64_t>(0,feed_begin-(start+pts))));
                 video_pending_time.record(uint64_t(std::max<int64_t>(0,feed_begin-pending.dequeued_ns)));
             } else {++audio_count;audio_end=pts+int64_t(pending.data.size()/4)*1000000000/44100;}
+            if(stall)fprintf(stderr,"[feed-stall] generation=%u recovered duration_ms=%.1f\n",sessions_started,(now-stall)/1e6);
             have_pending=false;stall=0;
         } else if(result==FeedResult::Retry) {
-            if(!stall)stall=now;
-            if(now-stall>3000000000LL){
+            if(!stall) {
+                stall=now;
+                ReceiverDiagnostics q=receiver.queue_snapshot();
+                fprintf(stderr,"[feed-stall] generation=%u begin video=%d pts_ms=%.1f bytes=%zu queue=%zu/%zu ready=%d playing=%d flush_paused=%d\n",
+                        sessions_started,int(pending.video),pts/1e6,pending.data.size(),q.queue_packets,q.queue_bytes,
+                        int(media.ready.load()),int(media.playing.load()),int(audio_flush_paused));
+            }
+            if(feed_retry_expired(stall,now)){
+                ReceiverDiagnostics q=receiver.queue_snapshot();
+                fprintf(stderr,"[feed-stall] generation=%u timeout duration_ms=%.1f video=%d queue=%zu/%zu retries_audio=%llu ready=%d playing=%d\n",
+                        sessions_started,(now-stall)/1e6,int(pending.video),q.queue_packets,q.queue_bytes,
+                        (unsigned long long)media.feed_audio_retries.load(),int(media.ready.load()),int(media.playing.load()));
                 recover_playback("feed-backpressure-timeout");
             }
             SDL_Delay(5);
@@ -968,6 +1191,7 @@ int main() {
             recover_playback("feed-rejected");
         }
     }
+    bus.block_screen_saver(false);
     if(opened)finish(false,true);
     receiver.stop();receiver.disconnect();media.close();
     fprintf(stderr,"[app] stopped cleanly\n");

@@ -12,6 +12,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--development', action='store_true', help='Package the separately identified development receiver')
     args = parser.parse_args()
+    backend_marker = ROOT / 'build/media-backend.txt'
+    backend = backend_marker.read_text().strip() if backend_marker.exists() else ''
+    if backend not in ('ndl', 'starfish'):
+        parser.error('missing or invalid media backend marker; rebuild before packaging')
+    platform = {'ndl': 'webos5plus', 'starfish': 'webos3-4'}[backend]
     variant = 'development' if args.development else 'production'
     marker = ROOT / 'build/package-variant.txt'
     if marker.exists() and marker.read_text().strip() != variant:
@@ -26,7 +31,6 @@ def main():
     if args.development:
         app['id'] += '.dev'
         app['title'] += ' Dev'
-        app['version'] = '1.1.0'
     (stage / 'appinfo.json').write_text(json.dumps(app, indent=2) + '\n')
     source_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     (stage / 'build-info.txt').write_text(f'version={app["version"]}\ncommit={source_commit}\n')
@@ -51,10 +55,17 @@ def main():
     subprocess.run([str(strip), str(stage / 'uxair')], check=True)
     subprocess.run(['python3', str(ROOT / 'tools/verify-elf.py'), str(stage)], check=True)
     (ROOT / 'dist').mkdir(exist_ok=True)
-    subprocess.run(['ares-package', str(stage), '-o', str(ROOT / 'dist')], check=True)
-    package = ROOT / 'dist' / f"{app['id']}_{app['version']}_arm.ipk"
+    # one package per player: ndl for webOS 5 and later, starfish for webOS 3-4
+    package = ROOT / 'dist' / f"{app['id']}_{app['version']}_arm-{platform}.ipk"
+    if shutil.which('ares-package'):
+        subprocess.run(['ares-package', str(stage), '-o', str(ROOT / 'dist')], check=True)
+        (ROOT / 'dist' / f"{app['id']}_{app['version']}_arm.ipk").replace(package)
+    else:
+        # no webOS CLI (e.g. an offline Linux build host): same IPK layout
+        subprocess.run(['python3', str(ROOT / 'tools/make-ipk.py'), str(stage), str(package)], check=True)
     if not package.is_file() or not package.stat().st_size:
         raise SystemExit(f'Expected nonempty package was not produced: {package}')
+    subprocess.run(['python3', str(ROOT / 'tools/ipk_permissions.py'), str(package), '--app-id', app['id']], check=True)
     print(f'Packaged {package}')
 
 if __name__ == '__main__':

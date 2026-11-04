@@ -4,6 +4,9 @@ cd "$(dirname "$0")/.."
 root="$PWD"
 sdk="$root/.cache/arm-webos-linux-gnueabi_sdk-buildroot"
 prefix="$root/.cache/deps"
+# the host's own perl, found before the SDK's (a Linux SDK bundles a perl whose
+# module paths point at the machine it was built on)
+host_perl="$(command -v perl)"
 export PATH="$sdk/bin:$PATH"
 export CC="$sdk/bin/arm-webos-linux-gnueabi-gcc" CXX="$sdk/bin/arm-webos-linux-gnueabi-g++"
 export AR="$sdk/bin/arm-webos-linux-gnueabi-ar" RANLIB="$sdk/bin/arm-webos-linux-gnueabi-ranlib"
@@ -11,11 +14,12 @@ export CFLAGS="--sysroot=$sdk/arm-webos-linux-gnueabi/sysroot -O2 -fPIC"
 export CXXFLAGS="$CFLAGS -D_GLIBCXX_USE_CXX11_ABI=0"
 export LDFLAGS="--sysroot=$sdk/arm-webos-linux-gnueabi/sysroot"
 mkdir -p "$prefix" build/logs
-build_stamp="$(shasum -a 256 "$0" | cut -d ' ' -f 1)"
+if command -v sha256sum >/dev/null; then sha256() { sha256sum "$1"; }; else sha256() { shasum -a 256 "$1"; }; fi
+build_stamp="$(sha256 "$0" | cut -d ' ' -f 1)"
 previous_stamp="$(cat "$prefix/build-config.sha256" 2>/dev/null || true)"
 if [ "$build_stamp" != "$previous_stamp" ] || [ ! -f "$prefix/lib/libcrypto.a" ]; then
     (cd .cache/openssl-3.5.8
-     ./Configure linux-armv4 no-shared no-tests no-module no-async --prefix="$prefix" --libdir=lib
+     "$host_perl" ./Configure linux-armv4 no-shared no-tests no-module no-async --prefix="$prefix" --libdir=lib
      make -j6 build_libs
      make install_dev) >build/logs/openssl.log 2>&1
 fi

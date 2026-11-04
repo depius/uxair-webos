@@ -1,61 +1,76 @@
 # Development and build environments
 
-## Native tests on Linux or WSL2 Ubuntu
+UxAir 1.2.0 targets Starfish Stable for webOS 3–4 and NDL Beta / Experimental for webOS 5+. The owner accepted the Starfish candidate on the B7. Current-build NDL hardware validation is outstanding. See the [release procedure](RELEASING.md).
 
-The C++ unit tests run on the build host and do not need the webOS SDK or TV libraries. The diagnostics timing test needs only a C++ compiler with C++11 and AddressSanitizer/UndefinedBehaviorSanitizer support. The media tests also need FFmpeg's command-line encoder and development libraries.
+## Supported hosts and inputs
 
-On Ubuntu 24.04 (including WSL2 Ubuntu), install the prerequisites:
+Use Linux x86-64 (Ubuntu 24.04, including a supported WSL2 Ubuntu installation) or macOS ARM64. Native Windows and Linux AArch64 are not supported cross-build hosts. `tools/bootstrap.py` selects the matching checksum-pinned SDK in `dependencies.lock.json`: Linux `openlgtv/buildroot-nc4` webos-d7ed7ee, or macOS `webosbrew/native-toolchain` webos-d7ed7ee.6. Do not substitute a generic ARM compiler or newer glibc sysroot. Keep WSL checkouts in the Linux filesystem. WSL is unavailable on the owner's currently inspected Windows host; CI provides the Linux build environment.
+
+The ARM target is 32-bit ARMv7 EABI soft-float, with GLIBC <=2.19 and a private compatible libstdc++. SDL2, SDL2_ttf, Luna and the selected media APIs remain TV-provided. No system libraries are replaced by the IPK. SDK and native dependency archives are hash-pinned; UxPlay is commit-pinned. These controls are not independent attestation or a claim of byte-for-byte reproducibility across runner images.
+
+On Ubuntu install the host prerequisites:
 
 ```sh
 sudo apt-get update
-sudo apt-get install --yes build-essential ffmpeg pkg-config libsdl2-dev libavcodec-dev libavutil-dev libswresample-dev
+sudo apt-get install --yes build-essential cmake ninja-build pkg-config perl curl git python3 file xz-utils bzip2 ffmpeg libsdl2-dev libsdl2-ttf-dev libsdl2-image-2.0-0 fonts-dejavu-core libavcodec-dev libavutil-dev libswresample-dev
 ```
 
-Run just the diagnostics test:
+For macOS ARM64 use Xcode command-line tools and suitable CMake/Ninja, pkg-config, SDL2/TTF/image and FFmpeg host development packages. The same pinned target dependency build is used. Do not infer newer-TV runtime compatibility from a successful macOS cross-build.
+
+## Locked packaging tools
+
+Use Node >=20 and the checked-in CLI 3.2.6 dependency graph; disable lifecycle scripts. No global npm install is needed.
 
 ```sh
-tools/test.sh --diagnostics-only
+npm ci --prefix tools/webos-cli --ignore-scripts --no-audit --no-fund
+export PATH="$PWD/tools/webos-cli/node_modules/.bin:$PATH"
+ares-package --version
 ```
 
-Run the complete native test suite, including SDL remote input mapping, H.264 landscape/portrait parsing, malformed input, PCM validation, and AAC-LC decoding:
+The CLI's chmod postinstall is unnecessary for packaging and is deliberately disabled. Keep the lock unchanged during validation. Installed node_modules are ignored and excluded from corresponding-source archives; the package/lock manifests are included. If the CLI is absent, `tools/make-ipk.py` is the existing offline packaging fallback. Both paths apply the same internal permission policy and package validation.
+
+## Native sanitizer tests
 
 ```sh
+python3 tools/validate-metadata.py
 tools/test.sh
+c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -Isrc tests/b7_storage_layout_test.cpp src/settings.cpp src/usage_stats.cpp -o build/tests/b7-storage-layout-test
+sudo build/tests/b7-storage-layout-test
 ```
 
-Check package metadata separately:
+The root fixture models different owner/execution UIDs; it does not emulate firmware jail mounts. The full suite includes mocked-API tests of the actual NDL sources (not firmware playback), real generated allocation guards, private storage, pairing, queue/epoch handling, RAOP lifecycle, HEVC split headers/reopens, UI and IPK/source packaging. `tools/test.sh --diagnostics-only` is a shorter diagnostic subset, not release validation.
+
+## Two explicit ARM build targets
+
+Both packages are built from the same source commit. The backend is selected at compile/link time. There is no runtime backend switch or universal IPK.
+
+Starfish + ACB, webOS 3-4:
 
 ```sh
-python3 tools/validate-metadata.py
-```
-
-The GitHub Actions `host-tests` job uses Ubuntu 24.04 and runs metadata validation plus the complete sanitizer-backed native tests. The native tests do not build or exercise the TV application.
-
-For WSL2, keep the checkout in the Linux filesystem (for example `~/src/uxair-webos`) for normal Linux file permissions and build performance.
-
-## ARMv7 webOS target build
-
-The deployed target remains 32-bit ARM EABI soft-float with a glibc ceiling of 2.19. `tools/verify-elf.py` checks the ELF class/machine/float ABI, GLIBC symbol requirements, bundled C++ runtime symbol coverage, `$ORIGIN/lib`, and forbidden dynamic dependencies. `tools/package.py` stages the executable and the private `libstdc++.so.6`; SDL2, SDL2_ttf, Starfish Media Pipeline, and ACB remain TV-provided. The package does not install or replace system libraries on the TV.
-
-The checked-in lock pins the `webosbrew/native-toolchain` **macOS ARM64** (`darwin-arm64`) archive at release `webos-d7ed7ee.6`, with its SHA-256. It cannot execute on Linux. The [assets at that exact release](https://github.com/webosbrew/native-toolchain/releases/tag/webos-d7ed7ee.6) include Linux **AArch64**, macOS ARM64, and macOS x86_64 hosts, but no Linux x86_64 host SDK for ordinary WSL2 Ubuntu or an x86_64 Linux container. The release metadata does not publish an asset digest for the Linux AArch64 archive. The [openlgtv/buildroot-nc4 release](https://github.com/openlgtv/buildroot-nc4/releases/tag/webos-d7ed7ee) has a differently packaged `arm-webos-linux-gnueabi` SDK, but its host architecture, checksum, sysroot equivalence, and compatibility with this project's pinned SDK have not been verified. It is not a build input for this repository.
-
-The current `tools/build-deps.sh` uses macOS `shasum`; the packaging step needs the host-installed webOS CLI (`ares-package`). Consequently, the current project does not claim a reproducible Linux/WSL2 ARMv7 IPK build. Do not substitute a generic ARM cross-compiler or a newer glibc sysroot: that could produce an IPK incompatible with the LG B7.
-
-The existing reproducible target-build path is Apple Silicon macOS with the checked-in toolchain pin, Xcode command-line tools, Git, CMake, Ninja, and the webOS TV CLI. From a clean checkout, run:
-
-```sh
-python3 tools/validate-metadata.py
-tools/build.sh
+tools/build.sh --media=starfish
 python3 tools/verify-elf.py build/app
-shasum -a 256 dist/*.ipk
+python3 tools/validate-ipk.py
 ```
 
-`tools/build.sh` verifies download hashes before extraction, builds the pinned private dependencies, cross-compiles, runs ELF verification during packaging, and writes the IPK under `dist/`. The explicit second ELF check is a final preflight of the staged package. This path has not been rerun in the current Windows workspace; the prior hardware validation used Apple Silicon macOS. It produces a development IPK only on a host with those prerequisites.
+Output: `dist/com.github.depius.uxair_1.2.0_arm-webos3-4.ipk`. It depends on libplayerAPIs/ACB and must not acquire an NDL dependency.
 
-The [Apple Silicon Actions workflow](../.github/workflows/armv7-ipk.yml) runs Ubuntu native tests first, then `tools/build.sh --development` with the same locked SDK and uploads a separately identified development IPK after metadata, ELF, and package checks. See [artifact download and manual installation instructions](DEVELOPMENT-IPK.md). The previous development IPK has been owner-tested on the LG B7; each new build still needs runtime validation.
+NDL DirectMedia, webOS 5+ (**Beta / Experimental; no physical validation**):
 
-To enable an Ubuntu target build, first obtain a Linux **x86_64** host SDK from a fixed release, independently record its SHA-256, inspect its target sysroot and `pkg-config` metadata against the pinned SDK, adapt the bootstrap and build scripts for the host, and validate a clean end-to-end build and `tools/verify-elf.py` result. A Linux AArch64 host is another possible route with the `.6` asset, but it needs a recorded checksum, a real AArch64 build environment, and the same validation. The artifact must retain the ARM32 soft-float and glibc 2.19 checks. The target media pipeline must continue linking Starfish and ACB and using TV-provided SDL2 libraries; native host test libraries are not substitutes for them.
+```sh
+tools/build.sh --media=ndl
+python3 tools/verify-elf.py build/app
+python3 tools/validate-ipk.py
+```
 
-## Runtime validation boundary
+Output: `dist/com.github.depius.uxair_1.2.0_arm-webos5plus.ipk`. It links the NDL backend instead of Starfish/ACB. `tools/build.sh` currently defaults to ndl; always use the explicit option for review/release work. Each build refreshes backend/variant markers and staging. Validate that target immediately before building the next one.
 
-The earlier hardware record covers Rockhopper 3.9.3. The owner has also confirmed basic AirPlay playback on the LG OLED B7 with Rockhopper 3.9.0 using a development IPK, as recorded in [Milestone 2](MILESTONE2.md). A successful host test or ELF preflight cannot prove performance or compatibility of a new package; each new build still requires playback checks on the intended firmware. Deployment is a separate, explicit step.
+Then, for an authorized candidate build:
+
+```sh
+tools/source-package.py
+sha256sum dist/*.ipk dist/*-source.tar.gz
+```
+
+On macOS use `shasum -a 256` instead of sha256sum. Source archive: `dist/uxair-webos-1.2.0-source.tar.gz`. Record the exact source commit, build host, dependency lock and both checksums. The offline source archive lacks Git metadata; release verification should start from the exact repository commit so embedded build-info can be attributed correctly.
+
+CI runs full host sanitizers and a separate ARM matrix for starfish/ndl, ELF/IPK checks, source packaging and checksums. Ordinary runs retain checks and logs. The explicit branch-only staging dispatch retains authenticated artifacts for one day. See [RELEASING.md](RELEASING.md) and [SECURITY_HARDENING.md](SECURITY_HARDENING.md).

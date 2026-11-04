@@ -1,0 +1,13 @@
+{
+  "id": "com.github.depius.uxair.ndlprobe",
+  "version": "0.0.1",
+  "vendor": "UxAir",
+  "appDescription": "Plays a test video through LG's NDL direct media API",
+  "type": "native",
+  "main": "ndl-probe",
+  "title": "NDL probe",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "iconColor": "#1D2D47",
+  "requiredMemory": 64
+}

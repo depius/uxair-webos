@@ -5,6 +5,8 @@ import io
 import json
 import pathlib
 import re
+import subprocess
+import sys
 import tarfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -47,15 +49,34 @@ def main():
     if args.development:
         app['id'] += '.dev'
         app['title'] += ' Dev'
-        app['version'] = '1.1.0'
     stage = ROOT / 'build/app'
     staged = json.loads((stage / 'appinfo.json').read_text())
     if staged != app:
         fail('staged appinfo does not match requested package identity')
-    package = ROOT / 'dist' / f"{app['id']}_{app['version']}_arm.ipk"
+    backend_marker = ROOT / 'build/media-backend.txt'   # as tools/package.py names it
+    backend = backend_marker.read_text().strip() if backend_marker.exists() else ''
+    if backend not in ('ndl', 'starfish'):
+        fail('missing or invalid media backend marker')
+    platform = {'ndl': 'webos5plus', 'starfish': 'webos3-4'}[backend]
+    package = ROOT / 'dist' / f"{app['id']}_{app['version']}_arm-{platform}.ipk"
     if not package.is_file():
         fail(f'missing {package.name}')
+    subprocess.run([sys.executable, str(ROOT / 'tools/ipk_permissions.py'), str(package), '--app-id', app['id'], '--check'], check=True)
     members = ar_members(package)
+    if members.get('debian-binary') != b'2.0\n':
+        fail('missing Debian package format version')
+    controls = [value for name, value in members.items() if name.startswith('control.tar')]
+    if len(controls) != 1:
+        fail('expected exactly one control archive')
+    with tarfile.open(fileobj=io.BytesIO(controls[0]), mode='r:*') as archive:
+        entries = [entry for entry in archive if entry.isfile() and entry.name.lstrip('./') == 'control']
+        if len(entries) != 1:
+            fail('expected exactly one control file')
+        control = dict(line.split(':', 1) for line in archive.extractfile(entries[0]).read().decode().splitlines() if ':' in line)
+        for key, expected in [('Package', app['id']), ('Version', app['version']), ('Architecture', 'arm')]:
+            if control.get(key, '').strip() != expected:
+                fail(f'wrong control {key}')
+        print('Package control:', {key: value.strip() for key, value in control.items()})
     payloads = [value for name, value in members.items() if name.startswith('data.tar')]
     if len(payloads) != 1:
         fail('expected exactly one data.tar payload')
@@ -73,8 +94,15 @@ def main():
             fail('packaged launcher icon differs from the current UxAir artwork')
         if content('largeIcon.png') != (ROOT / 'packaging/largeIcon.png').read_bytes():
             fail('packaged large launcher icon differs from the current UxAir artwork')
-        if not content('uxair') or not content('lib/libstdc++.so.6'):
-            fail('missing receiver or private C++ runtime')
+        for binary in ('uxair', 'lib/libstdc++.so.6'):
+            if content(binary) != (stage / binary).read_bytes():
+                fail(f'packaged {binary} differs from the ELF-verified staging file')
+        if content('dependencies.lock.json') != (ROOT / 'dependencies.lock.json').read_bytes():
+            fail('packaged dependency manifest differs from pinned inputs')
+        packageinfo = json.loads(content('packageinfo.json'))
+        if any(packageinfo.get(key) != expected for key, expected in
+               [('id', app['id']), ('app', app['id']), ('version', app['version'])]):
+            fail('packageinfo identity/version mismatch')
         qr = content('bmc-qr.bmp')
         if qr != (ROOT / 'assets/bmc-qr.bmp').read_bytes() or qr[:2] != b'BM':
             fail('bundled donation QR differs from the committed local image')

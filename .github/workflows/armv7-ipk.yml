@@ -1,13 +1,19 @@
-name: Build UxAir 1.1.0 ARMv7 package
+name: Verify UxAir 1.2.0 Starfish and NDL ARMv7 packages
 
 on:
   push:
     branches:
       - main
+      - fix/pr10-b7-compatibility
   pull_request:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      prepare_test_assets:
+        description: Prepare owner-requested unreleased TEST assets (branch only)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -23,66 +29,94 @@ jobs:
       - name: Install native test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes build-essential ffmpeg pkg-config libsdl2-dev libsdl2-ttf-dev fonts-dejavu-core libavcodec-dev libavutil-dev libswresample-dev
+          sudo apt-get install --yes build-essential ffmpeg pkg-config libsdl2-dev libsdl2-ttf-dev libsdl2-image-2.0-0 fonts-dejavu-core libavcodec-dev libavutil-dev libswresample-dev
       - name: Validate source and run sanitizer-backed tests
         run: |
           python3 tools/validate-metadata.py
           tools/test.sh
-      - name: Upload host SDL History previews
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: history-render-previews-${{ github.sha }}
-          path: build/tests/history-*.bmp
-          if-no-files-found: error
-          retention-days: 14
-  build-ipk:
+      - name: Validate B7 storage compatibility across execution UIDs
+        run: |
+          c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -Isrc tests/b7_storage_layout_test.cpp src/settings.cpp src/usage_stats.cpp -o build/tests/b7-storage-layout-test
+          sudo build/tests/b7-storage-layout-test
+  build-backends:
+    name: ARMv7 ${{ matrix.media }} (${{ matrix.maturity }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - media: starfish
+            platform: webos3-4
+            maturity: Stable
+          - media: ndl
+            platform: webos5plus
+            maturity: Beta-Experimental
     needs: native-tests
-    runs-on: macos-15
+    # Both targets use the pinned Linux x86-64 SDK.
+    # bootstrap.py selects the already checksum-pinned Linux x86-64 ARM SDK.
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Verify Apple Silicon host
+      - name: Verify supported Linux cross-build host
         run: |
-          test "$(uname -s)" = Darwin
-          test "$(uname -m)" = arm64
-          xcode-select -p
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
           python3 --version
           node --version
       - name: Install build and packaging tools
         run: |
-          brew install cmake ninja pkgconf
-          npm install --global @webos-tools/cli@3.2.6
+          sudo apt-get update
+          sudo apt-get install --yes build-essential cmake ninja-build pkg-config perl curl git python3 file xz-utils bzip2
+          npm ci --prefix tools/webos-cli --ignore-scripts --no-audit --no-fund
+          echo "$GITHUB_WORKSPACE/tools/webos-cli/node_modules/.bin" >> "$GITHUB_PATH"
           cmake --version
           ninja --version
           pkg-config --version
-          ares -V
-          command -v ares-package
+          tools/webos-cli/node_modules/.bin/ares -V
+          test -x tools/webos-cli/node_modules/.bin/ares-package
       - name: Validate source metadata
         run: python3 tools/validate-metadata.py
-      - name: Build UxAir 1.1.0 production IPK
-        run: tools/build.sh
+      # Separate link targets/packages; NDL hardware acceptance remains pending.
+      - name: Build and verify the backend-specific IPK
+        run: |
+          tools/build.sh --media=${{ matrix.media }}
+          python3 tools/verify-elf.py build/app | tee dist/ELF_REPORT-${{ matrix.platform }}.txt
+          python3 tools/validate-ipk.py
       - name: Build corresponding source archive
         run: tools/source-package.py
-      - name: Verify staged ELF and package
-        run: |
-          python3 tools/verify-elf.py build/app | tee dist/ELF_REPORT.txt
-          python3 tools/validate-ipk.py
+      - name: Preserve backend ELF report
+        run: cp dist/ELF_REPORT-${{ matrix.platform }}.txt dist/ELF_REPORT.txt
       - name: Record source commit and package checksum
         run: |
           git rev-parse HEAD > dist/BUILD_COMMIT.txt
           (cd dist && shasum -a 256 *.ipk *-source.tar.gz > SHA256SUMS)
+          (cd dist && shasum -a 256 -c SHA256SUMS)
           cat dist/BUILD_COMMIT.txt dist/SHA256SUMS dist/ELF_REPORT.txt
-      - name: Upload verified UxAir 1.1.0 production package and source
+      - name: Record release hold
+        run: |
+          echo "ARMv7 ${{ matrix.media }} verified; ordinary runs upload no IPK/source artifact. Explicit TEST dispatch is separate."
+          echo "Release hold: owner publication approval and security disposition are required. The dc3fe475 browser Malware verdict remains unresolved."
+      - name: Prepare explicitly requested TEST assets
+        if: github.event_name == 'workflow_dispatch' && inputs.prepare_test_assets && github.ref == 'refs/heads/fix/pr10-b7-compatibility'
+        run: python3 tools/prepare-candidate.py --backend=${{ matrix.media }}
+      - name: Retain temporary TEST candidate (not a release)
+        if: github.event_name == 'workflow_dispatch' && inputs.prepare_test_assets && github.ref == 'refs/heads/fix/pr10-b7-compatibility'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: uxair-1.1.0-production-armv7-${{ github.sha }}
-          path: |
-            dist/*.ipk
-            dist/*-source.tar.gz
-            dist/SHA256SUMS
-            dist/BUILD_COMMIT.txt
-            dist/ELF_REPORT.txt
+          name: TEST-ONLY-UxAir-1.2.0-${{ matrix.media }}-${{ github.sha }}
+          path: dist/test-candidates/${{ matrix.media }}/*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
+  build-ipk:
+    name: build-ipk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: always()
+    needs: build-backends
+    steps:
+      - name: Require both ARMv7 packages to pass
+        env:
+          BUILD_RESULT: ${{ needs.build-backends.result }}
+        run: test "$BUILD_RESULT" = success

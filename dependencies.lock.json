@@ -6,6 +6,13 @@
     "directory": "arm-webos-linux-gnueabi_sdk-buildroot",
     "sha256": "954333694ab1fe1f7737e81a0be1e3188cdfffc1a119c81c86f5fcebf1857c45"
   },
+  "toolchain-linux-x86_64": {
+    "version": "webos-d7ed7ee",
+    "url": "https://github.com/openlgtv/buildroot-nc4/releases/download/webos-d7ed7ee/arm-webos-linux-gnueabi_sdk-buildroot.tar.gz",
+    "archive": "toolchain-linux-x86_64.tar.gz",
+    "directory": "arm-webos-linux-gnueabi_sdk-buildroot",
+    "sha256": "32816626e99fb34922a49d0c639f7c8a30356fffb222372d4823027f1382f640"
+  },
   "uxplay": {
     "repository": "https://github.com/FDH2/UxPlay",
     "commit": "9f3c2bbc658645533fa1057e76c29ec8c947fa0f",

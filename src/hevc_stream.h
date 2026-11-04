@@ -4,6 +4,7 @@
 #include <vector>
 
 struct HevcFrameInfo {
+    bool waiting_configuration=false, configuration_complete=false;
     bool valid=false, keyframe=false, configuration_changed=false, has_aud=false;
     bool has_vps=false, has_sps=false, has_pps=false;
     int width=0, height=0, profile=0, bit_depth=0;
@@ -18,6 +19,7 @@ public:
                                         const HevcFrameInfo& info, bool& added) const;
     void reset();
 private:
+    bool configuration_dirty_=false;
     std::vector<uint8_t> vps_, sps_, pps_;
     int width_=0, height_=0;
     int profile_=0, bit_depth_=0;
@@ -28,3 +30,9 @@ inline bool supported_hevc_mirror_profile(const HevcFrameInfo& info) {
     return info.valid && info.profile==1 && info.bit_depth==8;
 }
 bool ensure_hevc_aud(std::vector<uint8_t>& access_unit, bool has_aud);
+
+// Match the existing media startup budget; incomplete headers are not evidence
+// of an unsupported decoder/profile and must not change the advertisement.
+inline bool hevc_configuration_wait_expired(int64_t began,int64_t now) {
+    return began && now-began>15000000000LL;
+}

@@ -1,5 +1,7 @@
 # Milestone 4D: development-only `/info` handshake experiment
 
+> Historical development record. See [UxAir 1.2.0 scope](UXAIR_1_2_SCOPE.md) for current release and validation status.
+
 ## What the B7 capture proves
 
 The 4C capture shows a bodyless `HTTP/1.1 GET` in the `info` path category for an ordinary photo, a 4K photo and a 4K HDR video. The SDR video produced no probe record. The old `result=0` means UxPlay returned at its no-`CSeq`/no-HLS gate without building a response. Since the 4C path label intentionally hid queries, that capture does **not** prove the URL was exactly `/info`. It also does not show whether the sender would proceed after an answer.

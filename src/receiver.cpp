@@ -1,4 +1,5 @@
 #include "receiver.h"
+#include "receiver_lifecycle.h"
 #include "shell.h"
 #include "identity.h"
 #include "capabilities.h"
@@ -13,8 +14,24 @@
 #include <openssl/rand.h>
 
 static Receiver& self(void *p) { return *static_cast<Receiver *>(p); }
+extern "C" void uxair_sender_video_reset(void *p,int reason) {
+    self(p).request_reset(ResetOrigin::SenderTeardown,reason);
+}
+static void audio_snapshot(const std::deque<Packet>& packets,ReceiverDiagnostics& d) {
+    for(const auto& p:packets)if(!p.video) {
+        ++d.audio_queue_packets;d.audio_queue_bytes+=p.data.size();
+        if(!d.audio_pts_min || p.timestamp<d.audio_pts_min)d.audio_pts_min=p.timestamp;
+        d.audio_pts_max=std::max(d.audio_pts_max,p.timestamp);
+    }
+}
 static void log_message(void *,int level,const char *text) {
     if (level<=LOGGER_INFO) fprintf(stderr,"[airplay] %s\n",text);
+}
+NowPlaying Receiver::now_playing() {
+    NowPlaying copy;
+    {std::lock_guard<std::mutex> l(meta_mutex);copy=meta;}
+    std::lock_guard<std::mutex> l(mutex);copy.source=client_name;
+    return copy;
 }
 void Receiver::show(const std::string& s) { std::lock_guard<std::mutex> l(mutex);message=s; }
 std::string Receiver::status() { std::lock_guard<std::mutex> l(mutex);return message; }
@@ -26,6 +43,8 @@ bool Receiver::idle_for_profile_change() {
 ReceiverDiagnostics Receiver::diagnostics() {
     std::lock_guard<std::mutex> l(mutex);
     ReceiverDiagnostics d;
+    audio_snapshot(packets,d);
+    d.accepted_video_packets=accepted_video_packets;
     d.queue_packets=packets.size();d.queue_bytes=bytes;
     d.peak_queue_packets=peak_packets;d.peak_queue_bytes=peak_bytes;
     d.video_queue_packets=video_packets;d.video_queue_bytes=video_bytes;
@@ -42,6 +61,8 @@ ReceiverDiagnostics Receiver::diagnostics() {
 ReceiverDiagnostics Receiver::queue_snapshot() {
     std::lock_guard<std::mutex> l(mutex);
     ReceiverDiagnostics d;
+    audio_snapshot(packets,d);
+    d.accepted_video_packets=accepted_video_packets;
     d.queue_packets=packets.size(); d.queue_bytes=bytes;
     d.video_queue_packets=video_packets; d.video_queue_bytes=video_bytes;
     d.dropped_packets=dropped_packets; d.dropped_video_frames=dropped_video_frames;
@@ -51,67 +72,10 @@ VideoTimingSample Receiver::take_video_timing() {
     std::lock_guard<std::mutex> l(mutex);
     return video_timing.take_window();
 }
-void Receiver::enqueue(bool video,unsigned codec,uint64_t time,const uint8_t *data,int size) {
-    if (!data || size<=0 || !time) return;
-    const size_t packet_limit=video?max_video_packet_bytes:size_t(1024*1024);
-    if (size_t(size)>packet_limit) {
-        std::lock_guard<std::mutex> l(mutex);
-        ++overflow;++dropped_packets;if(video)++dropped_video_frames;
-        fprintf(stderr,"[queue] oversized %s packet bytes=%d limit=%zu\n",video?"video":"audio",size,packet_limit);
-        reset=true;return;
-    }
-    const int64_t arrival=now_ns();
-    activity=arrival;
-    if(video) {last_video_arrival=arrival;++total_video_arrivals;}
-    if(!video) {
-        last_audio_arrival=arrival;
-        last_audio_codec=codec;
-        int64_t offset=int64_t(audio_delay_ms.load())*1000000;
-        if(offset<0 && time<uint64_t(-offset))return;
-        time=offset>=0?time+uint64_t(offset):time-uint64_t(-offset);
-    }
-    // Copy callback-owned memory before taking the A/V queue lock.
-    Packet p; p.video=video;p.codec=codec;p.timestamp=time;p.arrival_ns=arrival;
-    p.data.assign(data,data+size);
-    const int64_t copy_done=now_ns();
-    std::lock_guard<std::mutex> l(mutex);
-    const int64_t lock_acquired=now_ns();
-    ingress_copy.record(uint64_t(std::max<int64_t>(0,copy_done-arrival)));
-    queue_lock_wait.record(uint64_t(std::max<int64_t>(0,lock_acquired-copy_done)));
-    if(video) video_timing.record(time,arrival);
-    if (bytes+size>max_queue_bytes || packets.size()>=512) {
-        ++overflow;++dropped_packets;if(video)++dropped_video_frames;reset=true;return;
-    }
-    p.enqueued_ns=now_ns();
-    ingress_to_queue.record(uint64_t(std::max<int64_t>(0,p.enqueued_ns-arrival)));
-    bytes+=size; packets.push_back(std::move(p));
-    peak_packets=std::max(peak_packets,packets.size());peak_bytes=std::max(peak_bytes,bytes);
-    if(video) {
-        ++video_packets;video_bytes+=size;
-        peak_video_packets=std::max(peak_video_packets,video_packets);
-        peak_video_bytes=std::max(peak_video_bytes,video_bytes);
-    }
-}
-bool Receiver::pop(Packet& p,uint64_t latest) {
-    const int64_t pop_begin=now_ns();
-    std::lock_guard<std::mutex> l(mutex);
-    if(packets.empty()) return false;
-    // A/V callbacks arrive on different threads. Select the oldest presentation time.
-    auto i=std::min_element(packets.begin(),packets.end(),[](const Packet& a,const Packet& b){return a.timestamp<b.timestamp;});
-    if(i->timestamp>latest)return false;
-    p=std::move(*i);bytes-=p.data.size();packets.erase(i);
-    p.dequeued_ns=now_ns();
-    uint64_t residence=uint64_t(std::max<int64_t>(0,p.dequeued_ns-p.enqueued_ns));
-    if(p.video) {
-        --video_packets;video_bytes-=p.data.size();
-        video_queue_residence.record(residence);
-    } else audio_queue_residence.record(residence);
-    queue_pop.record(uint64_t(std::max<int64_t>(0,now_ns()-pop_begin)));
-    return true;
-}
-void Receiver::clear() { std::lock_guard<std::mutex> l(mutex);packets.clear();bytes=video_packets=video_bytes=0;pairing.reset();client.clear();video_timing.reset();ingress_to_queue.reset();ingress_copy.reset();queue_lock_wait.reset();queue_pop.reset();video_queue_residence.reset();audio_queue_residence.reset();last_video_arrival=0; }
+void Receiver::clear() { std::lock_guard<std::mutex> l(mutex);++transport_epoch;++audio_epoch;packets.clear();bytes=video_packets=video_bytes=0;accepted_video_packets=0;pairing.reset();client.clear();client_name.clear();video_timing.reset();ingress_to_queue.reset();ingress_copy.reset();queue_lock_wait.reset();queue_pop.reset();video_queue_residence.reset();audio_queue_residence.reset();last_video_arrival=0; }
 void Receiver::clear_audio_packets() {
     std::lock_guard<std::mutex> l(mutex);
+    ++audio_epoch;
     for(auto i=packets.begin();i!=packets.end();) {
         if(!i->video) { bytes-=i->data.size(); i=packets.erase(i); }
         else ++i;
@@ -157,11 +121,12 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
             r.enqueue(true,d->is_h265?2:0,d->ntp_time_remote,d->data,d->data_len);
     };
     cb.conn_feedback=[](void *p){self(p).activity=now_ns();};
-    cb.conn_reset=[](void *p,int reason){fprintf(stderr,"[session] transport reset reason=%d\n",reason);++self(p).session_resets;self(p).reset=true;};
-    cb.video_reset=[](void *p,reset_type_t reason){fprintf(stderr,"[session] video reset reason=%d\n",int(reason));++self(p).session_resets;self(p).reset=true;};
+    cb.conn_reset=[](void *p,int reason){self(p).request_reset(ResetOrigin::TransportCallback,reason);};
+    cb.video_reset=[](void *p,reset_type_t reason){self(p).request_reset(ResetOrigin::VideoCallback,int(reason));};
     cb.video_pause=[](void *p){self(p).paused=true;};
     cb.video_resume=[](void *p){self(p).paused=false;};
-    cb.audio_flush=[](void *p){Receiver& r=self(p);r.clear_audio_packets();r.audio_flush=true;};
+    cb.audio_flush=[](void *p){Receiver& r=self(p);r.clear_audio_packets();r.audio_flush=true;
+        fprintf(stderr,"[session] audio-flush epoch=%u\n",r.audio_epoch.load());};
     // UxPlay also calls video_flush for short-lived discovery HTTP connections.
     // The RTP lifecycle uses video_reset, so that is our session teardown boundary.
     cb.video_flush=[](void *){};
@@ -208,9 +173,39 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
     cb.mirror_video_running=[](void *p,bool running){self(p).mirror=running;};
     cb.report_client_request=[](void *p,char *id,char *model,char *name,bool *admit){
         Receiver& r=self(p);std::lock_guard<std::mutex> l(r.mutex);
-        *admit=id && (r.client.empty()||r.client==id);
+        *admit=id && !r.ingress.closing && (r.client.empty()||r.client==id);
         fprintf(stderr,"[client] model=%.80s admitted=%d\n",model?model:"unknown",int(*admit));
-        if(*admit) {r.client=id;r.message=std::string("Connecting: ")+(name?std::string(name).substr(0,80):"device");r.activity=now_ns();}
+        if(*admit) {r.ingress.admit();++r.stream_requests;r.client=id;r.client_name=name?std::string(name).substr(0,80):"";r.message=std::string("Connecting: ")+(name?std::string(name).substr(0,80):"device");r.activity=now_ns();}
+    };
+    cb.audio_set_metadata=[](void *p,const void *buffer,int length){
+        Receiver& r=self(p);NowPlaying m;
+        if(length<0 || !parse_now_playing(buffer,size_t(length),m))return;
+        std::lock_guard<std::mutex> l(r.meta_mutex);
+        // the cover is kept as it is: iOS sends a track's cover before its text
+        if(m.title!=r.meta.title||m.artist!=r.meta.artist)r.meta.track_ns=now_ns();
+        r.meta.title=m.title;r.meta.artist=m.artist;r.meta.album=m.album;++r.meta.generation;
+        fprintf(stderr,"[now-playing] %.60s - %.60s (%.60s)\n",m.artist.c_str(),m.title.c_str(),m.album.c_str());
+    };
+    cb.audio_set_coverart=[](void *p,const void *buffer,int length){
+        Receiver& r=self(p);
+        // Allocate on the sender callback, outside the metadata lock. Readers
+        // keep an immutable snapshot alive across replacement/disconnect.
+        std::shared_ptr<const std::vector<uint8_t>> cover;
+        const auto *bytes=static_cast<const uint8_t *>(buffer);
+        if(length>0 && artwork_supported(bytes,size_t(length)))
+            cover=std::make_shared<const std::vector<uint8_t>>(bytes,bytes+length);
+        std::lock_guard<std::mutex> l(r.meta_mutex);
+        r.meta.cover=std::move(cover);
+        r.meta.cover_ns=now_ns();++r.meta.cover_generation;++r.meta.generation;
+        fprintf(stderr,"[now-playing] cover %d bytes\n",length);
+    };
+    // Called when the sender tears its audio stream down - also when an iPhone
+    // locks and sets the stream up again without resending the cover. The
+    // cover stays; a track that arrives without one hides it (see main.cpp).
+    cb.audio_stop_coverart_rendering=[](void *){};
+    cb.audio_set_progress=[](void *p,uint32_t *start,uint32_t *current,uint32_t *end){
+        Receiver& r=self(p);std::lock_guard<std::mutex> l(r.meta_mutex);
+        if(start&&current&&end){r.meta.start=*start;r.meta.current=*current;r.meta.end=*end;r.meta.progress_ns=now_ns();++r.meta.generation;}
     };
     cb.display_pin=[](void *p,char *pin){Receiver& r=self(p);std::lock_guard<std::mutex> l(r.mutex);r.pairing.update_pin(pin?pin:"");r.message="Enter this code on your Apple device";};
     cb.passwd=[](void *,int *n)->const char *{*n=0;return nullptr;};
@@ -265,12 +260,16 @@ void Receiver::adjust_audio_delay(int delta) {
     }
 }
 void Receiver::disconnect() {
+    begin_close();
     if(raop) raop_remove_known_connections(raop);
-    clear(); has_audio=false;mirror=false;paused=false;reset=false;audio_flush=false;last_audio_arrival=0;incoming_video_codec=0;
+    clear(); has_audio=false;mirror=false;paused=false;audio_flush=false;last_audio_arrival=0;incoming_video_codec=0;
     audio_using_screen=false;audio_is_media=false;audio_samples_per_frame=audio_format=0;
+    {std::lock_guard<std::mutex> l(meta_mutex);const uint64_t g=meta.generation+1,c=meta.cover_generation+1;meta=NowPlaying();meta.generation=g;meta.cover_generation=c;}
+    {std::lock_guard<std::mutex> l(mutex);ingress.disconnected();}
     show("Waiting for a connection");
 }
 void Receiver::stop() {
+    begin_close();
     if(dnssd) {dnssd_unregister_airplay(dnssd);dnssd_unregister_raop(dnssd);}
     if(raop) {raop_destroy(raop);raop=nullptr;}
     if(dnssd) {dnssd_destroy(dnssd);dnssd=nullptr;}

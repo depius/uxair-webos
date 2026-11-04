@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Fetch pinned sources and the macOS ARM64 cross-toolchain; verify before extracting."""
+"""Fetch pinned sources and the cross-toolchain for this host (macOS ARM64 or
+Linux x86-64); verify before extracting."""
 import hashlib
 import json
 import pathlib
+import platform
 import subprocess
 import sys
 
@@ -13,9 +15,21 @@ LOCK = json.loads((ROOT / 'dependencies.lock.json').read_text())
 def run(*args, **kw):
     subprocess.run(args, check=True, **kw)
 
+def host_toolchain():
+    if platform.system() == 'Linux' and platform.machine() == 'x86_64':
+        return 'toolchain-linux-x86_64'
+    if platform.system() == 'Darwin' and platform.machine() == 'arm64':
+        return 'toolchain'
+    sys.exit('Unsupported build host: use Linux x86-64 (including WSL2) or macOS ARM64 with the pinned webOS ARM SDK.')
+
 def main():
+    toolchain = host_toolchain()
     CACHE.mkdir(exist_ok=True)
     for name, item in LOCK.items():
+        if name.startswith('toolchain'):
+            if name != toolchain:
+                continue
+            name = 'toolchain'
         if name == 'uxplay':
             target = ROOT / 'vendor' / 'uxplay'
             embedded = ROOT / 'upstream-uxplay-source.tar'

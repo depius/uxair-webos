@@ -5,9 +5,14 @@
 
 UxAir is a native AirPlay mirroring receiver for compatible rooted LG webOS TVs, based on the open-source UxPlay project. It is an independent community project and is not affiliated with or endorsed by Apple or LG. UxAir is compatible with AirPlay; AirPlay is an Apple trademark.
 
-## Status
+## UxAir 1.2.0
 
-UxAir 1.1.0 is officially released. It has been tested on an LG OLED B7 (2017) running rooted webOS 3.9. Tested on LG OLED B7 (2017) running rooted webOS 3.9. Other LG webOS models may be compatible but have not yet been verified. HDR10/Main10 is not supported. Native 4K output-plane resolution and displayed FPS are not measured by this application.
+| TV software | Choose this package | Support |
+| --- | --- | --- |
+| webOS 3–4 | `UxAir-1.2.0-webOS3-4-Starfish.ipk` | **Stable**. The owner accepted the Starfish candidate at `9af36d1b2e3902bfa26ab349140af394b3b95a3f` on an LG OLED B7 running webOS 3.9. |
+| webOS 5+ | `UxAir-1.2.0-webOS5plus-NDL-Beta.ipk` | **Public Beta / Experimental**. The current build has no physical hardware validation. |
+
+Both packages use `com.github.depius.uxair`. Choose one for the TV's webOS version. The earlier C4/webOS 10.3.1 results apply to ALQU-IT's original NDL contribution. See the [B7 acceptance record](docs/B7_FINAL_TEST.md), [NDL port notes](docs/PORT-WEBOS10.md) and [Beta reporting guide](docs/NDL_BETA_TESTING.md).
 
 ## Features
 
@@ -25,17 +30,17 @@ UxAir 1.1.0 is officially released. It has been tested on an LG OLED B7 (2017) r
 
 The iPhone, iPad, or Mac selects the actual AirPlay codec and rate. Selecting HEVC advertises HEVC alongside H.264; it cannot force a sender that chooses H.264. Direct Photos playback is distinct from Photos or video shown by mirroring. Direct Photos/video, HLS, AirPlay 2, HDR/Main10, and native 4K scanout are not supported or verified.
 
-Starting with UxAir 1.1.0, a fresh installation defaults to H.264 at 1920×1080 and 30 FPS. Valid saved profiles from earlier UxAir builds are retained across upgrades. Automatic decoder recovery is temporary for that run and does not replace the saved preference.
+In UxAir 1.2.0, a fresh installation defaults to H.264 at 1920×1080 and 30 FPS. Valid saved profiles from earlier UxAir builds are retained across upgrades. Automatic decoder recovery is temporary for that run and does not replace the saved preference.
 
 ## Screenshots
 
-### UxAir 1.1 interface
+### Development interface (captured before the 1.2.0 release)
 
 ![UxAir promotional image](screenshots/uxair-marketing.png)
 
-![UxAir 1.1 video settings](screenshots/uxair-video.png)
+![UxAir video settings](screenshots/uxair-video.png)
 
-![UxAir 1.1 history dashboard](screenshots/uxair-history.png)
+![UxAir history dashboard](screenshots/uxair-history.png)
 
 
 ## Hardware and requirements
@@ -43,38 +48,32 @@ Starting with UxAir 1.1.0, a fresh installation defaults to H.264 at 1920×1080 
 - A compatible rooted LG webOS TV with native application development enabled.
 - A TV and sender on the same local network with multicast/mDNS discovery available.
 - Tested on LG OLED B7 (2017) running rooted webOS 3.9. Other LG webOS models may be compatible but have not yet been verified.
+- The current NDL package is Beta/Experimental and physically unvalidated. The contributor reported earlier C4/webOS 10.3.1 testing before these shared follow-ups.
 - The ARMv7 build uses the pinned webOS Brew toolchain. CI performs host tests and builds/validates the ARMv7 IPK.
 
 ## Install and use
 
-### Download UxAir
+### Download and install
 
-**Download the latest official UxAir release:** [GitHub Releases — latest version](https://github.com/depius/uxair-webos/releases/latest). Open the release's **Assets** section and download the ARMv7 `.ipk` installer (currently `com.github.depius.uxair_1.1.0_arm.ipk`). The same page includes release notes, the corresponding source archive, and `SHA256SUMS` for checksum verification.
+On [GitHub Releases](https://github.com/depius/uxair-webos/releases), look for version 1.2.0 and select the IPK for your webOS version from the table above. Match its SHA-256 against the release's `SHA256SUMS` before installing. If 1.2.0 is absent, publication is still pending. See [security hardening details](docs/SECURITY_HARDENING.md).
 
-Install UxAir on a compatible rooted LG webOS TV with native app installation enabled. Keep the TV and Apple device on the same local network with multicast/mDNS discovery available.
-
-### Method 1 — webOS Dev Manager (Recommended)
-
-1. Install [webOS Dev Manager](https://github.com/webosbrew/dev-manager).
-2. Connect a compatible rooted LG webOS TV.
-3. Download the UxAir `.ipk` package.
-4. Use webOS Dev Manager's application installation functionality to select the downloaded IPK.
-5. Install and launch UxAir on the television.
-6. Select UxAir from the AirPlay / Screen Mirroring menu on an Apple device.
-7. Enter the pairing PIN if requested.
-
-For standalone music playback, select UxAir as the AirPlay audio output.
-
-### Method 2 — webOS CLI
-
-Use this method if you already have the webOS CLI installed and `YOUR_TV` configured as a target device. Download the latest `.ipk` first and replace the filename below if your downloaded version differs:
+With the webOS CLI and a configured target named `YOUR_TV`, run the install command for your package:
 
 ```sh
-ares-install -d YOUR_TV com.github.depius.uxair_1.1.0_arm.ipk
-ares-launch -d YOUR_TV com.github.depius.uxair
+# webOS 3–4: Starfish Stable
+ares-install -d YOUR_TV UxAir-1.2.0-webOS3-4-Starfish.ipk
+
+# webOS 5+: NDL Beta
+ares-install -d YOUR_TV UxAir-1.2.0-webOS5plus-NDL-Beta.ipk
 ```
 
-Open UxAir, select it from Screen Mirroring, and enter the pairing PIN when prompted. Pairing credentials and settings are private to the UxAir app ID.
+Launch with `ares-launch -d YOUR_TV com.github.depius.uxair`. Select UxAir from Screen Mirroring or as the AirPlay audio output. Enter the PIN if prompted. Beta testers can report their TV model, webOS version and sanitized logs using the [Beta reporting guide](docs/NDL_BETA_TESTING.md).
+
+[webOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop) also supports installing a local IPK. If its Homebrew preflight stalls on the B7, use the CLI path. The CLI was verified on the earlier B7 baseline. See the [installer investigation](docs/B7_BRANCH_FINAL_REVIEW.md).
+
+### Upgrading UxAir 1.0.0 or 1.1.0
+
+Back up private state, then install over the existing app with the same backend and application ID. Uninstalling can delete app-local state. An NDL installation with legacy app-local identity and no var/lib state requires a reviewed migration to retain the existing keys.
 
 ### Migrating from UxPlay webOS development builds
 
@@ -83,7 +82,7 @@ UxAir uses the new ID `com.github.depius.uxair`. It installs alongside the exist
 ## Remote and configuration
 
 - Left/Right changes the Video, Audio, History, Diagnostics, and About sections.
-- Up/Down focuses rows; OK opens or confirms a choice; Back cancels a dialog or pairing attempt, returns from playback to the UI, or exits from the idle screen.
+- Up/Down focuses rows; OK opens or confirms a choice; Back cancels a dialog or pairing attempt and returns from playback to the UI. Starfish remote Exit terminates; background operation defaults off. NDL defaults to background/discoverable behavior and still needs physical validation.
 - During playback, OK opens diagnostics and Back returns to video.
 - Set audio delay before connecting; positive values delay the TV audio.
 - Choose 30 or 60 FPS as the advertised maximum. The sender may use a lower rate.
@@ -91,19 +90,19 @@ UxAir uses the new ID `com.github.depius.uxair`. It installs alongside the exist
 
 ## Build from source
 
-UxAir is primarily written in C++. ARMv7 IPK builds require a compatible cross-compilation environment. The verified target-build path uses Apple Silicon macOS with the pinned webOS toolchain and webOS CLI. Native regression tests can also run on Ubuntu Linux with the development dependencies listed in [the full development guide](docs/DEVELOPMENT.md).
-
-The following commands are for a prepared environment with the required platform-specific dependencies; they are not expected to work on every operating system without setup:
+Use Linux x86-64 (including supported WSL2 Ubuntu) or macOS ARM64 with the checksum-pinned SDK. See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for full host prerequisites and locked, script-free packaging-tool setup.
 
 ```sh
 python3 tools/validate-metadata.py
 tools/test.sh
-tools/build.sh
+tools/build.sh --media=starfish
+python3 tools/validate-ipk.py
+tools/build.sh --media=ndl
 python3 tools/validate-ipk.py
 tools/source-package.py
 ```
 
-The development guide documents the pinned toolchain, ARM32 soft-float ABI, GLIBC compatibility, ELF validation, source packaging, reproducibility, and GPL corresponding-source obligations. The source archive includes the exact application source and pinned upstream/dependency sources. CI validation does not replace physical TV testing.
+Validate each target before the next build changes staging. CI runs host sanitizers and both ARM targets. See the [release procedure](docs/RELEASING.md) for artifact provenance, checksums and approval gates.
 
 ## Known limitations and troubleshooting
 
@@ -120,6 +119,7 @@ This project builds on the excellent work of:
 
 - **UxPlay by FDH2** — the original open-source AirPlay mirroring server.
 - [**uxplay-webOS by Daniel Filho (@danlflh)**](https://github.com/danlflh/uxplay-webos) — the original webOS port.
+- [**ALQU-IT**](https://github.com/depius/uxair-webos/pull/10) — the NDL DirectMedia port and its initial C4 testing.
 
 UxAir extends this foundation with additional features, performance improvements, and a redesigned interface. Development and adaptation: [@depius](https://github.com/depius). This repository is [depius/uxair-webos](https://github.com/depius/uxair-webos) (formerly `uxplay-webos`). UxAir is licensed under [GPL-3.0-or-later](LICENSE); corresponding sources, upstream attribution, and third-party notices are preserved in [THIRD_PARTY.md](THIRD_PARTY.md).
 

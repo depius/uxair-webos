@@ -27,6 +27,14 @@ struct UiDialog {
     int selected = 0;
     int current = -1;
 };
+// The Now Playing screen during audio-only AirPlay.
+struct NowPlayingView {
+    std::string title, artist, album, source;
+    const std::vector<uint8_t> *cover = nullptr;   // JPEG/PNG, may be empty
+    uint64_t cover_generation = 0;
+    double elapsed_s = 0, duration_s = 0;           // duration 0: no progress bar
+    float brightness = 1;                           // 1 full, lower when idle (OLED)
+};
 enum class UiHitKind { None, Category, Row, DialogChoice, Cancel };
 struct UiHit {
     UiHitKind kind; int index;
@@ -47,6 +55,7 @@ public:
               const std::string& footer, const UiDialog *dialog = nullptr,
               const std::string& pin = std::string(), bool donation_open = false, const UiHistoryData *history = nullptr);
     void overlay(const std::vector<std::string>& lines, const std::string& pin = std::string());
+    bool now_playing(const NowPlayingView& view);   // true while the title scrolls (redraw often)
     void transparent();
     ~Shell();
 private:
@@ -56,7 +65,15 @@ private:
     int pointer_x_ = 0, pointer_y_ = 0;
     bool pointer_valid_=false,pointer_moved_=false;
     _TTF_Font *font_=nullptr, *large_=nullptr, *small_=nullptr, *pin_font_=nullptr, *pin_font_small_=nullptr;
+    _TTF_Font *np_title_=nullptr, *np_artist_=nullptr, *np_album_=nullptr;
     SDL_Texture *donation_qr_=nullptr,*donation_icon_=nullptr;
+    SDL_Texture *cover_=nullptr;          // decoded cover of cover_generation_
+    uint64_t cover_generation_=~uint64_t(0);
+    SDL_Color cover_tint_={29,45,71,255}; // the cover's average colour
+    SDL_Texture *title_=nullptr;          // the rendered title, scrolled when too wide
+    std::string title_text_;
+    int title_w_=0,title_h_=0;
+    Uint32 title_since_=0;
     void text(const std::string&,int y,_TTF_Font*,SDL_Color);
     void text_at(const std::string&,int x,int y,int max_width,_TTF_Font*,SDL_Color);
     void draw_history(const UiHistoryData&,const std::vector<UiRow>&,int,int,int,int);
@@ -65,5 +82,6 @@ private:
 };
 int64_t now_ns();
 std::string app_directory();
-void start_log(const char *name);
+std::string data_directory();
+bool start_log(const char *name);
 void rotate_log();

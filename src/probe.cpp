@@ -10,7 +10,7 @@ static bool read_frame(FILE *f, std::vector<unsigned char>& bytes) {
     bytes.resize(n); return fread(bytes.data(),1,n,f) == n;
 }
 int main() {
-    start_log("probe.log");
+    if(!start_log("probe.log"))return 1;
     const char *id = getenv("APPID"); if (!id) id = "com.github.depius.uxair.probe";
     Shell shell;
     if (!shell.open()) return 1;

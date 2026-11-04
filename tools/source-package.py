@@ -7,6 +7,13 @@ import tarfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
+def source_member(info):
+    # Locked host packaging tools are build inputs, not corresponding app source.
+    if any(part in ('node_modules', '__pycache__') for part in pathlib.PurePosixPath(info.name).parts) or info.name.endswith('.pyc'):
+        return None
+    return info
+
+
 def main():
     lock=json.loads((ROOT/'dependencies.lock.json').read_text())
     version=json.loads((ROOT/'packaging/appinfo.json').read_text())['version']
@@ -20,7 +27,7 @@ def main():
                         '--prefix=uxplay/',lock['uxplay']['commit']],stdout=out,check=True)
     with tarfile.open(destination,'w:gz') as archive:
         for name in ['src','tools','tests','assets','packaging','docs','CMakeLists.txt','dependencies.lock.json','README.md','CHANGELOG.md','THIRD_PARTY.md','LICENSE','.github']:
-            archive.add(ROOT/name,arcname='uxair-webos/'+name,filter=lambda info:None if '__pycache__' in info.name or info.name.endswith('.pyc') else info)
+            archive.add(ROOT/name,arcname='uxair-webos/'+name,filter=source_member)
         for name in ['openssl','libplist','ffmpeg']:
             filename=lock[name]['archive']
             archive.add(ROOT/'.cache'/filename,arcname='uxair-webos/.cache/'+filename)
