@@ -16,7 +16,7 @@ Starfish is Stable for webOS 3–4. The owner accepted the exact Starfish build 
 - Bound production sender-controlled allocations before use, validate allocation failures, reduce package-internal writable permissions, lock packaging dependencies and disable npm lifecycle scripts.
 - NDL-only callback retirement waits for active dispatch and rejects retired session identities; checked window binding/placement and partial Load cleanup; failed Unload/Quit prevents unsafe reuse. A finite 1024-Load callback-identity budget requires process restart rather than recycling identities without a vendor quiescence guarantee.
 - Preserve the production app ID and existing settings/pairing paths and formats. Refuse silent NDL identity replacement when legacy app-local state needs migration.
-- The historical browser Malware verdict remains unresolved. See the [security findings](docs/SECURITY_HARDENING.md).
+- Security hardening and remaining technical limitations are documented in [SECURITY_HARDENING.md](docs/SECURITY_HARDENING.md).
 
 ### Added
 
