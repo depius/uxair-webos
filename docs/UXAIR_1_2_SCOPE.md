@@ -45,13 +45,13 @@ Expected separate packages are `com.github.depius.uxair_1.2.0_arm-webos3-4.ipk` 
 
 ## Integration and publication
 
-Follow the [release procedure](RELEASING.md). The original PR #10 head is an ancestor. Integrating the complete branch with a merge commit preserves contributor history and can mark PR #10 merged indirectly. Keep PR #9 outside this release. The security hold and owner approval govern integration and publication.
+Follow the [release procedure](RELEASING.md). The original PR #10 head is an ancestor. Integrating the complete branch with a merge commit preserves contributor history and can mark PR #10 merged indirectly. Keep PR #9 outside this release. Owner approval and the release procedure govern integration and publication.
 
 ## Outstanding security
 
 See [SECURITY_HARDENING.md](SECURITY_HARDENING.md) and [PACKAGING_DEPENDENCY_AUDIT.md](PACKAGING_DEPENDENCY_AUDIT.md). Writable platform-managed ancestors, remaining upstream malformed-media parsing, partial loader hardening and incomplete build attestation remain documented. The host CLI audit reports 18 affected package entries (including a conditional server-oriented critical advisory); package-only CI does not establish their exploitability or repair them.
 
-The original dc3fe475 ZIP has SHA-256 `cec8ec73fb66bd4c0f1abfd59e82fd0d1111a4aa7b02d6e5e9d6b3e8767ebb70`. Firefox's Malware verdict remains unresolved, Defender scans were clean, and no verified vendor analyst verdict/case reference has been supplied. Neither confirmed malware nor confirmed false positive is established. Preserve the original sample and browser protections. The historical scope decision authorized no distribution; the later owner request explicitly authorizes temporary TEST candidates only, as described in RELEASING.md.
+The development scope was completed before the owner's authorization of final integration. See RELEASING.md for the current approval and publication procedure.
 
 ## Previous automated acceptance
 
