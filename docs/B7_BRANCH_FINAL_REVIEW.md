@@ -6,13 +6,13 @@ This review records the B7 development and validation history. For current statu
 
 Baseline `148bc9616f3edfff3d63ec6181f081322d1017fd` passed the owner's 30-minute test: repeated orientation and resolution changes, video, photos, mirroring and audio, with no observed errors. Earlier tests confirmed saved 4K/60 HEVC, pairing, settings, music/Now Playing, photos with background music, sender TEARDOWN classification and remote Exit. Displayed FPS/native 4K scanout and every individual negotiated audio codec were not independently measured.
 
-The hardening/version commits are later source and need renewed acceptance before an authorized final candidate. NDL is **Beta / Experimental; no physical validation of the current 1.2.0 build has been performed**. The owner has no compatible TV; NDL hardware testing is deferred, not a development-scope or Starfish-release prerequisite. [UXAIR_1_2_SCOPE.md](UXAIR_1_2_SCOPE.md) is the final maturity/NDL review and closure policy. The contributor's C4/webOS 10.3.1 report at `8526f8d5547709eec43c7993e1243f20f93ae2a3` applies only to that earlier source.
+The hardened 1.2.0 candidate was subsequently accepted by the owner; see [B7_FINAL_TEST.md](B7_FINAL_TEST.md). NDL is **Beta / Experimental; no physical validation of the current 1.2.0 build has been performed**. The owner has no compatible TV; NDL hardware testing is deferred, not a development-scope or Starfish-release prerequisite. [UXAIR_1_2_SCOPE.md](UXAIR_1_2_SCOPE.md) is the final maturity/NDL review and closure policy. The contributor's C4/webOS 10.3.1 report at `8526f8d5547709eec43c7993e1243f20f93ae2a3` applies only to that earlier source.
 
 ## 2. Security disposition
 
 [SECURITY_HARDENING.md](SECURITY_HARDENING.md) separates implemented changes and remaining risks. Production sender-controlled allocations are now bounded before allocation; allocation failure is handled; package-internal writable modes are reduced; CLI inputs are locked and lifecycle scripts disabled; source archives exclude installed host npm executables. The B7 container exception, HEVC parser/scheduling, RAOP/UI/media behavior and existing limits are retained.
 
-The world-writable managed installation ancestor remains an incomplete local-attacker boundary. Malformed upstream media parsing still requires a dedicated review. Runner/OS inputs are not fully reproducible or independently attested. The locked host CLI graph also retains 18 audit-flagged package entries, including a conditional server-oriented critical advisory; [the separate assessment](PACKAGING_DEPENDENCY_AUDIT.md) records why package-only CI does not establish exploitability or a fix. The original dc3fe475 ZIP Firefox Malware verdict remains unresolved, with no verified vendor analyst outcome. No clean scan or these changes establishes a false positive. These remain release decision inputs.
+The world-writable managed installation ancestor remains an incomplete local-attacker boundary. Malformed upstream media parsing still requires a dedicated review. Runner/OS inputs are not fully reproducible or independently attested. The locked host CLI graph also retains 18 audit-flagged package entries, including a conditional server-oriented critical advisory; [the separate assessment](PACKAGING_DEPENDENCY_AUDIT.md) records why package-only CI does not establish exploitability or a fix. These remain release decision inputs.
 
 NDL's legacy upgrade path now refuses startup if app-local state exists but var/lib state does not. It leaves old keys/settings intact and never silently initializes a new identity. Secure cross-backend migration is not implemented; approval and physical validation are required before attempting it.
 
@@ -41,7 +41,7 @@ Known cross-backend regression surfaces are NDL late callbacks during rapid reop
 
 ## 5. Integration recommendation (not executed)
 
-1. Keep the validated baseline commit and this isolated branch/history intact while the security decision and integration approval are pending. Do not merge now.
+1. Keep the validated baseline commit and this isolated branch/history intact while integration approval was pending. Do not merge now.
 2. After the owner approves the exact final commit, integrate this reviewed foundation once, retaining contributor attribution and the complete dependency chain. The original five PR #10 commits (`60e30c8` through `8526f8d`) are already ancestors of this branch. Do not merge/cherry-pick the NDL implementation a second time or apply only the final B7 scheduling commit over main.
 3. Prefer a single reviewed foundation integration over selecting isolated runtime hunks. If selective integration is required, first take the original build/backend foundation, then all B7 storage/lifecycle/FLUSH/header/cadence/reset/ingress fixes in original order through 148bc961, followed by the minimal security and version commits and their tests. Re-run the entire matrix and the Starfish physical gate and NDL Beta disclosure on the resulting history. The temporary c894a17 TEST workflow and its removal need not be recreated in a selective sequence.
 4. Once that foundation is approved/integrated, future NDL work should branch/rebase onto the new shared main. The current contributor NDL head itself requires no reapplication: it has no commits beyond the included 8526f8d in the inspected PR. Coordinate later changes on a separate branch; do not rewrite the contributor's current PR branch as part of this task.
@@ -68,7 +68,7 @@ Expected files: com.github.depius.uxair_1.2.0_arm-webos3-4.ipk and com.github.de
 
 ## 7. Remaining release gates
 
-- Independent assessment of the unchanged browser-flagged ZIP, with a verifiable case reference and outcome; explicit acceptance of remaining security risks.
+- Explicit review and acceptance of remaining technical security risks.
 - The owner accepted the exact final Starfish test build. See the [acceptance record](B7_FINAL_TEST.md).
 - Deferred optional NDL Beta hardware follow-up (not a 1.2.0 closure gate): installed-app startup/window binding, H.264/HEVC portrait/4K and repeated reopens, audio-only and music/photo coexistence, FLUSH/resume, volume/mute, rapid handoffs, sender TEARDOWN/failures/late callbacks, foreground/background/screensaver/Exit, var/lib persistence, fresh installation and upgrades. Legacy app-local state requires an explicitly reviewed migration, not new keys.
 - Owner approval of the final integration, tag and publication. No merge, worktree deletion, PR closure, release or new artifact distribution was performed here.
@@ -77,19 +77,19 @@ Expected files: com.github.depius.uxair_1.2.0_arm-webos3-4.ipk and com.github.de
 
 Allocation/package hardening `ddfd984f280c1b0172ccf027ca4209410147402a`: [full Validate](https://github.com/depius/uxair-webos/actions/runs/41545391122) and [both ARM backends](https://github.com/depius/uxair-webos/actions/runs/41545391012) passed. Both logs show the generated bounded sources compiled, correct separate media libraries, max required GLIBC 2.7 and IPK permission/content checks. No artifacts were uploaded.
 
-Legacy-identity guard `b8fced2747125786a513e2896adbf0be1d948585`: [full Validate](https://github.com/depius/uxair-webos/actions/runs/41545999553) and [both ARM backends](https://github.com/depius/uxair-webos/actions/runs/41545999493) passed before application version metadata was changed. The subsequent 1.2.0 metadata/documentation commit changes no runtime media or persistence code and must pass the same workflow matrix on its own exact SHA before candidate preparation. This report's release hold and physical gates remain in force after CI success.
+Legacy-identity guard `b8fced2747125786a513e2896adbf0be1d948585`: [full Validate](https://github.com/depius/uxair-webos/actions/runs/41545999553) and [both ARM backends](https://github.com/depius/uxair-webos/actions/runs/41545999493) passed before application version metadata was changed. The subsequent 1.2.0 metadata/documentation commit changes no runtime media or persistence code and must pass the same workflow matrix on its own exact SHA before candidate preparation. At that stage, separate release approval and final physical acceptance were still pending.
 
 ## Final 1.2.0 automated validation
 
 Code/metadata commit `d27fe4e840a2438378cbb862747ff03a906e0367` passed [full sanitizers and cross-UID storage validation](https://github.com/depius/uxair-webos/actions/runs/41546997117) and [separate Starfish/NDL ARMv7 builds](https://github.com/depius/uxair-webos/actions/runs/41546997122). Both 1.2.0 IPKs passed package identity/content/permission checks and ELF validation, with max required GLIBC 2.7 <=2.19. Starfish linked libplayerAPIs/libAcbAPI; NDL linked libNDL_directmedia. GitHub's artifact listing is empty. No candidate is distributed.
 
-The subsequent remaining-advisory/report commit is documentation-only; runtime source, build logic, dependency graph and app metadata are byte-identical to d27fe4e. Physical acceptance and the security-release hold are unchanged by these CI results.
+The subsequent remaining-advisory/report commit is documentation-only; runtime source, build logic, dependency graph and app metadata are byte-identical to d27fe4e. These earlier CI results did not themselves establish final physical acceptance.
 
 ## Final owner-approved development scope
 
 The 2026-11-03 [scope decision and NDL source review](UXAIR_1_2_SCOPE.md) supersede the former NDL hardware gate: Starfish is the Stable target with final B7 acceptance recorded separately; NDL is Beta/Experimental with no current-build physical validation. The owner has no webOS 5+ TV, so NDL hardware testing is deferred rather than required for this scope's completion. The subsequently authorized [NDL lifecycle correction](NDL_LIFECYCLE_FIX.md) replaces the confirmed unchecked paths and unsafe callback reuse; vendor quiescence and firmware behavior remain unverified. The newer TEST-artifact authorization is documented in RELEASING.md.
 
-Revision 03242d26ec6a5aba7b2c84f93f8ec75a131339d7 passed [full sanitizer validation](https://github.com/depius/uxair-webos/actions/runs/41668703529) and [both same-revision ARM package builds](https://github.com/depius/uxair-webos/actions/runs/41668703360), including the new actual-source NDL tests with mocked APIs. No production source was changed by this scope-finalization step, and no artifacts were uploaded. Main integration, PR/branch closure and release publication still require explicit owner approval; the security release hold remains active.
+Revision 03242d26ec6a5aba7b2c84f93f8ec75a131339d7 passed [full sanitizer validation](https://github.com/depius/uxair-webos/actions/runs/41668703529) and [both same-revision ARM package builds](https://github.com/depius/uxair-webos/actions/runs/41668703360), including the new actual-source NDL tests with mocked APIs. No production source was changed by this scope-finalization step, and no artifacts were uploaded. Main integration, PR/branch closure and release publication still require explicit owner approval; release approval remained pending at that stage.
 
 ## Final candidate preparation update
 
