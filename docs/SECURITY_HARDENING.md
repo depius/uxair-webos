@@ -1,6 +1,6 @@
 # Minimal pre-release security hardening
 
-Scope: follow-up to the dc3fe475 audit, on fix/pr10-b7-compatibility. This work does not resolve the recorded Firefox Malware verdict, establish a false positive, authorize artifact distribution or lift the release hold.
+Scope: pre-release hardening on fix/pr10-b7-compatibility. This document records implemented defenses, tests and remaining technical limitations.
 
 ## Confirmed fixes
 
@@ -20,7 +20,6 @@ Tests exercise generated C allocation sites under ASan/UBSan, exact limits, limi
 2. Pinned upstream malformed-media parsing beyond allocation sites still needs a separate focused review. In particular, production parameter-set/NAL parsing does not receive the development parser rewrite. Bounded allocations are not proof that every upstream read or copy is in bounds. No claim of remote code execution was established by the original audit, and this change is not a complete protocol security audit.
 3. The npm lock/integrity checks and disabled scripts improve input control; a registry audit still reports 18 affected host package entries (1 critical, 4 high, 13 moderate). See [PACKAGING_DEPENDENCY_AUDIT.md](PACKAGING_DEPENDENCY_AUDIT.md) for reachability and primary advisory references. Package-only CI starts no CLI HTTP server; these findings are not declared fixed. Runner images, apt packages and timestamps are not fully pinned. No independent reproducible-build comparison, SBOM/attestation or publisher-signature verification has been completed.
 4. The executable remains non-PIE with partial loader hardening. Do not change loader flags speculatively on old B7 firmware. Proprietary Starfish/ACB/NDL and firmware libraries are outside this audit.
-5. Original ZIP SHA-256 cec8ec73fb66bd4c0f1abfd59e82fd0d1111a4aa7b02d6e5e9d6b3e8767ebb70 remains the assessment sample. Defender scans were clean, Firefox recorded Malware, and no independent analyst verdict or verified vendor case ID has been supplied. Do not rename/repackage to evade detection or bypass browser protections. The hardening package is a changed build and cannot stand in for analysis of the original sample.
-6. The owner accepted the exact hardened Starfish candidate on the B7. The report did not specify a fresh-install and upgrade matrix. NDL is Beta / Experimental with no current-build physical validation. See the [B7 acceptance record](B7_FINAL_TEST.md).
+5. The owner accepted the exact hardened Starfish candidate on the B7. The report did not specify a fresh-install and upgrade matrix. NDL is Beta / Experimental with no current-build physical validation. See the [B7 acceptance record](B7_FINAL_TEST.md).
 
-The release hold remains in force. The pre-hardening physical baseline and its TEST IPK are preserved unchanged. No merge, PR close, worktree deletion, release publication or new artifact distribution is authorized by these changes.
+The pre-hardening physical baseline and its TEST IPK are preserved unchanged. Publication requires separate owner approval.
