@@ -5,6 +5,8 @@
 
 UxAir is a native AirPlay mirroring receiver for compatible rooted LG webOS TVs, based on the open-source UxPlay project. It is an independent community project and is not affiliated with or endorsed by Apple or LG. UxAir is compatible with AirPlay; AirPlay is an Apple trademark.
 
+UxAir is officially released and has been tested on an LG OLED B7 (2017) running webOS 3.9. Support for newer webOS versions is available as a public Beta.
+
 ## Downloads and compatibility
 
 | TV software | Choose this package | Support |
