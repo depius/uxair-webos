@@ -1,6 +1,6 @@
 # Packaging CLI dependency audit (2026-11-03)
 
-Scope: the unchanged locked host-only `@webos-tools/cli` 3.2.6 graph used to package UxAir 1.2.0. This is separate from the ARM application dependency manifest and from the unresolved browser Malware verdict.
+Scope: the unchanged locked host-only `@webos-tools/cli` 3.2.6 graph used to package UxAir 1.2.0. This is separate from the ARM application dependency manifest.
 
 A read-only `npm audit --prefix tools/webos-cli --omit=dev --json` returned exit 1 and 18 affected package entries: 1 critical, 4 high, 13 moderate. These counts include transitive/meta-vulnerability propagation, not 18 demonstrated exploitable paths. The graph includes the CLI publisher's nested shrinkwrap and bundled tooling. Raw output is retained locally in ignored `build/packaging-tools-audit.json` and contains no application state or credentials.
 
@@ -13,6 +13,6 @@ A read-only `npm audit --prefix tools/webos-cli --omit=dev --json` returned exit
 
 Primary maintainer advisories: [proxy-addr](https://github.com/jshttp/proxy-addr/security/advisories/GHSA-jqcg-44mw-7w3h), [body-parser](https://github.com/expressjs/body-parser/security/advisories/GHSA-27r3-jxmh-p828). The local registry audit also records the brace-expansion/js-yaml advisory identifiers and affected nodes. Source trace: CLI bin/ares-package.js, lib/package.js and lib/base/common-tools.js versus lib/base/server.js:37-63.
 
-Disposition: retain the stable CLI version and exact integrity-pinned graph for this minimal branch, with lifecycle scripts disabled and no server commands in CI. Locking dependencies improves repeatability; it does not repair their vulnerabilities or attest benignness. The CLI and node_modules are excluded from both the TV IPK and corresponding-source archive; only package/lock manifests are retained in source. These host advisories do not identify the file that caused Firefox's earlier Malware verdict.
+Disposition: retain the stable CLI version and exact integrity-pinned graph for this minimal branch, with lifecycle scripts disabled and no server commands in CI. Locking dependencies improves repeatability; it does not repair their vulnerabilities or attest benignness. The CLI and node_modules are excluded from both the TV IPK and corresponding-source archive; only package/lock manifests are retained in source. These host advisories concern host packaging tools, not the TV runtime.
 
-A future change may update or reduce host packaging dependencies after targeted compatibility tests on both archive construction paths; that work must not be mixed with a speculative media/backend refactor. The existing release hold and explicit acceptance of remaining security risks remain required.
+A future change may update or reduce host packaging dependencies after targeted compatibility tests on both archive construction paths; that work must not be mixed with a speculative media/backend refactor. Review the remaining risks as part of normal release approval.
