@@ -1,5 +1,7 @@
 # B7 HEVC capacity investigation
 
+> Historical investigation. See the [final B7 acceptance record](B7_FINAL_TEST.md) for current status.
+
 Baseline: dc3fe475845acae0afa32d999f783e9a0e72a623. Input: the complete
 uxair-capacity.log, inspected as diagnostic data, including interleaved stderr.
 No private Now Playing titles or full user log are published here.

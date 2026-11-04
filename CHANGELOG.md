@@ -4,9 +4,9 @@ All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.0] - Unreleased; security hold active
+## [1.2.0]
 
-Version 1.1.0 was internal development/testing. This is the next planned official minor release after 1.0.0; no public 1.2.0 release is approved. Temporary TEST candidates are authorized for final Starfish validation and NDL Beta preparation.
+Starfish is Stable for webOS 3–4. The owner accepted the exact Starfish build at `9af36d1b2e3902bfa26ab349140af394b3b95a3f` on an LG OLED B7 with webOS 3.9. NDL for webOS 5+ is Public Beta / Experimental with no current-build physical validation. The 1.1.0 development series and its [published GitHub release](https://github.com/depius/uxair-webos/releases/tag/v1.1.0) remain part of the project history.
 
 ### Compatibility and security
 
@@ -16,7 +16,7 @@ Version 1.1.0 was internal development/testing. This is the next planned officia
 - Bound production sender-controlled allocations before use, validate allocation failures, reduce package-internal writable permissions, lock packaging dependencies and disable npm lifecycle scripts.
 - NDL-only callback retirement waits for active dispatch and rejects retired session identities; checked window binding/placement and partial Load cleanup; failed Unload/Quit prevents unsafe reuse. A finite 1024-Load callback-identity budget requires process restart rather than recycling identities without a vendor quiescence guarantee.
 - Preserve the production app ID and existing settings/pairing paths and formats. Refuse silent NDL identity replacement when legacy app-local state needs migration.
-- Browser Malware assessment remains unresolved. The physical B7 baseline at 148bc961 passed; hardened/versioned candidates require renewed hardware acceptance before release.
+- The historical browser Malware verdict remains unresolved. See the [security findings](docs/SECURITY_HARDENING.md).
 
 ### Added
 

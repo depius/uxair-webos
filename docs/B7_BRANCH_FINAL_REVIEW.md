@@ -1,6 +1,6 @@
 # B7 foundation review for UxAir 1.2.0
 
-**Status: unreleased foundation; security hold active; no merge/publication/distribution approval.** The next official version is 1.2.0. Version 1.1.0 was internal testing. This review does not include PR #9's Direct Video/HLS functionality.
+This review records the B7 development and validation history. For current status, see the [final owner acceptance](B7_FINAL_TEST.md) and [release procedure](RELEASING.md).
 
 ## 1. Physical B7 evidence
 
@@ -22,7 +22,7 @@ The unchanged baseline TEST IPK SHA-256 is `649d29494ccb6a26fd68acf0cd261773c222
 
 Glasshouse same-version reinstall success is owner-reported. Dev Manager 1.99.21 has an unbounded Homebrew configuration preflight; the B7 service did not reply during the bounded reproduction, and an older matching process remained. That is a concrete pre-upload blocker and strong evidence for Please wait. The original frontend trace is missing, so that historical event's exact attribution is provisional. The direct CLI path is physically verified. Uninstall deleted app-local state: perform upgrades without uninstalling and retain private backups.
 
-The new version preserves app ID `com.github.depius.uxair`, state filenames, serializers and paths. The About version is read from generated build-info; the package pipeline derives versions from appinfo. New hardened 1.2.0 fresh installs and upgrades from 1.0.0/internal 1.1.0 still need approved physical tests. Independent diagnostic probes retain their own IDs/versions and are not release packages.
+The new version preserves app ID `com.github.depius.uxair`, state filenames, serializers and paths. The About version is read from generated build-info; the package pipeline derives versions from appinfo. The final 1.2.0 owner acceptance did not specify fresh-install and prior-version upgrade results. Independent diagnostic probes retain their own IDs/versions and are not release packages.
 
 ## 4. Shared versus backend-specific review
 
@@ -41,7 +41,7 @@ Known cross-backend regression surfaces are NDL late callbacks during rapid reop
 
 ## 5. Integration recommendation (not executed)
 
-1. Keep the validated baseline commit and this isolated branch/history intact while security assessment and renewed physical tests are pending. Do not merge now.
+1. Keep the validated baseline commit and this isolated branch/history intact while the security decision and integration approval are pending. Do not merge now.
 2. After the owner approves the exact final commit, integrate this reviewed foundation once, retaining contributor attribution and the complete dependency chain. The original five PR #10 commits (`60e30c8` through `8526f8d`) are already ancestors of this branch. Do not merge/cherry-pick the NDL implementation a second time or apply only the final B7 scheduling commit over main.
 3. Prefer a single reviewed foundation integration over selecting isolated runtime hunks. If selective integration is required, first take the original build/backend foundation, then all B7 storage/lifecycle/FLUSH/header/cadence/reset/ingress fixes in original order through 148bc961, followed by the minimal security and version commits and their tests. Re-run the entire matrix and the Starfish physical gate and NDL Beta disclosure on the resulting history. The temporary c894a17 TEST workflow and its removal need not be recreated in a selective sequence.
 4. Once that foundation is approved/integrated, future NDL work should branch/rebase onto the new shared main. The current contributor NDL head itself requires no reapplication: it has no commits beyond the included 8526f8d in the inspected PR. Coordinate later changes on a separate branch; do not rewrite the contributor's current PR branch as part of this task.
@@ -69,7 +69,7 @@ Expected files: com.github.depius.uxair_1.2.0_arm-webos3-4.ipk and com.github.de
 ## 7. Remaining release gates
 
 - Independent assessment of the unchanged browser-flagged ZIP, with a verifiable case reference and outcome; explicit acceptance of remaining security risks.
-- Approval before distribution of one final Starfish physical-test candidate, then renewed B7 stress, pairing/settings, fresh install and 1.0.0/1.1.0 upgrade/reboot tests on that exact hardened 1.2.0 source.
+- The owner accepted the exact final Starfish test build. See the [acceptance record](B7_FINAL_TEST.md).
 - Deferred optional NDL Beta hardware follow-up (not a 1.2.0 closure gate): installed-app startup/window binding, H.264/HEVC portrait/4K and repeated reopens, audio-only and music/photo coexistence, FLUSH/resume, volume/mute, rapid handoffs, sender TEARDOWN/failures/late callbacks, foreground/background/screensaver/Exit, var/lib persistence, fresh installation and upgrades. Legacy app-local state requires an explicitly reviewed migration, not new keys.
 - Owner approval of the final integration, tag and publication. No merge, worktree deletion, PR closure, release or new artifact distribution was performed here.
 
@@ -87,7 +87,7 @@ The subsequent remaining-advisory/report commit is documentation-only; runtime s
 
 ## Final owner-approved development scope
 
-The 2026-11-03 [scope decision and NDL source review](UXAIR_1_2_SCOPE.md) supersede the former NDL hardware gate: Starfish is the stable release candidate pending hardened B7 validation; NDL is Beta/Experimental with no current-build physical validation. The owner has no webOS 5+ TV, so NDL hardware testing is deferred rather than required for this scope's completion. The subsequently authorized [NDL lifecycle correction](NDL_LIFECYCLE_FIX.md) replaces the confirmed unchecked paths and unsafe callback reuse; vendor quiescence and firmware behavior remain unverified. The newer TEST-artifact authorization is documented in RELEASING.md.
+The 2026-11-03 [scope decision and NDL source review](UXAIR_1_2_SCOPE.md) supersede the former NDL hardware gate: Starfish is the Stable target with final B7 acceptance recorded separately; NDL is Beta/Experimental with no current-build physical validation. The owner has no webOS 5+ TV, so NDL hardware testing is deferred rather than required for this scope's completion. The subsequently authorized [NDL lifecycle correction](NDL_LIFECYCLE_FIX.md) replaces the confirmed unchecked paths and unsafe callback reuse; vendor quiescence and firmware behavior remain unverified. The newer TEST-artifact authorization is documented in RELEASING.md.
 
 Revision 03242d26ec6a5aba7b2c84f93f8ec75a131339d7 passed [full sanitizer validation](https://github.com/depius/uxair-webos/actions/runs/41668703529) and [both same-revision ARM package builds](https://github.com/depius/uxair-webos/actions/runs/41668703360), including the new actual-source NDL tests with mocked APIs. No production source was changed by this scope-finalization step, and no artifacts were uploaded. Main integration, PR/branch closure and release publication still require explicit owner approval; the security release hold remains active.
 

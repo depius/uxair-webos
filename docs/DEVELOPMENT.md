@@ -1,6 +1,6 @@
 # Development and build environments
 
-Current application version: **UxAir 1.2.0, unreleased**. Security release hold applies; build/validation commands do not authorize installation, artifact distribution, merging or publication. NDL is Beta/Experimental with no physical validation of the current release source; unavailable NDL hardware is not a development-scope completion gate.
+UxAir 1.2.0 targets Starfish Stable for webOS 3–4 and NDL Beta / Experimental for webOS 5+. The owner accepted the Starfish candidate on the B7. Current-build NDL hardware validation is outstanding. See the [release procedure](RELEASING.md).
 
 ## Supported hosts and inputs
 
@@ -27,7 +27,7 @@ export PATH="$PWD/tools/webos-cli/node_modules/.bin:$PATH"
 ares-package --version
 ```
 
-The CLI's chmod postinstall is unnecessary for packaging and is deliberately disabled. Keep the lock unchanged during validation. Installed node_modules are ignored and excluded from corresponding-source archives; the package/lock manifests are included. If the CLI is absent, `tools/make-ipk.py` is the existing offline packaging fallback. Both paths apply the same internal permission policy and package validation; renewed physical acceptance is still required for a changed candidate.
+The CLI's chmod postinstall is unnecessary for packaging and is deliberately disabled. Keep the lock unchanged during validation. Installed node_modules are ignored and excluded from corresponding-source archives; the package/lock manifests are included. If the CLI is absent, `tools/make-ipk.py` is the existing offline packaging fallback. Both paths apply the same internal permission policy and package validation.
 
 ## Native sanitizer tests
 
@@ -73,4 +73,4 @@ sha256sum dist/*.ipk dist/*-source.tar.gz
 
 On macOS use `shasum -a 256` instead of sha256sum. Source archive: `dist/uxair-webos-1.2.0-source.tar.gz`. Record the exact source commit, build host, dependency lock and both checksums. The offline source archive lacks Git metadata; release verification should start from the exact repository commit so embedded build-info can be attributed correctly.
 
-CI runs full host sanitizers and a separate ARM matrix for starfish/ndl, ELF/IPK checks, source packaging and checksums. **It uploads no candidate artifacts while the hold is active.** CI is not physical hardware acceptance. See [RELEASING.md](RELEASING.md) and [SECURITY_HARDENING.md](SECURITY_HARDENING.md).
+CI runs full host sanitizers and a separate ARM matrix for starfish/ndl, ELF/IPK checks, source packaging and checksums. Ordinary runs retain checks and logs. The explicit branch-only staging dispatch retains authenticated artifacts for one day. See [RELEASING.md](RELEASING.md) and [SECURITY_HARDENING.md](SECURITY_HARDENING.md).

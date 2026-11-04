@@ -1,13 +1,13 @@
 # UxAir 1.2.0: final development scope and integration plan
 
-Status updated for the owner's final TEST/Beta preparation request. See [NDL lifecycle fixes](NDL_LIFECYCLE_FIX.md), [B7 acceptance](B7_FINAL_TEST.md) and [temporary TEST artifact procedure](RELEASING.md#authorized-temporary-test-preparation). The confirmed NDL defects in the historical review below are now corrected in source and regression tests; that review is retained as before-fix evidence. Application ID and version remain `com.github.depius.uxair`, `1.2.0`. No new playback functionality is added. Targeted NDL lifecycle fixes are included in final candidate preparation.
+The 1.2.0 development scope is frozen. Both packages use `com.github.depius.uxair`.
 
-| Target | Maturity | Acceptance for this scope |
+| Target | Maturity | Evidence |
 | --- | --- | --- |
-| Starfish + ACB, webOS 3-4 | **Stable release candidate** | Automated suite/build/package validation plus final physical validation of the hardened 1.2.0 build on the B7. The successful 30-minute 148bc961 test is the preserved baseline, not acceptance of a changed binary. |
-| NDL DirectMedia, webOS 5+ | **Beta / Experimental** | Automated tests, real-SDK compile/link and package validation. **No physical hardware validation of the current 1.2.0 source has been performed.** The owner has no compatible TV; unavailable hardware testing does not block development-scope completion or Starfish integration/release by itself. |
+| Starfish + ACB, webOS 3–4 | **Stable** | Owner accepted `9af36d1b2e3902bfa26ab349140af394b3b95a3f` on LG OLED B7 with webOS 3.9. See the [acceptance record](B7_FINAL_TEST.md). |
+| NDL DirectMedia, webOS 5+ | **Public Beta / Experimental** | Automated tests and SDK build checks. Current-build physical hardware validation is outstanding. The contributor’s earlier C4 results apply to `8526f8d`. |
 
-Historical contributor C4/webOS 10.3.1 results belong to the earlier 8526f8d source and are not presented as validation of this build. NDL must retain its Beta/Experimental label and known limitations in any later approved release description. Beta is not a waiver of a confirmed critical defect or the global security hold.
+The historical review below records the behavior before the [NDL lifecycle fixes](NDL_LIFECYCLE_FIX.md).
 
 ## Historical NDL source review at d452b12
 
@@ -28,7 +28,7 @@ No demonstrated Critical-severity NDL crash, memory-corruption exploit or pairin
 
 `tests/ndl_media_test.cpp` compiles the actual NDL C++ media and C bridge with host-only SDL/vendor stubs under ASan/UBSan. It exercises initialization failures, audio-only/H.264/HEVC setup, PCM mapping, timestamps, audio buffer/retry handling, the video retry bound, retained binding across reopens and cleanup. Explicit characterization checks reproduce the retired-callback, ignored binding/placement and cleanup-error limitations. **Passing characterization checks means those limitations were observed, not fixed.** Stubs do not validate the firmware ABI, decoder, compositor, callback threading, jail or actual playback; the separate ARM matrix compiles/links with real SDK headers/libraries.
 
-Run the complete `tools/test.sh`, metadata validation and cross-UID storage tests, then both ARM matrix targets. Keep package contents, metadata/version, permissions, private-state exclusion, ARMv7 soft-float, backend libraries, GLIBC <=2.19 and checksums checked. Both matrix jobs check out the same GitHub source SHA. No artifact uploads occur under the security hold.
+Run the complete `tools/test.sh`, metadata validation and cross-UID storage tests, then both ARM matrix targets. Keep package contents, metadata/version, permissions, private-state exclusion, ARMv7 soft-float, backend libraries, GLIBC <=2.19 and checksums checked. Both matrix jobs check out the same GitHub source SHA. Ordinary validation runs retain checks and logs.
 
 Use explicit backend options: the existing unqualified build default remains NDL. A stable-candidate build must specify `--media=starfish`. No default or runtime backend behavior was changed.
 
@@ -43,14 +43,9 @@ python3 tools/validate-ipk.py
 
 Expected separate packages are `com.github.depius.uxair_1.2.0_arm-webos3-4.ipk` and `com.github.depius.uxair_1.2.0_arm-webos5plus.ipk` (Beta/Experimental). They share an app ID and are alternatives, not co-installable independent apps. There is no universal IPK or runtime backend switching. Setup, ELF checks and source packaging remain in [DEVELOPMENT.md](DEVELOPMENT.md).
 
-## Integration and branch closure (plan only)
+## Integration and publication
 
-1. Freeze this development scope and record the exact successful test/build SHA and known limitations. No NDL hardware requirement is added to this scope; future hardware results may improve Beta status.
-2. Preserve the 148bc961 B7 rollback baseline. The later owner request authorizes the final hardened Starfish TEST candidate; complete B7 playback, fresh/upgrade, pairing/settings and reboot checks on its exact source.
-3. Keep the global security release hold: obtain the original browser verdict's independent assessment or explicit owner-reviewed security disposition, including remaining parser, installation-container and host-tool risks. CI success and a Beta label do not resolve those findings.
-4. After explicit owner approval for integration, integrate this foundation once into main, preserving contributor attribution and the complete shared-fix chain. PR #10's head is already an ancestor; do not apply it a second time. Keep PR #9 Direct Video/HLS outside 1.2.0. Approval must cover any resulting PR-state effects of integrating existing contributor commits; inspect those effects before performing an approved merge.
-5. Run the full automated matrix on the actual resulting main SHA. Confirm both outputs use that same revision and retain Starfish stable-candidate / NDL Beta labels. NDL hardware testing remains deferred, not a closure prerequisite.
-6. Publication, PR closure and branch/worktree deletion are separate owner-approved actions. Record checksums, corresponding sources, support labels, security disposition and rollback reference before any approved release. Do not delete this branch/worktree until the owner explicitly approves cleanup; no such action is performed here.
+Follow the [release procedure](RELEASING.md). The original PR #10 head is an ancestor. Integrating the complete branch with a merge commit preserves contributor history and can mark PR #10 merged indirectly. Keep PR #9 outside this release. The security hold and owner approval govern integration and publication.
 
 ## Outstanding security
 
@@ -68,4 +63,4 @@ Test/build revision: `03242d26ec6a5aba7b2c84f93f8ec75a131339d7`.
 - Mock tests observed all documented retired-callback, unchecked binding/placement and ignored cleanup-error limitations without ASan/UBSan failures. This does not resolve those limitations or validate firmware playback/threading.
 - GitHub artifact listing is empty. No new artifact distribution, TV installation, release, merge or branch/PR closure occurred.
 
-The final result-recording follow-up is documentation-only; production source, app identity/version and build/test logic remain identical to the tested revision. Development scope is complete with Starfish stable-candidate / NDL Beta maturity. Security disposition, hardened B7 physical acceptance and explicit owner approval still govern integration/publication/cleanup; unavailable NDL hardware testing does not.
+The owner subsequently completed final Starfish testing. See the [B7 acceptance record](B7_FINAL_TEST.md) and the [latest pre-cleanup automated results](https://github.com/depius/uxair-webos/actions/runs/41676314394).

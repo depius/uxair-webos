@@ -95,11 +95,11 @@ def main():
     (destination/'SOURCE_VERIFICATION.json').write_text(json.dumps(verification,indent=2)+'\n')
     (destination/'TEST-CANDIDATE.txt').write_text(
         'TEST ONLY / UNRELEASED. No GitHub Release has been published.\n'
-        'Starfish requires final physical B7 confirmation; NDL is unvalidated Beta/Experimental.\n'
+        'Starfish is the Stable target. The B7 owner accepted candidate 9af36d1. NDL is physically unvalidated Beta/Experimental.\n'
         'The historical browser Malware verdict and documented security findings remain unresolved.\n'
         'Do not bypass browser or antivirus protection. Keep production app identity/state on upgrade.\n')
     manifest={'version':app['version'],'app_id':app['id'],'source_commit':commit,'backend':backend,
-              'maturity':'Stable candidate; B7 TEST only' if backend=='starfish' else 'Held public-Beta candidate; no hardware validation',
+              'maturity':'Stable target, held for publication' if backend=='starfish' else 'Public Beta / Experimental, no hardware validation',
               'publication_approved':False,'security_release_hold':True,'files':{}}
     for item in [destination/ASSET_NAMES[backend],destination/source.name]:
         with item.open('rb') as stream:manifest['files'][item.name]={'bytes':item.stat().st_size,'sha256':digest(stream)}

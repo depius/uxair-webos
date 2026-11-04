@@ -1,17 +1,17 @@
 # webOS 5+ / webOS 10: NDL target
 
-UxAir 1.2.0 retains one shared receiver/UI/state codebase and two compile-time backends: Starfish + ACB for webOS 3-4, NDL DirectMedia for webOS 5+. There is no runtime backend switching or universal IPK. NDL is **Beta / Experimental: no physical validation of the current 1.2.0 shared source has been performed**. The owner has no webOS 5+ television; that unavailable testing is deferred and does not block development-scope completion or Starfish release by itself. See [the final scope/review](UXAIR_1_2_SCOPE.md) for known NDL issues and approval gates.
+UxAir 1.2.0 retains one shared receiver/UI/state codebase and two compile-time backends: Starfish + ACB for webOS 3-4, NDL DirectMedia for webOS 5+. There is no runtime backend switching or universal IPK. NDL is **Beta / Experimental: no physical validation of the current 1.2.0 shared source has been performed**. Volunteer feedback will guide NDL validation. See the [Beta reporting guide](NDL_BETA_TESTING.md).
 
-The contributor reported successful mirroring, HEVC/H.264, photo/video transitions and audio-only playback on a rooted LG OLED65C48LA C4 (webOS 10.3.1) for PR #10 at 8526f8d. That is historical evidence for the earlier source, not physical acceptance of subsequent B7 fixes, hardening or 1.2.0. Starfish baseline 148bc961 was physically validated on the owner's B7, including a 30-minute transition stress run.
+The contributor reported successful mirroring, HEVC/H.264, photo/video transitions and audio-only playback on a rooted LG OLED65C48LA C4 (webOS 10.3.1) for PR #10 at 8526f8d. That is historical evidence for the earlier source, not physical acceptance of subsequent B7 fixes, hardening or 1.2.0. The Starfish 1.2.0 candidate passed the owner’s final B7 test. See the [acceptance record](B7_FINAL_TEST.md).
 
 ## Separate builds
 
-| Target | Command | Media files | Future 1.2.0 package |
+| Target | Command | Media files | 1.2.0 release asset |
 | --- | --- | --- | --- |
-| webOS 3-4 | `tools/build.sh --media=starfish` | media_starfish.cpp, Starfish/ACB | com.github.depius.uxair_1.2.0_arm-webos3-4.ipk |
-| webOS 5+ (Beta / Experimental) | `tools/build.sh --media=ndl` | media_ndl.cpp, ndl_backend.c | com.github.depius.uxair_1.2.0_arm-webos5plus.ipk |
+| webOS 3-4 | `tools/build.sh --media=starfish` | media_starfish.cpp, Starfish/ACB | `UxAir-1.2.0-webOS3-4-Starfish.ipk` |
+| webOS 5+ (Beta / Experimental) | `tools/build.sh --media=ndl` | media_ndl.cpp, ndl_backend.c | `UxAir-1.2.0-webOS5plus-NDL-Beta.ipk` |
 
-CMake `UXAIR_MEDIA=starfish|ndl` selects sources, definitions and linked APIs. The current default is ndl; explicit commands avoid ambiguity. Both packages use com.github.depius.uxair and are alternative installations. Full locked setup/verification: [DEVELOPMENT.md](DEVELOPMENT.md). No candidate distribution is authorized by these instructions.
+CMake `UXAIR_MEDIA=starfish|ndl` selects sources, definitions and linked APIs. The current default is ndl; explicit commands avoid ambiguity. Both packages use com.github.depius.uxair and are alternative installations. Full locked setup/verification: [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Existing NDL implementation and physical checks
 
@@ -19,7 +19,7 @@ The installed app registers with Luna, creates an SDL exported window, looks up 
 
 Future optional physical tests should cover startup from an installed package, H.264 and HEVC portrait/4K reopens, audio-only FLUSH/resume/volume, photo browsing with music, rapid audio/mirroring handoffs, sender TEARDOWN versus failures, decoder resource release and late callbacks. Confirm foreground/background/screensaver behavior and remote input, relaunch/reboot, fresh installation and upgrades. Decoder callback timing and actual displayed frames must not be inferred from Feed acceptance.
 
-Shared fixes now available to both targets include metadata cadence, RTP origin/reset accounting, epoch/closing ingress protection, split HEVC header retention, private-state validation and production allocation limits. The current NDL-specific backend files remain from the contributor's original implementation; do not reapply those commits over this branch.
+Shared fixes now available to both targets include metadata cadence, RTP origin/reset accounting, epoch/closing ingress protection, split HEVC header retention, private-state validation and production allocation limits. ALQU-IT’s original NDL implementation is retained in the commit history and includes subsequent [lifecycle fixes](NDL_LIFECYCLE_FIX.md).
 
 ## Persistent identity and UI policy
 

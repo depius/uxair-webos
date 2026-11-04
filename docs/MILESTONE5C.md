@@ -1,5 +1,7 @@
 # Milestone 5C: isolated HEVC hardware decoder probe
 
+> Historical development record. See [UxAir 1.2.0 scope](UXAIR_1_2_SCOPE.md) for current release and validation status.
+
 The subsequent [Milestone 5D B7 follow-up](MILESTONE5D.md) documents the 0.1.1 probe, corrected ACB sink handling, current UHD block, and `luna-send` instructions. The procedure below describes the original 0.1.0 experiment.
 
 The owner's Rockhopper 3.9.0 inspection found `H265`, `HEVC`, `video/x-h265` and the Starfish codec option string in `libpf-1.0.so.1.0.0`. The TV's codec capability file declares HEVC up to 4096×2176/60, and its resource file names `HEVCP1_HEVC`. Those are firmware-specific clues for trying `codec.video="H265"`; they do **not** establish that this B7 accepts HEVC `BUFFERSTREAM` or presents UHD from a third-party app. The probe copies the B7-proven H.264 Starfish/ACB call sequence into a separate executable, changes only its codec candidate and local test stream, and records each stage. The working receiver and its DNS-SD advertisement remain untouched.

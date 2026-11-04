@@ -1,5 +1,7 @@
 # Milestone 5G: what the B7 UHD probe actually proves
 
+> Historical development record. See [UxAir 1.2.0 scope](UXAIR_1_2_SCOPE.md) for current release and validation status.
+
 The owner-run 0.1.3 probe completed separate 1080p and UHD launches on the LG OLED B7, Rockhopper 3.9.0. In UHD mode it validated HEVC Main 8-bit SDR SPS 3840×2160, accepted 30/30 access units and EOS, received seven `FRAMEREADY` callbacks and Starfish video-info 3840×2160, reported no errors, completed ACB/Starfish cleanup and exited zero. This establishes the **input/API control path**. No one has observed the panel, decoded surfaces or an independently identified output plane. The receiver application is unchanged.
 
 ## Evidence levels

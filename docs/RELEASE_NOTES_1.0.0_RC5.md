@@ -18,4 +18,4 @@ RC5 is an instrumentation build for the reported Starfish `Load()` failure. The 
 
 ## Subsequent hardware verification
 
-The owner confirmed on the B7 that RC5 playback works. The tested later release-candidate baseline also confirms standalone AirPlay music/audio-only playback, pairing and reconnection, H.264/HEVC mirroring, and audio with mirroring. The detailed feature and limitation matrix is in the [README](../../README.md). CI confirms build/package validity but cannot substitute for these physical checks.
+The owner confirmed on the B7 that RC5 playback works. The tested later release-candidate baseline also confirms standalone AirPlay music/audio-only playback, pairing and reconnection, H.264/HEVC mirroring, and audio with mirroring. The detailed feature and limitation matrix is in the [README](../README.md). CI confirms build/package validity but cannot substitute for these physical checks.

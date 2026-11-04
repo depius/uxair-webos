@@ -1,6 +1,6 @@
 # NDL Public Beta / Experimental testing
 
-UxAir 1.2.0 NDL is intended for webOS 5+ volunteer testing after explicit publication approval. The current source has **no physical NDL hardware validation**; the owner has no compatible TV. Successful compilation, linkage, sanitizers and IPK checks do not establish working video/audio on a particular firmware. Until publication approval, supplied candidates remain TEST-only.
+UxAir 1.2.0 NDL is intended for webOS 5+ volunteer testing after explicit publication approval. The current source has **no physical NDL hardware validation**; the owner has no compatible TV. Successful compilation, linkage, sanitizers and IPK checks do not establish working video/audio on a particular firmware. Choose the NDL Beta IPK for webOS 5+ from the [installation guide](../README.md#download-and-install).
 
 Use only the NDL package on a compatible rooted TV, with app ID `com.github.depius.uxair`. It is an alternative to Starfish, not a second app. Privately back up existing state before upgrade; do not uninstall or delete identity/pairing/settings to troubleshoot. Legacy app-local identity without usable var/lib state intentionally fails startup; request a reviewed migration rather than generating replacement keys. Respect browser/antivirus warnings; report the exact verdict without bypassing protection.
 

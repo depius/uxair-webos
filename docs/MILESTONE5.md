@@ -1,5 +1,7 @@
 # Milestone 5A: 4K HEVC mirroring capability audit
 
+> Historical development record. See [UxAir 1.2.0 scope](UXAIR_1_2_SCOPE.md) for current release and validation status.
+
 Target: LG OLED B7, Rockhopper 3.9.0, ARMv7. This audit stops before enabling HEVC advertisement or changing playback. The owner-verified H.264 1080p/30 mode and 720p/30 fallback remain intact.
 
 ## Protocol and upstream comparison
@@ -16,7 +18,7 @@ The owner has observed 1920×1080 H.264 SPS while sharing Photos content. This c
 
 ## B7 decoder and UHD output evidence
 
-[LG's webOS TV 3.5 format table](https://webostv.developer.lge.com/develop/specifications/video-audio-35) lists HEVC Main and Main10 up to 4096×2160/60 for UHD models, with bitrate/container constraints. That is TV playback support, **not** a published guarantee for this app's raw elementary-stream `BUFFERSTREAM` interface. The working [Starfish/ACB loader](../src/media.cpp) requests `externalStreamingInfo.contents.codec.video="H264"`, `format="RAW"`, a maximum 2 MiB video source buffer, and a 30 FPS/720p-or-1080p adaptive limit. `Media::open` rejects source-buffer limits above 2 MiB. No verified Rockhopper codec token, load schema, accepted HEVC Annex B parameter-set arrangement, maximum `Feed` size, or failure/timeout behavior is available for HEVC. The present `Load`/`Play` traces demonstrate H.264 only.
+[LG's webOS TV 3.5 format table](https://webostv.developer.lge.com/develop/specifications/video-audio-35) lists HEVC Main and Main10 up to 4096×2160/60 for UHD models, with bitrate/container constraints. That is TV playback support, **not** a published guarantee for this app's raw elementary-stream `BUFFERSTREAM` interface. The working [Starfish/ACB loader](../src/media_starfish.cpp) requests `externalStreamingInfo.contents.codec.video="H264"`, `format="RAW"`, a maximum 2 MiB video source buffer, and a 30 FPS/720p-or-1080p adaptive limit. `Media::open` rejects source-buffer limits above 2 MiB. No verified Rockhopper codec token, load schema, accepted HEVC Annex B parameter-set arrangement, maximum `Feed` size, or failure/timeout behavior is available for HEVC. The present `Load`/`Play` traces demonstrate H.264 only.
 
 The same media code places video through `AcbAPI_setDisplayWindow`, but has not measured an independently reported 3840×2160 video-plane output. [LG's app-resolution table](https://webostv.developer.lge.com/develop/specifications/app-resolution) distinguishes UHD **video playback** from 1920×1080 **graphics** on UHD sets; it is not a measurement of this native app's Starfish plane. An HEVC SPS of 3840×2160 would prove input dimensions, not displayed resolution. A successful `Feed` return is not a presented-frame event; existing `FRAMEREADY` callbacks are too sparse to label as displayed FPS.
 

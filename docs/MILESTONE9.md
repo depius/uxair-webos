@@ -1,5 +1,7 @@
 # Milestone 9: experimental 60 FPS and version 1.0 preparation
 
+> Historical development record. See [UxAir 1.2.0 scope](UXAIR_1_2_SCOPE.md) for current release and validation status.
+
 ## Frame-rate selection
 
 Resolution, codec capability and maximum frame rate are separate saved settings. The receiver now accepts 30 or 60 FPS and advertises the selected maximum through AirPlay `refreshRate` and `maxFPS`. The Starfish Load request uses the same selected value for `videoFpsValue` and `adaptiveStreaming.maxFrameRate`. The settings file now persists `fps=30` or `fps=60`; the previous writer's hard-coded `fps=30` bug is fixed.

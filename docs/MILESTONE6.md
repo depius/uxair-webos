@@ -1,5 +1,7 @@
 # Milestone 6: experimental HEVC AirPlay mirroring
 
+> Historical development record. See [UxAir 1.2.0 scope](UXAIR_1_2_SCOPE.md) for current release and validation status.
+
 Target: LG OLED B7, Rockhopper 3.9.0, ARMv7 / glibc 2.19. This is a development-app experiment. The owner validated the isolated HEVC probe 0.1.3 with 30/30 3840×2160 Main 8-bit Feed calls accepted, seven FRAMEREADY callbacks, 3840×2160 Starfish video-info and no reported decoder errors. Those observations justify trying the receiver path; they do not prove decoded picture presentation or native UHD output.
 
 ## Architecture and limits

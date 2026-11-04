@@ -16,18 +16,35 @@ docs/B7_SESSION_INVESTIGATION.md,Diagnostic or test-only changes,Starfish,Histor
 docs/B7_STORAGE_DIAGNOSTICS.md,Diagnostic or test-only changes,Starfish,Historical B7 investigation and exact test evidence; final status in branch review
 docs/B7_STORAGE_FIX.md,Diagnostic or test-only changes,Starfish,Historical B7 investigation and exact test evidence; final status in branch review
 docs/BRANCH_CHANGE_CLASSIFICATION.csv,Diagnostic or test-only changes,Both,Exhaustive path inventory for this branch review
+docs/CAPABILITIES.md,Documentation,Shared,Historical link or release status update
 docs/DEVELOPMENT.md,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
+docs/MILESTONE4.md,Documentation,Shared,Historical link or release status update
+docs/MILESTONE4D.md,Documentation,Shared,Historical link or release status update
+docs/MILESTONE4E.md,Documentation,Shared,Historical link or release status update
+docs/MILESTONE5.md,Documentation,Shared,Historical link or release status update
+docs/MILESTONE5B.md,Documentation,Shared,Historical link or release status update
+docs/MILESTONE5C.md,Documentation,Shared,Historical link or release status update
+docs/MILESTONE5F.md,Documentation,Shared,Historical link or release status update
+docs/MILESTONE5G.md,Documentation,Shared,Historical link or release status update
+docs/MILESTONE6.md,Documentation,Shared,Historical link or release status update
+docs/MILESTONE6_2.md,Documentation,Shared,Historical link or release status update
+docs/MILESTONE7.md,Documentation,Shared,Historical link or release status update
+docs/MILESTONE7_1.md,Documentation,Shared,Historical link or release status update
+docs/MILESTONE8.md,Documentation,Shared,Historical link or release status update
+docs/MILESTONE9.md,Documentation,Shared,Historical link or release status update
 docs/NDL_BETA_TESTING.md,NDL-specific functionality,NDL,Final TEST candidate verification or NDL Beta lifecycle regression; no new playback feature
 docs/NDL_LIFECYCLE_FIX.md,NDL-specific functionality,NDL,Final TEST candidate verification or NDL Beta lifecycle regression; no new playback feature
 docs/PACKAGING_DEPENDENCY_AUDIT.md,Shared UxAir functionality,Both host build targets,Remaining host-only advisory assessment; no dependency upgrade or TV payload change
 docs/PORT-WEBOS10.md,NDL-specific functionality,NDL,Included contributor foundation; current shared-source physical validation pending
 docs/PR10_B7_COMPATIBILITY.md,Diagnostic or test-only changes,Starfish,Historical B7 investigation and exact test evidence; final status in branch review
+docs/RELEASE_NOTES_1.0.0_RC5.md,Documentation,Shared,Historical link or release status update
 docs/RELEASING.md,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
 docs/SECURITY_HARDENING.md,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
 docs/USAGE_HISTORY.md,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
 docs/UXAIR_1_2_SCOPE.md,Shared UxAir functionality,Both,"Owner-approved stable Starfish RC and NDL Beta scope; deferred hardware, source review and approval-only closure plan"
 packaging/appinfo.json,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
 packaging/ndl-probe-appinfo.json,Diagnostic or test-only changes,NDL,Independent manually launched probe; not production package/version
+screenshots/.gitkeep,Repository cleanup,Shared,Remove redundant screenshot directory placeholder
 src/audio_session.h,Shared UxAir functionality,Both,Shared source/build/release documentation; retain with complete dependency chain
 src/hevc_schedule.h,Starfish-specific compatibility,Starfish,Preserve validated B7 timeline/preroll/backend behavior and bounded diagnostics
 src/hevc_stream.cpp,Shared UxAir functionality,Both,Shared split VPS/SPS/PPS retention; validated B7 behavior must reach both backends

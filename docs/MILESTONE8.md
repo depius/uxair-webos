@@ -1,5 +1,7 @@
 # Milestone 8: HDR evidence, 4K presentation and UI responsiveness
 
+> Historical development record. See [UxAir 1.2.0 scope](UXAIR_1_2_SCOPE.md) for current release and validation status.
+
 ## HDR10 / Main10
 
 No HDR playback path is enabled. The receiver detects HEVC Main10 and rejects it before Starfish Load; it does not pass bit depth, transfer function, color primaries, mastering metadata or content-light metadata to the decoder or output. Old settings files may contain `hdr=auto` / `hdr=sdr`; the loader ignores these legacy keys and new saves omit them.

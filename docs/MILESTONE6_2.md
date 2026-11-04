@@ -1,5 +1,7 @@
 # Milestone 6.2: HEVC decoder-generation startup deadline
 
+> Historical development record. See [UxAir 1.2.0 scope](UXAIR_1_2_SCOPE.md) for current release and validation status.
+
 Target: the separate UxPlay webOS **development** app on the LG OLED B7, Rockhopper 3.9.0. The owner has confirmed visible HEVC AirPlay mirroring and working Photos and video *through screen mirroring* with the Milestone 6.1 package. Sustained incoming and Feed rates were about 29–30 FPS, with `LOADCOMPLETED` (`0x16`) and `PLAYING` (`0x1a`) observed. Native 3840×2160 output-plane resolution remains unmeasured.
 
 ## Confirmed failure mechanism

@@ -1,5 +1,7 @@
 # Milestone 7.1: HEVC selection at 720p and 1080p
 
+> Historical development record. See [UxAir 1.2.0 scope](UXAIR_1_2_SCOPE.md) for current release and validation status.
+
 Baseline: `1270497a84f68e791bce6f882d2b9144c4617c49`. Target: LG OLED B7, webOS 3.9, ARMv7.
 
 ## Root cause

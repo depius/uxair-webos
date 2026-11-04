@@ -38,7 +38,7 @@ jobs:
         run: |
           c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -Isrc tests/b7_storage_layout_test.cpp src/settings.cpp src/usage_stats.cpp -o build/tests/b7-storage-layout-test
           sudo build/tests/b7-storage-layout-test
-  build-ipk:
+  build-backends:
     name: ARMv7 ${{ matrix.media }} (${{ matrix.maturity }})
     strategy:
       fail-fast: false
@@ -46,12 +46,12 @@ jobs:
         include:
           - media: starfish
             platform: webos3-4
-            maturity: Stable RC
+            maturity: Stable
           - media: ndl
             platform: webos5plus
             maturity: Beta-Experimental
     needs: native-tests
-    # Branch-local fallback: macOS runner remained unassigned for 15+ minutes.
+    # Both targets use the pinned Linux x86-64 SDK.
     # bootstrap.py selects the already checksum-pinned Linux x86-64 ARM SDK.
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -94,10 +94,10 @@ jobs:
           (cd dist && shasum -a 256 *.ipk *-source.tar.gz > SHA256SUMS)
           (cd dist && shasum -a 256 -c SHA256SUMS)
           cat dist/BUILD_COMMIT.txt dist/SHA256SUMS dist/ELF_REPORT.txt
-      - name: Hold package distribution pending B7 and security assessment
+      - name: Record release hold
         run: |
           echo "ARMv7 ${{ matrix.media }} verified; ordinary runs upload no IPK/source artifact. Explicit TEST dispatch is separate."
-          echo "Release hold: hardening needs renewed physical validation; dc3fe475 browser Malware verdict remains unresolved."
+          echo "Release hold: owner publication approval and security disposition are required. The dc3fe475 browser Malware verdict remains unresolved."
       - name: Prepare explicitly requested TEST assets
         if: github.event_name == 'workflow_dispatch' && inputs.prepare_test_assets && github.ref == 'refs/heads/fix/pr10-b7-compatibility'
         run: python3 tools/prepare-candidate.py --backend=${{ matrix.media }}
@@ -109,3 +109,14 @@ jobs:
           path: dist/test-candidates/${{ matrix.media }}/*
           if-no-files-found: error
           retention-days: 1
+  build-ipk:
+    name: build-ipk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: always()
+    needs: build-backends
+    steps:
+      - name: Require both ARMv7 packages to pass
+        env:
+          BUILD_RESULT: ${{ needs.build-backends.result }}
+        run: test "$BUILD_RESULT" = success
