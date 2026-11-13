@@ -25,6 +25,10 @@ struct ReceiverDiagnostics {
     uint64_t accepted_video_packets=0; // Since last receiver.clear(), including pre-Load ingress.
     size_t audio_queue_packets=0,audio_queue_bytes=0;
     uint64_t audio_pts_min=0,audio_pts_max=0;
+    uint64_t video_enqueued=0,audio_enqueued=0,video_dequeued=0,audio_dequeued=0;
+    uint64_t audio_pressure_drops=0,audio_before_origin=0;
+    int64_t oldest_packet_ns=0;
+    size_t peak_audio_queue_packets=0,peak_audio_queue_bytes=0;
     size_t peak_queue_packets = 0, peak_queue_bytes = 0;
     size_t video_queue_packets = 0, video_queue_bytes = 0;
     size_t peak_video_queue_packets = 0, peak_video_queue_bytes = 0;
@@ -39,12 +43,19 @@ struct Receiver {
     void disconnect();
     void begin_close();
     void request_reset(ResetOrigin origin,int reason);
+    void request_reset(ResetOrigin origin,int reason,unsigned epoch);
+    void set_mirror_audio_schedule(uint64_t origin,int64_t start);
+    void note_mirror_video_feed(int64_t now) { last_mirror_video_feed=now; }
+    enum class AudioPressure { None, DropIncoming, FreedSlot };
+    AudioPressure relieve_audio_pressure(const Packet& incoming,int64_t now); // mutex held
+    static constexpr size_t kPacketLimit=512;
     bool record_reset_locked(ResetOrigin origin,int reason,unsigned epoch); // mutex held
     ResetNotice take_reset();
     bool pop(Packet& packet, uint64_t latest = UINT64_MAX, bool audio_only = false);
     void enqueue(bool video, unsigned codec, uint64_t time, const uint8_t *data, int size);
+    void enqueue(bool video, unsigned codec, uint64_t time, const uint8_t *data, int size, unsigned transport);
     void clear();
-    void clear_audio_packets();
+    void flush_audio_packets(unsigned transport);
     ReceiverDiagnostics diagnostics();
     ReceiverDiagnostics queue_snapshot();
     VideoTimingSample take_video_timing();
@@ -73,7 +84,8 @@ struct Receiver {
     std::atomic<unsigned> audio_epoch{0}, transport_epoch{0};
     std::atomic<unsigned> incoming_video_codec{0}; // 1 H.264, 2 HEVC
     std::atomic<unsigned> overflow{0};
-    std::atomic<unsigned> session_resets{0};
+    std::atomic<unsigned> session_resets{0}, effective_resets{0}, suppressed_resets{0};
+    std::atomic<int64_t> last_mirror_video_feed{0};
     std::atomic<unsigned> stream_requests{0};   // admitted SETUPs: a device starts streaming
     size_t max_video_packet_bytes=1024*1024, max_queue_bytes=4*1024*1024;
     Settings active_profile;
@@ -84,6 +96,12 @@ struct Receiver {
     std::mutex pairing_store_mutex;
     std::deque<Packet> packets;
     size_t bytes=0;
+    uint64_t mirror_audio_origin=0;
+    int64_t mirror_audio_start=0;
+    size_t peak_audio_packets=0,peak_audio_bytes=0;
+    uint64_t video_enqueued=0,audio_enqueued=0,video_dequeued=0,audio_dequeued=0;
+    uint64_t audio_pressure_drops=0,audio_before_origin=0;
+    void fill_queue_diagnostics(ReceiverDiagnostics& diagnostics) const; // mutex held
     size_t peak_packets=0, peak_bytes=0;
     size_t video_packets=0, video_bytes=0;
     size_t peak_video_packets=0, peak_video_bytes=0;

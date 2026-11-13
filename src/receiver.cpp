@@ -14,15 +14,60 @@
 #include <openssl/rand.h>
 
 static Receiver& self(void *p) { return *static_cast<Receiver *>(p); }
-extern "C" void uxair_sender_video_reset(void *p,int reason) {
-    self(p).request_reset(ResetOrigin::SenderTeardown,reason);
+extern "C" unsigned uxair_admit_transport(void *p,const char *id,const char *model,const char *name,bool *admit) {
+    Receiver& r=self(p);
+    std::lock_guard<std::mutex> lock(r.mutex);
+    *admit=id && !r.ingress.closing && (r.client.empty()||r.client==id);
+    fprintf(stderr,"[client] model=%.80s admitted=%d\n",model?model:"unknown",int(*admit));
+    if(*admit) {
+        r.ingress.admit();
+        ++r.stream_requests;
+        r.client=id;
+        r.client_name=name?std::string(name).substr(0,80):"";
+        r.message=std::string("Connecting: ")+(name?std::string(name).substr(0,80):"device");
+        r.activity=now_ns();
+    }
+    return r.transport_epoch.load();
 }
-static void audio_snapshot(const std::deque<Packet>& packets,ReceiverDiagnostics& d) {
+extern "C" void uxair_sender_video_reset(void *p,int reason,unsigned epoch) {
+    self(p).request_reset(ResetOrigin::SenderTeardown,reason,epoch);
+}
+extern "C" void uxair_rtp_reset(void *p,int video,int reason,unsigned epoch) {
+    self(p).request_reset(video?ResetOrigin::VideoCallback:ResetOrigin::TransportCallback,reason,epoch);
+}
+extern "C" void uxair_rtp_packet(void *p,int video,unsigned codec,uint64_t timestamp,
+                                const uint8_t *data,int size,unsigned epoch) {
+    Receiver& receiver=self(p);
+    if(video && codec==2 && receiver.active_profile.codec!=MirrorCodec::ExperimentalHevc)return;
+    receiver.enqueue(video!=0,codec,timestamp,data,size,epoch);
+}
+extern "C" void uxair_rtp_audio_flush(void *p,unsigned epoch) {
+    self(p).flush_audio_packets(epoch);
+}
+extern "C" void uxair_rtp_video_state(void *p,unsigned epoch,int running_state,int value) {
+    Receiver& receiver=self(p);
+    std::lock_guard<std::mutex> lock(receiver.mutex);
+    if(!receiver.ingress.accepts(epoch,receiver.transport_epoch.load()))return;
+    if(running_state)receiver.mirror=value!=0;
+    else receiver.paused=value!=0;
+}
+void Receiver::fill_queue_diagnostics(ReceiverDiagnostics& d) const {
     for(const auto& p:packets)if(!p.video) {
-        ++d.audio_queue_packets;d.audio_queue_bytes+=p.data.size();
         if(!d.audio_pts_min || p.timestamp<d.audio_pts_min)d.audio_pts_min=p.timestamp;
         d.audio_pts_max=std::max(d.audio_pts_max,p.timestamp);
     }
+    d.oldest_packet_ns=packets.empty()?0:packets.front().enqueued_ns;
+    d.accepted_video_packets=accepted_video_packets;
+    d.queue_packets=packets.size();d.queue_bytes=bytes;
+    d.peak_queue_packets=peak_packets;d.peak_queue_bytes=peak_bytes;
+    d.video_queue_packets=video_packets;d.video_queue_bytes=video_bytes;
+    d.audio_queue_packets=packets.size()-video_packets;d.audio_queue_bytes=bytes-video_bytes;
+    d.peak_video_queue_packets=peak_video_packets;d.peak_video_queue_bytes=peak_video_bytes;
+    d.peak_audio_queue_packets=peak_audio_packets;d.peak_audio_queue_bytes=peak_audio_bytes;
+    d.video_enqueued=video_enqueued;d.audio_enqueued=audio_enqueued;
+    d.video_dequeued=video_dequeued;d.audio_dequeued=audio_dequeued;
+    d.audio_pressure_drops=audio_pressure_drops;d.audio_before_origin=audio_before_origin;
+    d.dropped_packets=dropped_packets;d.dropped_video_frames=dropped_video_frames;
 }
 static void log_message(void *,int level,const char *text) {
     if (level<=LOGGER_INFO) fprintf(stderr,"[airplay] %s\n",text);
@@ -43,13 +88,7 @@ bool Receiver::idle_for_profile_change() {
 ReceiverDiagnostics Receiver::diagnostics() {
     std::lock_guard<std::mutex> l(mutex);
     ReceiverDiagnostics d;
-    audio_snapshot(packets,d);
-    d.accepted_video_packets=accepted_video_packets;
-    d.queue_packets=packets.size();d.queue_bytes=bytes;
-    d.peak_queue_packets=peak_packets;d.peak_queue_bytes=peak_bytes;
-    d.video_queue_packets=video_packets;d.video_queue_bytes=video_bytes;
-    d.peak_video_queue_packets=peak_video_packets;d.peak_video_queue_bytes=peak_video_bytes;
-    d.dropped_packets=dropped_packets;d.dropped_video_frames=dropped_video_frames;
+    fill_queue_diagnostics(d);
     d.ingress_to_queue=ingress_to_queue.take_window();
     d.ingress_copy=ingress_copy.take_window();
     d.queue_lock_wait=queue_lock_wait.take_window();
@@ -61,25 +100,34 @@ ReceiverDiagnostics Receiver::diagnostics() {
 ReceiverDiagnostics Receiver::queue_snapshot() {
     std::lock_guard<std::mutex> l(mutex);
     ReceiverDiagnostics d;
-    audio_snapshot(packets,d);
-    d.accepted_video_packets=accepted_video_packets;
-    d.queue_packets=packets.size(); d.queue_bytes=bytes;
-    d.video_queue_packets=video_packets; d.video_queue_bytes=video_bytes;
-    d.dropped_packets=dropped_packets; d.dropped_video_frames=dropped_video_frames;
+    fill_queue_diagnostics(d);
     return d;
 }
 VideoTimingSample Receiver::take_video_timing() {
     std::lock_guard<std::mutex> l(mutex);
     return video_timing.take_window();
 }
-void Receiver::clear() { std::lock_guard<std::mutex> l(mutex);++transport_epoch;++audio_epoch;packets.clear();bytes=video_packets=video_bytes=0;accepted_video_packets=0;pairing.reset();client.clear();client_name.clear();video_timing.reset();ingress_to_queue.reset();ingress_copy.reset();queue_lock_wait.reset();queue_pop.reset();video_queue_residence.reset();audio_queue_residence.reset();last_video_arrival=0; }
-void Receiver::clear_audio_packets() {
-    std::lock_guard<std::mutex> l(mutex);
+void Receiver::clear() {
+    std::lock_guard<std::mutex> lock(mutex);
+    ++transport_epoch;
     ++audio_epoch;
-    for(auto i=packets.begin();i!=packets.end();) {
-        if(!i->video) { bytes-=i->data.size(); i=packets.erase(i); }
-        else ++i;
-    }
+    resets=ResetNotice();
+    mirror_audio_origin=0;
+    last_mirror_video_feed=0;
+    packets.clear();
+    bytes=video_packets=video_bytes=0;
+    accepted_video_packets=0;
+    pairing.reset();
+    client.clear();
+    client_name.clear();
+    video_timing.reset();
+    ingress_to_queue.reset();
+    ingress_copy.reset();
+    queue_lock_wait.reset();
+    queue_pop.reset();
+    video_queue_residence.reset();
+    audio_queue_residence.reset();
+    last_video_arrival=0;
 }
 static bool valid_key(const char *p) {
     if(!p || strlen(p)!=44) return false;
@@ -114,19 +162,9 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
     dnssd_set_airplay_features(dnssd,0,int(capabilities.direct_video));dnssd_set_airplay_features(dnssd,4,int(capabilities.hls));
     dnssd_set_airplay_features(dnssd,42,int(capabilities.hevc));dnssd_set_airplay_features(dnssd,27,int(capabilities.legacy_pairing));
     raop_callbacks_t cb={};cb.cls=this;
-    cb.audio_process=[](void *p,raop_ntp_t *,audio_decode_struct *d){self(p).enqueue(false,d->ct,d->ntp_time_remote,d->data,d->data_len);};
-    cb.video_process=[](void *p,raop_ntp_t *,video_decode_struct *d){
-        Receiver& r=self(p);
-        if(!d->is_h265 || r.active_profile.codec==MirrorCodec::ExperimentalHevc)
-            r.enqueue(true,d->is_h265?2:0,d->ntp_time_remote,d->data,d->data_len);
-    };
     cb.conn_feedback=[](void *p){self(p).activity=now_ns();};
     cb.conn_reset=[](void *p,int reason){self(p).request_reset(ResetOrigin::TransportCallback,reason);};
     cb.video_reset=[](void *p,reset_type_t reason){self(p).request_reset(ResetOrigin::VideoCallback,int(reason));};
-    cb.video_pause=[](void *p){self(p).paused=true;};
-    cb.video_resume=[](void *p){self(p).paused=false;};
-    cb.audio_flush=[](void *p){Receiver& r=self(p);r.clear_audio_packets();r.audio_flush=true;
-        fprintf(stderr,"[session] audio-flush epoch=%u\n",r.audio_epoch.load());};
     // UxPlay also calls video_flush for short-lived discovery HTTP connections.
     // The RTP lifecycle uses video_reset, so that is our session teardown boundary.
     cb.video_flush=[](void *){};
@@ -169,13 +207,6 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
                 r.active_profile.width,r.active_profile.height);
         if(accepted) r.incoming_video_codec=c==VIDEO_CODEC_H265?2:1;
         return accepted?0:-1;
-    };
-    cb.mirror_video_running=[](void *p,bool running){self(p).mirror=running;};
-    cb.report_client_request=[](void *p,char *id,char *model,char *name,bool *admit){
-        Receiver& r=self(p);std::lock_guard<std::mutex> l(r.mutex);
-        *admit=id && !r.ingress.closing && (r.client.empty()||r.client==id);
-        fprintf(stderr,"[client] model=%.80s admitted=%d\n",model?model:"unknown",int(*admit));
-        if(*admit) {r.ingress.admit();++r.stream_requests;r.client=id;r.client_name=name?std::string(name).substr(0,80):"";r.message=std::string("Connecting: ")+(name?std::string(name).substr(0,80):"device");r.activity=now_ns();}
     };
     cb.audio_set_metadata=[](void *p,const void *buffer,int length){
         Receiver& r=self(p);NowPlaying m;

@@ -36,12 +36,17 @@ int main() {
             assert(r.accepted_video_packets==unsigned(video));
         }
         ResetNotice notice=r.take_reset();assert(notice.sources==16 && !r.resets.pending());
-        r.request_reset(ResetOrigin::SenderTeardown,1);
-        assert(r.session_resets==3 && !r.take_reset().failure());
-        r.begin_close();assert(r.transport_epoch==1 && !r.ingress.accepting && r.ingress.closing);
+        assert(r.effective_resets==1 && r.suppressed_resets==1);
+        assert(r.transport_epoch==1 && !r.ingress.accepting && r.ingress.closing);
+        r.request_reset(ResetOrigin::SenderTeardown,1,0);
+        assert(r.session_resets==3 && r.suppressed_resets==2 && !r.take_reset().pending());
+        r.begin_close();assert(r.transport_epoch==1);
         // Closed ingress rejects even a would-be oversized packet without a new reset.
         r.enqueue(video,2,1,data.data(),int(limit+1));
         assert(r.session_resets==3 && !r.resets.pending() && r.packets.size()==1);
+        r.ingress.disconnected();assert(r.ingress.admit());
+        r.request_reset(ResetOrigin::SenderTeardown,1,1);
+        notice=r.take_reset();assert(notice.pending() && !notice.failure());
         assert(!current_audio_epoch(r.packets.front().transport_epoch,r.transport_epoch.load()));
     }
     // The production copy/relock path must reject retired transport epochs, even
