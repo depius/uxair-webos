@@ -11,6 +11,8 @@ build/tests/session-lifecycle-test
 python3 tests/teardown_origin_test.py
 c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -pthread -Itests/receiver_stub -Isrc tests/receiver_ingress_test.cpp src/receiver_ingress.cpp src/settings.cpp -o build/tests/receiver-ingress-test
 python3 tests/receiver_ingress_log_test.py
+c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -pthread -Itests/receiver_stub -Isrc tests/queue_pressure_test.cpp src/receiver_ingress.cpp -o build/tests/queue-pressure-test
+build/tests/queue-pressure-test
 c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -pthread -Itests/receiver_stub -Isrc tests/hevc_reinit_test.cpp src/receiver_ingress.cpp src/settings.cpp -o build/tests/hevc-reinit-test
 build/tests/hevc-reinit-test
 c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc tests/now_playing_test.cpp -o build/tests/now-playing-test
