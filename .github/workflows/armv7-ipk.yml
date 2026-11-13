@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - fix/pr10-b7-compatibility
+      - codex/uxair-queue-disconnects
   pull_request:
     branches:
       - main
@@ -31,25 +32,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes build-essential ffmpeg pkg-config libsdl2-dev libsdl2-ttf-dev libsdl2-image-2.0-0 fonts-dejavu-core libavcodec-dev libavutil-dev libswresample-dev
       - name: Validate source and run sanitizer-backed tests
+        env:
+          UBSAN_OPTIONS: halt_on_error=1
         run: |
           python3 tools/validate-metadata.py
           tools/test.sh
       - name: Validate B7 storage compatibility across execution UIDs
+        env:
+          UBSAN_OPTIONS: halt_on_error=1
         run: |
           c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -Isrc tests/b7_storage_layout_test.cpp src/settings.cpp src/usage_stats.cpp -o build/tests/b7-storage-layout-test
-          sudo build/tests/b7-storage-layout-test
+          sudo --preserve-env=UBSAN_OPTIONS build/tests/b7-storage-layout-test
   build-backends:
     name: ARMv7 ${{ matrix.media }} (${{ matrix.maturity }})
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - media: starfish
-            platform: webos3-4
-            maturity: Stable
-          - media: ndl
-            platform: webos5plus
-            maturity: Beta-Experimental
+        include: ${{ fromJSON(github.ref == 'refs/heads/codex/uxair-queue-disconnects' && '[{"media":"starfish","platform":"webos3-4","maturity":"TEST"}]' || '[{"media":"starfish","platform":"webos3-4","maturity":"Stable"},{"media":"ndl","platform":"webos5plus","maturity":"Beta-Experimental"}]') }}
     needs: native-tests
     # Both targets use the pinned Linux x86-64 SDK.
     # bootstrap.py selects the already checksum-pinned Linux x86-64 ARM SDK.
@@ -95,6 +94,7 @@ jobs:
           (cd dist && shasum -a 256 -c SHA256SUMS)
           cat dist/BUILD_COMMIT.txt dist/SHA256SUMS dist/ELF_REPORT.txt
       - name: Record release hold
+        if: github.ref != 'refs/heads/codex/uxair-queue-disconnects'
         run: |
           echo "ARMv7 ${{ matrix.media }} verified; ordinary runs upload no IPK/source artifact. Explicit TEST dispatch is separate."
           echo "Release hold: owner publication approval and security disposition are required. The dc3fe475 browser Malware verdict remains unresolved."
@@ -109,6 +109,31 @@ jobs:
           path: dist/test-candidates/${{ matrix.media }}/*
           if-no-files-found: error
           retention-days: 1
+      - name: Stage verified B7 queue-fix TEST package
+        if: github.ref == 'refs/heads/codex/uxair-queue-disconnects'
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(cat build/media-backend.txt)" = starfish
+          test "$(cat build/package-variant.txt)" = production
+          grep -Fx "commit=$GITHUB_SHA" build/app/build-info.txt
+          grep -Eq 'Tag_CPU_arch: v7$' dist/ELF_REPORT.txt
+          grep -F '[libplayerAPIs.so.1]' dist/ELF_REPORT.txt
+          grep -F '[libAcbAPI.so.1]' dist/ELF_REPORT.txt
+          mkdir -p dist/b7-test
+          name="UxAir-1.2.0-webOS3-4-Starfish-QUEUE-FIX-TEST-${GITHUB_SHA:0:12}.ipk"
+          cp dist/com.github.depius.uxair_1.2.0_arm-webos3-4.ipk "dist/b7-test/$name"
+          cp dist/BUILD_COMMIT.txt dist/ELF_REPORT.txt dist/b7-test/
+          printf '%s\n' 'Unreleased development build for LG OLED B7 / webOS 3.9 hardware testing.' \
+            'Uses the production app ID. Back up private state before installing in place.' > dist/b7-test/TEST-ONLY.txt
+          (cd dist/b7-test && sha256sum "$name" > SHA256SUMS && sha256sum -c SHA256SUMS && cat SHA256SUMS)
+      - name: Upload verified B7 queue-fix TEST package
+        if: github.ref == 'refs/heads/codex/uxair-queue-disconnects'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: UxAir-Starfish-B7-QUEUE-FIX-TEST-${{ github.sha }}
+          path: dist/b7-test/*
+          if-no-files-found: error
+          retention-days: 14
   build-ipk:
     name: build-ipk
     runs-on: ubuntu-24.04
@@ -116,7 +141,7 @@ jobs:
     if: always()
     needs: build-backends
     steps:
-      - name: Require both ARMv7 packages to pass
+      - name: Require all selected ARMv7 targets to pass
         env:
           BUILD_RESULT: ${{ needs.build-backends.result }}
         run: test "$BUILD_RESULT" = success
