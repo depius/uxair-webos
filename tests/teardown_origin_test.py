@@ -37,9 +37,9 @@ static const char *http_request_get_data(http_request_t *r,int *n){(void)r;*n=0;
 static void http_response_add_header(http_response_t *r,const char *k,const char *v){(void)r;(void)k;(void)v;}
 static int generic,sender,last_reason,stopped,destroyed,hls_count;
 static void generic_reset(void *p,int reason){(void)p;++generic;last_reason=reason;}
-static void uxair_sender_video_reset(void *p,int reason){(void)p;++sender;last_reason=reason;}
+static void uxair_sender_video_reset(void *p,int reason,unsigned epoch){(void)p;assert(epoch==42);++sender;last_reason=reason;}
 typedef struct {struct {void (*video_reset)(void*,int);void (*audio_stop_coverart_rendering)(void*);void *cls;} callbacks;int hls_pending;void *httpd;} raop_t;
-typedef struct {raop_t *raop;void *raop_rtp,*raop_rtp_mirror;} raop_conn_t;
+typedef struct {raop_t *raop;void *raop_rtp,*raop_rtp_mirror;unsigned uxair_epoch;bool uxair_admitted;} raop_conn_t;
 static void raop_rtp_stop(void *p){(void)p;++stopped;}
 static void raop_rtp_destroy(void *p){(void)p;++destroyed;}
 static void raop_rtp_mirror_stop(void *p){(void)p;++stopped;}
@@ -49,15 +49,16 @@ static int httpd_count_connection_type(void *p,int t){(void)p;(void)t;return hls
 suffix=r'''
 int main(void){
  raop_t r={0};r.callbacks.video_reset=generic_reset;
- for(int test=0;test<4;++test){
+ for(int test=0;test<5;++test){
   generic=sender=stopped=destroyed=last_reason=hls_count=0;r.hls_pending=test==3;
   array_node.count=test==2?0:1;array_node.items[0]=&items[0];items[0].type=test==0?96:110;
-  raop_conn_t c={&r,(void*)1,(void*)1};http_request_t req=0;http_response_t resp=0;
+  raop_conn_t c={&r,(void*)1,(void*)1,42,test!=4};http_request_t req=0;http_response_t resp=0;
   raop_handler_teardown(&c,&req,&resp,NULL,NULL);
   if(test==0)assert(!sender&&!generic&&stopped==1);
   if(test==1)assert(sender==1&&!generic&&last_reason==1&&stopped==1);
   if(test==2)assert(sender==1&&!generic&&last_reason==1&&destroyed==2);
   if(test==3)assert(!sender&&generic==1&&last_reason==5);
+  if(test==4)assert(!sender&&!generic&&stopped==1);
  }
  puts("PASS: pinned TEARDOWN audio/video/all-stream/HLS paths retain cleanup and exact origin");
 }

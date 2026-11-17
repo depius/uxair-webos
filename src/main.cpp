@@ -177,7 +177,9 @@ int main(int argc,char **argv) {
     Packet pending;
     std::vector<uint8_t> configuration;
     uint64_t origin=0;
-    int64_t audio_end=0;
+    int64_t audio_end=0,last_audio_feed_ns=0;
+    uint64_t previous_video_enqueued=0,previous_video_dequeued=0;
+    uint64_t previous_audio_enqueued=0,previous_audio_dequeued=0;
     std::vector<uint8_t> silence(441*4,0);
     int64_t start=0,last_ui=0,last_stats=now_ns(),last_live=last_stats,stall=0,session_started=0,app_started=last_stats;
     // Now Playing (audio-only): last draw, last full-brightness moment, shown track and progress
@@ -196,8 +198,9 @@ int main(int argc,char **argv) {
     PrerollVideoHold<Packet> preroll_video_hold;
     auto finish=[&](bool error=false,bool preserve_receiver=false,bool preserve_pending=false,ResetNotice reset_notice=ResetNotice()){
         preroll_video_hold.clear();hevc_feed_schedule.reset();
-        const unsigned closing_epoch=receiver.transport_epoch.load();
+        const unsigned closing_epoch=reset_notice.pending()?reset_notice.epoch:receiver.transport_epoch.load();
         if(!preserve_receiver)receiver.begin_close();
+        receiver.set_mirror_audio_schedule(0,0);
         const ReceiverDiagnostics closing_queue=receiver.queue_snapshot();
 #ifdef UXAIR_MEDIA_STARFISH
         const uint64_t decoder_callbacks=decoder_callback_diagnostics.total(media.frames.load());
@@ -244,7 +247,7 @@ int main(int argc,char **argv) {
             history_storage=usage_storage_bytes(state_dir+"/usage-v1");history_dirty=true;
         }
         media.close();decoder.reset();hevc.reset();hevc_startup.reset();if(!preserve_receiver){receiver.disconnect();if(background_enabled)bus.return_to_previous();}opened=false;have_pending=preserve_pending;
-        origin=0;start=0;stall=0;session_started=0;audio_end=0;configuration.clear();last_ui=0;last_paused=false;audio_started=false;audio_only_playback=false;audio_flush_paused=false;
+        origin=0;start=0;stall=0;session_started=0;audio_end=0;last_audio_feed_ns=0;configuration.clear();last_ui=0;last_paused=false;audio_started=false;audio_only_playback=false;audio_flush_paused=false;
         session_success=false;session_started_utc=0;observed_width=observed_height=0;hardware_decoder_errors=0;
         nav=UiNavigation();ui_visible=true;np_drawn=np_progress_seen=np_flash=np_tick=np_fed_at=0;np_fed=0;np_anim=false;np_elapsed=0;np_track.clear();
         video_feed_timing.reset();video_parse_time.reset();video_schedule_late.reset();video_pending_time.reset();
@@ -305,6 +308,7 @@ int main(int argc,char **argv) {
     };
     auto flush_audio=[&](){
         decoder.reset();
+        last_audio_feed_ns=0;
         apply_audio_flush(audio_only_playback,have_pending && pending.video,have_pending,stall,audio_flush_paused);
         fprintf(stderr,"[session] generation=%u transition=audio-flush epoch=%u paused=%d pending=%d\n",
                 sessions_started,receiver.audio_epoch.load(),int(audio_flush_paused),int(have_pending));
@@ -596,13 +600,10 @@ int main(int argc,char **argv) {
             last_ui=0;
         }
         const ResetNotice reset=receiver.take_reset();
-        if(reset.pending() && reset.epoch!=receiver.transport_epoch.load())
-            fprintf(stderr,"[session] obsolete-reset sources=%u event_epoch=%u current_epoch=%u video_reason=%d transport_reason=%d\n",
-                reset.sources,reset.epoch,receiver.transport_epoch.load(),reset.video_reason,reset.transport_reason);
-        if(reset.pending() && reset.epoch==receiver.transport_epoch.load()) {
+        if(reset.pending()) {
             ReceiverDiagnostics q=receiver.queue_snapshot();
             fprintf(stderr,"[session] transport requested reset generation=%u epoch=%u opened=%d stall_ms=%.1f queue=%zu/%zu\n",
-                sessions_started,receiver.transport_epoch.load(),int(opened),stall?(now-stall)/1e6:0.0,q.queue_packets,q.queue_bytes);
+                sessions_started,reset.epoch,int(opened),stall?(now-stall)/1e6:0.0,q.queue_packets,q.queue_bytes);
             fprintf(stderr,"[session] reset-class=%s sources=%u video_reason=%d transport_reason=%d\n",
                 reset.failure()?"failure":"sender-teardown",reset.sources,reset.video_reason,reset.transport_reason);
             audio_only_failed=false;
@@ -652,6 +653,7 @@ int main(int argc,char **argv) {
             while(opened && !audio_started && !last_paused && now-receiver.last_audio_arrival>500000000 && now-start-audio_end>100000000 && fills++<10) {
                 auto r=media.feed(silence.data(),silence.size(),audio_end,false);
                 if(r!=FeedResult::Accepted)break;
+                last_audio_feed_ns=now_ns();
                 audio_end+=10000000;
                 ++silence_blocks;
             }
@@ -784,6 +786,17 @@ int main(int argc,char **argv) {
                 (unsigned long long)(media.feed_audio_retries.load()-last_feed_audio_retries),
                 (media.feed_audio_accepted.load()-last_feed_audio)/window_s,
                 media.feed_calls.load()?media.feed_time_ns.load()/double(media.feed_calls.load())/1000:0.0,media.feed_max_time_ns.load()/1000.0);
+            if(opened) fprintf(stderr,"[queue-flow] audio=%zu/%zu video=%zu/%zu oldest_ms=%.1f audio_due_in_ms=%.1f audio_in_s=%.1f audio_out_s=%.1f video_in_s=%.1f video_out_s=%.1f audio_peak=%zu/%zu pressure_drops=%llu pre_origin_drops=%llu last_audio_feed_ms=%.1f pending=%s held_video=%d paused=%d\n",
+                q.audio_queue_packets,q.audio_queue_bytes,q.video_queue_packets,q.video_queue_bytes,
+                q.oldest_packet_ns?std::max<int64_t>(0,now-q.oldest_packet_ns)/1e6:-1.0,
+                q.audio_pts_min?((q.audio_pts_min>=origin?double(q.audio_pts_min-origin):-double(origin-q.audio_pts_min))-(now-start))/1e6:0.0,
+                (q.audio_enqueued-previous_audio_enqueued)/window_s,(q.audio_dequeued-previous_audio_dequeued)/window_s,
+                (q.video_enqueued-previous_video_enqueued)/window_s,(q.video_dequeued-previous_video_dequeued)/window_s,
+                q.peak_audio_queue_packets,q.peak_audio_queue_bytes,(unsigned long long)q.audio_pressure_drops,(unsigned long long)q.audio_before_origin,
+                last_audio_feed_ns?std::max<int64_t>(0,now-last_audio_feed_ns)/1e6:-1.0,
+                have_pending?(pending.video?"video":"audio"):"none",int(preroll_video_hold.pending()),int(last_paused));
+            previous_audio_enqueued=q.audio_enqueued;previous_audio_dequeued=q.audio_dequeued;
+            previous_video_enqueued=q.video_enqueued;previous_video_dequeued=q.video_dequeued;
             if(opened) fprintf(stderr,"[pacing] arrival_gap_max_ms=%.2f pts_gap_max_ms=%.2f feed_gap_max_ms=%.2f arrival_gaps_gt100=%llu pts_gaps_gt100=%llu both=%llu arrival_only=%llu pts_only=%llu pts_discontinuities=%llu video_idle_ms=%.0f mirror=%d paused=%d callbacks_idle_ms=%.0f\n",
                 timing.arrival_interval_max_ns/1e6,timing.interval_max_ns/1e6,fed.arrival_interval_max_ns/1e6,
                 (unsigned long long)timing.arrival_gaps_over_100ms,(unsigned long long)timing.pts_gaps_over_100ms,
@@ -805,8 +818,8 @@ int main(int argc,char **argv) {
                 q.audio_queue_residence.average_ms(),q.audio_queue_residence.maximum_ms());
             if(opened) fprintf(stderr,"[audio] sent=%u decode_errors=%u decode_avg_us=%.1f decode_max_us=%.1f late=%u silence=%u\n",
                 audio_count,decode_errors,audio_decode_calls?audio_decode_ns/double(audio_decode_calls)/1000:0.0,audio_decode_max_ns/1000.0,late_audio,silence_blocks);
-            fprintf(stderr,"[health] uptime_s=%.0f session_age_s=%.1f sessions_started=%u sessions_ended=%u reset_events=%u rss_kb=%ld\n",
-                (now-app_started)/1e9,session_started?(now-session_started)/1e9:0.0,sessions_started,sessions_ended,receiver.session_resets.load(),process_rss_kb());
+            fprintf(stderr,"[health] uptime_s=%.0f session_age_s=%.1f sessions_started=%u sessions_ended=%u reset_events=%u effective_resets=%u suppressed_resets=%u rss_kb=%ld\n",
+                (now-app_started)/1e9,session_started?(now-session_started)/1e9:0.0,sessions_started,sessions_ended,receiver.session_resets.load(),receiver.effective_resets.load(),receiver.suppressed_resets.load(),process_rss_kb());
             last_decoder_events=frame_events;
             last_feed_video=media.feed_video_accepted.load();last_feed_audio=media.feed_audio_accepted.load();
             last_feed_video_retries=media.feed_video_retries.load();last_feed_audio_retries=media.feed_audio_retries.load();
@@ -946,6 +959,9 @@ int main(int argc,char **argv) {
             // Reusing the loop's old `now` would silently consume it in Load().
             opened=true;origin=pending.timestamp;session_started=now_ns();
             start=schedule_start(pending.arrival_ns,session_started,200000000LL);stall=0;++sessions_started;
+#ifdef UXAIR_MEDIA_STARFISH
+            receiver.set_mirror_audio_schedule(origin,start);
+#endif
             receiver.diagnostic_generation=sessions_started;receiver.diagnostic_session_open=true;
             decoder_callback_diagnostics.reset();decoder_callback_diagnostics.started();
             if(incoming_hevc)hevc_transport_failures=0;
@@ -1017,7 +1033,10 @@ int main(int argc,char **argv) {
                 fprintf(stderr,"[media-init] reopen_ms=%.2f success=%d\n",(now_ns()-open_begin)/1e6,int(media_opened));
                 if(!media_opened) {report_media_start_failure(false,"h264-reopen-failed");continue;}
                 decoder_callback_diagnostics.started();
-                origin=pending.timestamp;start=schedule_start(pending.arrival_ns,now_ns(),0);pts=0;audio_end=0;audio_started=false;decoder.reset();
+                origin=pending.timestamp;start=schedule_start(pending.arrival_ns,now_ns(),0);pts=0;audio_end=0;last_audio_feed_ns=0;audio_started=false;decoder.reset();
+#ifdef UXAIR_MEDIA_STARFISH
+                receiver.set_mirror_audio_schedule(origin,start);
+#endif
                 video_feed_timing.reset();
                 live_feed_last=0;
                 last_decoder_events=0;last_feed_video=last_feed_audio=0;last_feed_video_retries=last_feed_audio_retries=0;
@@ -1080,7 +1099,10 @@ int main(int argc,char **argv) {
                     (start-previous_due)/1e6,(hevc_feed_schedule.feed_due(start)-reopen_done)/1e6,
                     pending.arrival_ns?(reopen_done-pending.arrival_ns)/1e6:0.0,pending.transport_epoch);
 #endif
-                origin=pending.timestamp;pts=0;audio_end=0;audio_started=false;decoder.reset();
+                origin=pending.timestamp;pts=0;audio_end=0;last_audio_feed_ns=0;audio_started=false;decoder.reset();
+#ifdef UXAIR_MEDIA_STARFISH
+                receiver.set_mirror_audio_schedule(origin,start);
+#endif
                 video_feed_timing.reset();live_feed_last=0;
                 last_decoder_events=0;last_feed_video=last_feed_audio=0;
                 last_feed_video_retries=last_feed_audio_retries=0;
@@ -1164,11 +1186,14 @@ int main(int argc,char **argv) {
                         hevc_first_feed_logged=true;
                     }
                 }
+#ifdef UXAIR_MEDIA_STARFISH
+                receiver.note_mirror_video_feed(feed_end);
+#endif
                 ++video_count;
                 video_feed_timing.record(pending.timestamp,feed_end);
                 video_schedule_late.record(uint64_t(std::max<int64_t>(0,feed_begin-(start+pts))));
                 video_pending_time.record(uint64_t(std::max<int64_t>(0,feed_begin-pending.dequeued_ns)));
-            } else {++audio_count;audio_end=pts+int64_t(pending.data.size()/4)*1000000000/44100;}
+            } else {++audio_count;last_audio_feed_ns=feed_end;audio_end=pts+int64_t(pending.data.size()/4)*1000000000/44100;}
             if(stall)fprintf(stderr,"[feed-stall] generation=%u recovered duration_ms=%.1f\n",sessions_started,(now-stall)/1e6);
             have_pending=false;stall=0;
         } else if(result==FeedResult::Retry) {
