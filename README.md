@@ -11,8 +11,8 @@ UxAir is officially released and has been tested on an LG OLED B7 (2017) running
 
 | TV software | Choose this package | Support |
 | --- | --- | --- |
-| webOS 3–4 | `UxAir-1.2.0-webOS3-4-Starfish.ipk` | **Stable**. Tested on an LG OLED B7 running webOS 3.9. |
-| webOS 5+ | `UxAir-1.2.0-webOS5plus-NDL-Beta.ipk` | **Public Beta / Experimental**. This build has not yet been physically validated. |
+| webOS 3–4 | **Starfish IPK** from the latest release | **Stable**. Tested on LG OLED B7 (webOS 3.9); webOS 3.4 startup and SDL compatibility fixes contributed by afds. |
+| webOS 5+ | **NDL Beta IPK** from the latest release | **Public Beta / Experimental**. The current build has not yet been physically validated on hardware. |
 
 Both packages use `com.github.depius.uxair`. Choose one for the TV's webOS version. The earlier C4/webOS 10.3.1 results apply to ALQU-IT's original NDL contribution. See the [B7 acceptance record](docs/B7_FINAL_TEST.md), [NDL port notes](docs/PORT-WEBOS10.md) and [Beta reporting guide](docs/NDL_BETA_TESTING.md).
 
@@ -29,6 +29,7 @@ Both packages use `com.github.depius.uxair`. Choose one for the TV's webOS versi
 - Magic Remote pointer, arrow, OK, and Back navigation.
 - Large on-screen AirPlay PIN pairing, saved configuration, session history, and automatic decoder recovery/fallback.
 - Lightweight diagnostics separating advertised rate, incoming rate, accepted Feed rate, and decoder callbacks. Decoder callback rate does not claim displayed FPS.
+- Starfish audio-queue pressure recovery and session-epoch safeguards, with queue timing and reset diagnostics (1.3.0).
 
 The iPhone, iPad, or Mac selects the actual AirPlay codec and rate. Selecting HEVC advertises HEVC alongside H.264; it cannot force a sender that chooses H.264. Direct Photos playback is distinct from Photos or video shown by mirroring. Direct Photos/video, HLS, AirPlay 2, HDR/Main10, and native 4K scanout are not supported or verified.
 
@@ -49,7 +50,7 @@ A fresh installation defaults to H.264 at 1920×1080 and 30 FPS. Valid saved pro
 
 - A compatible rooted LG webOS TV with native application development enabled.
 - A TV and sender on the same local network with multicast/mDNS discovery available.
-- Tested on LG OLED B7 (2017) running rooted webOS 3.9. Other LG webOS models may be compatible but have not yet been verified.
+- Tested on LG OLED B7 (2017) running rooted webOS 3.9. A contributor tested webOS 3.4 on an LG 60UH8507-ZA using the compatibility fixes in 1.3.0. Other models may be compatible but have not been verified.
 - The NDL package is Beta/Experimental and has not been physically validated in the current build. The contributor reported earlier C4/webOS 10.3.1 testing before these shared follow-ups.
 - The ARMv7 build uses the pinned webOS Brew toolchain. CI performs host tests and builds/validates the ARMv7 IPK.
 
@@ -57,16 +58,13 @@ A fresh installation defaults to H.264 at 1920×1080 and 30 FPS. Valid saved pro
 
 ### Download and install
 
-Get UxAir from [GitHub Releases](https://github.com/depius/uxair-webos/releases/latest). Choose the package matching your TV's webOS version and check the downloaded file against the release's `SHA256SUMS`. The commands below show the current package names; for older releases, use the filenames listed in that release.
+Get UxAir from [GitHub Releases](https://github.com/depius/uxair-webos/releases/latest). Choose the Starfish or NDL package matching your TV's webOS version and verify it against that release's `SHA256SUMS`. Use the exact downloaded filename for installation; filenames include the release version.
 
 With the webOS CLI and a configured target named `YOUR_TV`, run the install command for your package:
 
 ```sh
-# webOS 3–4: Starfish Stable
-ares-install -d YOUR_TV UxAir-1.2.0-webOS3-4-Starfish.ipk
-
-# webOS 5+: NDL Beta
-ares-install -d YOUR_TV UxAir-1.2.0-webOS5plus-NDL-Beta.ipk
+# Install the downloaded IPK matching your TV's webOS version
+ares-install -d YOUR_TV "PATH_TO_DOWNLOADED_IPK"
 ```
 
 Launch with `ares-launch -d YOUR_TV com.github.depius.uxair`. Select UxAir from Screen Mirroring or as the AirPlay audio output. Enter the PIN if prompted. Beta testers can report their TV model, webOS version and sanitized logs using the [Beta reporting guide](docs/NDL_BETA_TESTING.md).
@@ -122,6 +120,7 @@ This project builds on the excellent work of:
 - **UxPlay by FDH2** — the original open-source AirPlay mirroring server.
 - [**uxplay-webOS by Daniel Filho (@danlflh)**](https://github.com/danlflh/uxplay-webos) — the original webOS port.
 - [**ALQU-IT**](https://github.com/depius/uxair-webos/pull/10) — the NDL DirectMedia port and its initial C4 testing.
+- [**afds**](https://github.com/depius/uxair-webos/pull/13) — webOS 3.4 startup and SDL 2.0.3 compatibility fixes.
 
 UxAir extends this foundation with additional features, performance improvements, and a redesigned interface. Development and adaptation: [@depius](https://github.com/depius). This repository is [depius/uxair-webos](https://github.com/depius/uxair-webos) (formerly `uxplay-webos`). UxAir is licensed under [GPL-3.0-or-later](LICENSE); corresponding sources, upstream attribution, and third-party notices are preserved in [THIRD_PARTY.md](THIRD_PARTY.md).
 
