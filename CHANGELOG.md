@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-11-17
+
+### Fixed
+
+- Prevent unintended Starfish mirroring disconnects when the 512-packet queue fills with future-dated audio; preserve due audio and progressing video using bounded pressure relief.
+- Coalesce duplicate session resets, close receiver ingress atomically, and reject RTP callbacks from retired session epochs.
+- Fix startup on older webOS 3.4 systems where jailed OpenSSL cannot access `/dev/random` (thanks to [afds](https://github.com/depius/uxair-webos/pull/13)).
+- Avoid SDL symbols unavailable on SDL 2.0.3 so History and cover-art rendering work on older webOS 3.x systems (thanks to afds).
+
+### Changed
+
+- Add audio/video queue occupancy, timing, Feed activity, pressure-drop and reset-suppression diagnostics.
+- Starfish webOS 3–4 remains Stable; NDL webOS 5+ remains Public Beta, without physical validation of the current NDL build.
+- The owner reported three days of stable B7 mirroring after the queue fix and subsequently accepted the combined 1.3.0 TEST candidate. Under exceptional pressure, shedding far-future audio may cause brief audible gaps.
+
 ## [1.2.0]
 
 Starfish is Stable for webOS 3–4. The owner accepted the exact Starfish build at `9af36d1b2e3902bfa26ab349140af394b3b95a3f` on an LG OLED B7 with webOS 3.9. NDL for webOS 5+ is Public Beta / Experimental with no current-build physical validation. The 1.1.0 development series and its [published GitHub release](https://github.com/depius/uxair-webos/releases/tag/v1.1.0) remain part of the project history.
