@@ -205,7 +205,7 @@ bool Shell::now_playing(const NowPlayingView& v) {
             SDL_RWops *rw=SDL_RWFromConstMem(v.cover->data(),int(v.cover->size()));
             const load_image_fn load=load_image();
             SDL_Surface *image=rw&&load?load(rw,1):nullptr;
-            if(rw&&!load)SDL_RWclose(rw);
+            if(rw&&!load)rw->close(rw); // SDL_RWclose is a macro before SDL 2.0.10 (webOS 3.x ships 2.0.3)
             if(image && !artwork_dimensions(image->w,image->h)) {
                 SDL_FreeSurface(image);image=nullptr;
                 fprintf(stderr,"[now-playing] decoded cover exceeds pixel budget\n");
@@ -440,7 +440,8 @@ void Shell::draw_history(const UiHistoryData& data,const std::vector<UiRow>& row
         }
         const int n=int(bars.size());
         SDL_Rect previous_clip;SDL_RenderGetClipRect(renderer,&previous_clip);
-        const bool had_clip=SDL_RenderIsClipEnabled(renderer)==SDL_TRUE;
+        // SDL_RenderIsClipEnabled needs SDL 2.0.4; webOS 3.x ships 2.0.3. A disabled clip reads back as an empty rect.
+        const bool had_clip=previous_clip.w>0&&previous_clip.h>0;
         const SDL_Rect plot={px,py,pw,plot_h};SDL_RenderSetClipRect(renderer,&plot);
         for(int i=0;i<n;++i) {
             const auto& b=bars[size_t(i)];
