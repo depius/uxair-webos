@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - Unreleased (hardware TEST candidate)
+
+- Stabilize Starfish mirroring under audio queue pressure; coalesce duplicate resets and reject stale RTP session epochs (PR #14).
+- Extend webOS 3.4 compatibility: OpenSSL entropy source in restricted jails and SDL 2.0.3-safe History/cover-art rendering (thanks to afds, PR #13).
+- Pending combined B7 hardware validation; neither PR has been merged into main and no public release has been published.
+
 ## [1.2.0]
 
 Starfish is Stable for webOS 3–4. The owner accepted the exact Starfish build at `9af36d1b2e3902bfa26ab349140af394b3b95a3f` on an LG OLED B7 with webOS 3.9. NDL for webOS 5+ is Public Beta / Experimental with no current-build physical validation. The 1.1.0 development series and its [published GitHub release](https://github.com/depius/uxair-webos/releases/tag/v1.1.0) remain part of the project history.
