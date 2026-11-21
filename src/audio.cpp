@@ -35,9 +35,13 @@ bool AudioDecoder::configure(unsigned codec) {
     return true;
 }
 bool AudioDecoder::decode_adts(const uint8_t *data, size_t size, std::vector<uint8_t>& pcm) {
-    return decode(adts_aac, data, size, pcm);
+    return decode_packet(adts_aac, data, size, pcm);
 }
 bool AudioDecoder::decode(unsigned codec, const uint8_t *data, size_t size, std::vector<uint8_t>& pcm) {
+    if (codec == adts_aac) { pcm.clear(); return false; }
+    return decode_packet(codec, data, size, pcm);
+}
+bool AudioDecoder::decode_packet(unsigned codec, const uint8_t *data, size_t size, std::vector<uint8_t>& pcm) {
     pcm.clear();
     if (!data || !size || size>1048576) return false;
     if (codec==1) {

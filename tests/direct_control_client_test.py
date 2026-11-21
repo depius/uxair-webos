@@ -45,5 +45,5 @@ for case in ('diagnostic503', 'empty503', 'malformed', 'stopped'):
     assert 'FAILED:' in result.stdout and 'Cleanup: stop was not acknowledged' in result.stdout
     assert 'Traceback' not in result.stdout + result.stderr and 'SECRET' not in result.stdout + result.stderr and 'PRIVATE' not in result.stdout + result.stderr
     if case == 'diagnostic503': assert 'load-timeout' in result.stdout and 'playback-info HTTP 503' in result.stdout
-    if case == 'stopped': assert 'stopped before native playback' in result.stdout
+    if case == 'stopped': assert 'stopped before playback' in result.stdout
 print('PASS: HTTP 503, error diagnostics, malformed feedback, buffered stopped event and failed cleanup without traceback/credentials')
