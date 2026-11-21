@@ -63,7 +63,8 @@ static uint64_t sat_add(uint64_t a,uint64_t b) {
     return b>UINT64_MAX-a?UINT64_MAX:a+b;
 }
 static void daily_add(UsageStats& stats,const SessionSummary& s) {
-    if(s.kind==SessionKind::Direct||!s.started_utc||!s.duration_ms)return;
+    if(!s.started_utc||!s.duration_ms)return;
+    if(s.kind==SessionKind::Direct&&!stats.direct_from_day)stats.direct_from_day=usage_utc_day(s.started_utc);
     const uint64_t first_ms=s.started_utc*1000;
     if(first_ms/1000!=s.started_utc||UINT64_MAX-first_ms<s.duration_ms)return;
     uint64_t cursor=first_ms,end=first_ms+s.duration_ms;
@@ -74,7 +75,8 @@ static void daily_add(UsageStats& stats,const SessionSummary& s) {
         auto it=std::lower_bound(stats.daily.begin(),stats.daily.end(),day,
             [](const DailyUsage& a,uint32_t b){return a.utc_day<b;});
         if(it==stats.daily.end()||it->utc_day!=day){DailyUsage d;d.utc_day=day;it=stats.daily.insert(it,d);}
-        if(s.kind==SessionKind::Audio){it->audio_ms=sat_add(it->audio_ms,part);if(it->audio_sessions<UINT32_MAX)++it->audio_sessions;}
+        if(s.kind==SessionKind::Direct){it->direct_ms=sat_add(it->direct_ms,part);if(it->direct_sessions<UINT32_MAX)++it->direct_sessions;}
+        else if(s.kind==SessionKind::Audio){it->audio_ms=sat_add(it->audio_ms,part);if(it->audio_sessions<UINT32_MAX)++it->audio_sessions;}
         else {it->mirror_ms=sat_add(it->mirror_ms,part);if(it->mirror_sessions<UINT32_MAX)++it->mirror_sessions;}
         cursor+=part;
     }
@@ -86,7 +88,7 @@ static void daily_add(UsageStats& stats,const SessionSummary& s) {
     if(!stats.daily_from_day||stats.daily_from_day>usage_utc_day(s.started_utc))stats.daily_from_day=usage_utc_day(s.started_utc);
     if(stats.daily_from_day<cutoff)stats.daily_from_day=cutoff;
 }
-void UsageStats::record(const SessionSummary& s) {
+void UsageStats::record(const SessionSummary& s,bool aggregate) {
     if(successful_sessions<UINT64_MAX)++successful_sessions;
     if(s.kind==SessionKind::Audio){if(audio_sessions<UINT64_MAX)++audio_sessions;}
     else if(s.kind==SessionKind::Direct){if(direct_sessions<UINT64_MAX)++direct_sessions;}
@@ -95,8 +97,9 @@ void UsageStats::record(const SessionSummary& s) {
     feed_frames=sat_add(feed_frames,s.feed_frames);packet_drops=sat_add(packet_drops,s.packet_drops);
     video_frame_drops=sat_add(video_frame_drops,s.video_frame_drops);decoder_errors=sat_add(decoder_errors,s.decoder_errors);
     session_errors=sat_add(session_errors,s.session_errors);
-    recent.push_front(s);while(recent.size()>MaxRecentSessions)recent.pop_back();daily_add(*this,s);
+    recent.push_front(s);while(recent.size()>MaxRecentSessions)recent.pop_back();if(aggregate)daily_add(*this,s);
 }
+void UsageStats::record_direct_day(uint32_t day,uint64_t duration){SessionSummary s;s.kind=SessionKind::Direct;s.started_utc=uint64_t(day)*86400;s.duration_ms=std::min<uint64_t>(duration,86400000);daily_add(*this,s);}
 void UsageStats::reset(){*this=UsageStats();}
 static bool read_summary(const std::string& line,SessionSummary& s) {
     std::istringstream in(line);std::string tag,extra;unsigned kind=0;
@@ -128,8 +131,8 @@ bool load_usage_stats(const std::string& path,UsageStats& stats) {
     if(!exists)return false;
     std::istringstream in(data);std::string line;
     if(!std::getline(in,line)){stats.storage_corrupt=true;return false;}
-    bool v1=line=="UXPLAY_USAGE_V1",v2=line=="UXAIR_USAGE_V2";
-    if(!v1&&!v2){stats.storage_corrupt=true;return false;}
+    bool v1=line=="UXPLAY_USAGE_V1",v2=line=="UXAIR_USAGE_V2",v3=line=="UXAIR_USAGE_V3";
+    if(!v1&&!v2&&!v3){stats.storage_corrupt=true;return false;}
     UsageStats parsed;
     if(!std::getline(in,line)||line.size()>300||!read_totals(line,parsed)){stats.storage_corrupt=true;return false;}
     if(v1) {
@@ -139,7 +142,7 @@ bool load_usage_stats(const std::string& path,UsageStats& stats) {
     } else {
         std::string tag,extra;
         if(!std::getline(in,line)||line.size()>40){stats.storage_corrupt=true;return false;}
-        std::istringstream meta(line);if(!(meta>>tag>>parsed.daily_from_day)||(meta>>extra)||tag!="coverage"){stats.storage_corrupt=true;return false;}
+        std::istringstream meta(line);if(!(meta>>tag>>parsed.daily_from_day)||(v3&&!(meta>>parsed.direct_from_day))||(meta>>extra)||tag!="coverage"){stats.storage_corrupt=true;return false;}
         if(!std::getline(in,line)||line.size()>20){stats.storage_corrupt=true;return false;}
         std::istringstream sc(line);size_t count=0;if(!(sc>>tag>>count)||(sc>>extra)||tag!="sessions"||count>UsageStats::MaxRecentSessions){stats.storage_corrupt=true;return false;}
         for(size_t i=0;i<count;++i){if(!std::getline(in,line)||line.size()>300){stats.storage_corrupt=true;return false;}
@@ -149,23 +152,25 @@ bool load_usage_stats(const std::string& path,UsageStats& stats) {
         uint32_t previous=0;
         for(size_t i=0;i<count;++i){if(!std::getline(in,line)||line.size()>200){stats.storage_corrupt=true;return false;}
             std::istringstream row(line);DailyUsage d;
-            if(!(row>>tag>>d.utc_day>>d.mirror_ms>>d.audio_ms>>d.mirror_sessions>>d.audio_sessions)||(row>>extra)||
+            if(!(row>>tag>>d.utc_day>>d.mirror_ms>>d.audio_ms>>d.mirror_sessions>>d.audio_sessions)||
+               (v3&&!(row>>d.direct_ms>>d.direct_sessions))||(row>>extra)||
                tag!="day"||(i&&d.utc_day<=previous)){stats.storage_corrupt=true;return false;}
             parsed.daily.push_back(d);previous=d.utc_day;}
         if(std::getline(in,line)){stats.storage_corrupt=true;return false;}
     }
+    if(!v3)parsed.direct_from_day=parsed.direct_sessions?usage_utc_day(uint64_t(std::time(nullptr))):parsed.daily_from_day;
     parsed.storage_corrupt=false;stats=parsed;return true;
 }
 bool save_usage_stats(const std::string& path,const UsageStats& s) {
     if(s.storage_corrupt||s.recent.size()>UsageStats::MaxRecentSessions||s.daily.size()>UsageStats::MaxDailyRecords)return false;
-    std::ostringstream out;out<<"UXAIR_USAGE_V2\n";
+    std::ostringstream out;out<<"UXAIR_USAGE_V3\n";
     out<<"totals "<<s.playback_ms<<" "<<s.successful_sessions<<" "<<s.mirror_sessions<<" "<<s.audio_sessions<<" "<<s.direct_sessions<<" "
        <<s.incoming_frames<<" "<<s.feed_frames<<" "<<s.packet_drops<<" "<<s.video_frame_drops<<" "<<s.decoder_errors<<" "<<s.session_errors<<"\n";
-    out<<"coverage "<<s.daily_from_day<<"\nsessions "<<s.recent.size()<<"\n";
+    out<<"coverage "<<s.daily_from_day<<" "<<s.direct_from_day<<"\nsessions "<<s.recent.size()<<"\n";
     for(const auto& x:s.recent)out<<"session "<<x.started_utc<<" "<<x.duration_ms<<" "<<unsigned(x.kind)<<" "<<x.width<<" "<<x.height<<" "<<x.codec<<" "
         <<x.incoming_frames<<" "<<x.feed_frames<<" "<<x.packet_drops<<" "<<x.video_frame_drops<<" "<<x.decoder_errors<<" "<<x.session_errors<<"\n";
     out<<"daily "<<s.daily.size()<<"\n";
-    for(const auto& d:s.daily)out<<"day "<<d.utc_day<<" "<<d.mirror_ms<<" "<<d.audio_ms<<" "<<d.mirror_sessions<<" "<<d.audio_sessions<<"\n";
+    for(const auto& d:s.daily)out<<"day "<<d.utc_day<<" "<<d.mirror_ms<<" "<<d.audio_ms<<" "<<d.mirror_sessions<<" "<<d.audio_sessions<<" "<<d.direct_ms<<" "<<d.direct_sessions<<"\n";
     std::string bytes=out.str();if(bytes.size()>UsageStats::MaxSerializedBytes)return false;
     std::string temp=path+".tmp";FILE *f=fopen(temp.c_str(),"wb");if(!f)return false;chmod(temp.c_str(),0600);
     bool ok=fwrite(bytes.data(),1,bytes.size(),f)==bytes.size();
@@ -225,8 +230,9 @@ UsageSummary summarize_usage(const UsageStats& stats,UsagePeriod p,uint32_t toda
         }
         b.future=starts[size_t(i)]>today;
         b.available=coverage&&!b.future&&ends[size_t(i)]>coverage;
+        b.direct_available=b.available&&(!stats.direct_from_day||ends[size_t(i)]>stats.direct_from_day);
         // Current-to-date coverage is separate from missing earlier records.
-        b.partial=b.available&&coverage>starts[size_t(i)];
+        b.partial=b.available&&(coverage>starts[size_t(i)]||(stats.direct_sessions&&stats.direct_from_day>starts[size_t(i)]));
         if(!calendar&&monthly)b.partial=b.partial||b.current; // legacy rolling summaries
     }
     for(const DailyUsage& d:stats.daily) {
@@ -234,9 +240,9 @@ UsageSummary summarize_usage(const UsageStats& stats,UsagePeriod p,uint32_t toda
         for(int i=0;i<slots;++i) {
             if(d.utc_day<starts[size_t(i)]||d.utc_day>=ends[size_t(i)])continue;
             UsageBar& b=out.bars[size_t(i)];if(!b.available)break;
-            b.mirror_ms=sat_add(b.mirror_ms,d.mirror_ms);b.audio_ms=sat_add(b.audio_ms,d.audio_ms);
-            out.mirror_ms=sat_add(out.mirror_ms,d.mirror_ms);out.audio_ms=sat_add(out.audio_ms,d.audio_ms);
-            out.mirror_sessions=sat_add(out.mirror_sessions,d.mirror_sessions);out.audio_sessions=sat_add(out.audio_sessions,d.audio_sessions);
+            b.mirror_ms=sat_add(b.mirror_ms,d.mirror_ms);b.audio_ms=sat_add(b.audio_ms,d.audio_ms);b.direct_ms=sat_add(b.direct_ms,d.direct_ms);
+            out.mirror_ms=sat_add(out.mirror_ms,d.mirror_ms);out.audio_ms=sat_add(out.audio_ms,d.audio_ms);out.direct_ms=sat_add(out.direct_ms,d.direct_ms);
+            out.mirror_sessions=sat_add(out.mirror_sessions,d.mirror_sessions);out.audio_sessions=sat_add(out.audio_sessions,d.audio_sessions);out.direct_sessions=sat_add(out.direct_sessions,d.direct_sessions);
             break;
         }
     }

@@ -6,6 +6,7 @@ on:
       - main
       - fix/pr10-b7-compatibility
       - codex/uxair-queue-disconnects
+      - feature/direct-video-hls-1.4
   pull_request:
     branches:
       - main
@@ -34,7 +35,7 @@ jobs:
       - name: Install native test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes build-essential ffmpeg pkg-config libsdl2-dev libsdl2-ttf-dev libsdl2-image-2.0-0 fonts-dejavu-core libavcodec-dev libavutil-dev libswresample-dev
+          sudo apt-get install --yes build-essential ffmpeg pkg-config libsdl2-dev libsdl2-ttf-dev libsdl2-image-2.0-0 fonts-dejavu-core libavcodec-dev libavutil-dev libswresample-dev libavformat-dev libplist-dev libcurl4-openssl-dev libssl-dev
       - name: Validate source and run sanitizer-backed tests
         env:
           UBSAN_OPTIONS: halt_on_error=1
@@ -84,11 +85,22 @@ jobs:
       # Separate link targets/packages; NDL hardware acceptance remains pending.
       - name: Build and verify the backend-specific IPK
         run: |
-          tools/build.sh --media=${{ matrix.media }}
+          if [[ "$GITHUB_REF_NAME" == feature/direct-video-hls-1.4 && "${{ matrix.media }}" == starfish ]]; then
+            tools/build.sh --media=starfish --development
+            python3 tools/verify-elf.py build/app direct-uri-probe | tee dist/ELF_REPORT-NativeUriProbe.txt
+            python3 tools/validate-ipk.py --development | tee dist/IPK_REPORT.txt
+          else
+            tools/build.sh --media=${{ matrix.media }}
+            python3 tools/validate-ipk.py
+          fi
           python3 tools/verify-elf.py build/app | tee dist/ELF_REPORT-${{ matrix.platform }}.txt
-          python3 tools/validate-ipk.py
       - name: Build corresponding source archive
-        run: tools/source-package.py
+        run: |
+          if [[ "$GITHUB_REF_NAME" == feature/direct-video-hls-1.4 && "${{ matrix.media }}" == starfish ]]; then
+            tools/source-package.py --direct
+          else
+            tools/source-package.py
+          fi
       - name: Preserve backend ELF report
         run: cp dist/ELF_REPORT-${{ matrix.platform }}.txt dist/ELF_REPORT.txt
       - name: Record source commit and package checksum
@@ -97,8 +109,22 @@ jobs:
           (cd dist && shasum -a 256 *.ipk *-source.tar.gz > SHA256SUMS)
           (cd dist && shasum -a 256 -c SHA256SUMS)
           cat dist/BUILD_COMMIT.txt dist/SHA256SUMS dist/ELF_REPORT.txt
+      - name: Upload verified Direct Video development package
+        if: github.ref == 'refs/heads/feature/direct-video-hls-1.4' && matrix.media == 'starfish'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: UxAir-1.4.0-dev-DirectVideo-Starfish
+          path: |
+            dist/com.github.depius.uxair.dev_1.4.0_arm-webos3-4.ipk
+            dist/uxair-webos-1.4.0-dev-direct-video-source.tar.gz
+            dist/BUILD_COMMIT.txt
+            dist/SHA256SUMS
+            dist/ELF_REPORT*.txt
+            dist/IPK_REPORT.txt
+          if-no-files-found: error
+          retention-days: 30
       - name: Record release hold
-        if: github.ref != 'refs/heads/codex/uxair-queue-disconnects'
+        if: github.ref != 'refs/heads/codex/uxair-queue-disconnects' && github.ref != 'refs/heads/feature/direct-video-hls-1.4'
         run: |
           echo "ARMv7 ${{ matrix.media }} verified; ordinary runs upload no IPK/source artifact. Explicit TEST dispatch is separate."
           echo "Release hold: publishing requires owner approval, exact-source checksums and final version verification."

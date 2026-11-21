@@ -12,6 +12,9 @@
 #include "session_lifecycle.h"
 #include "pairing_ui.h"
 #include "now_playing.h"
+#ifdef UXAIR_DIRECT_BUILD
+#include "direct_video.h"
+#endif
 struct Packet {
     bool video;
     unsigned codec;
@@ -37,6 +40,14 @@ struct ReceiverDiagnostics {
     DurationSample video_queue_residence, audio_queue_residence;
 };
 struct Receiver {
+#ifdef UXAIR_DIRECT_BUILD
+    DirectSession direct;
+    bool reserve_direct();
+    void release_direct(bool released);
+    bool direct_busy();
+    bool direct_busy_locked() const;
+    bool direct_active = false, direct_cleanup_failed = false; // protected by mutex
+#endif
     ~Receiver();
     bool start(const std::string& directory, const Settings& settings);
     void stop();

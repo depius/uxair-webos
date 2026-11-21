@@ -6,6 +6,7 @@ extern "C" {
 }
 #include <cstdio>
 #include <cstring>
+namespace { constexpr unsigned adts_aac = 9; }
 AudioDecoder::~AudioDecoder() { reset(); }
 void AudioDecoder::reset() {
     swr_free(&resampler_); avcodec_free_context(&context_); codec_ = 0;
@@ -13,7 +14,7 @@ void AudioDecoder::reset() {
 bool AudioDecoder::configure(unsigned codec) {
     reset();
     AVCodecID id = codec == 2 ? AV_CODEC_ID_ALAC : AV_CODEC_ID_AAC;
-    if (codec != 2 && codec != 4 && codec != 8) return false;
+    if (codec != 2 && codec != 4 && codec != 8 && codec != adts_aac) return false;
     const AVCodec *decoder = avcodec_find_decoder(id);
     if (!decoder || !(context_ = avcodec_alloc_context3(decoder))) return false;
     const uint8_t eld[] = {0xf8,0xe8,0x50,0x00};
@@ -21,15 +22,20 @@ bool AudioDecoder::configure(unsigned codec) {
     const uint8_t alac[] = {0,0,0,0x24,0x61,0x6c,0x61,0x63,0,0,0,0,0,0,1,0x60,0,0x10,0x28,0x0a,0x0e,2,0,0xff,0,0,0,0,0,0,0,0,0,0,0xac,0x44};
     const uint8_t *config = codec==2?alac:codec==8?eld:lc;
     size_t length = codec==2?sizeof(alac):codec==8?sizeof(eld):sizeof(lc);
-    context_->extradata = static_cast<uint8_t *>(av_mallocz(length + AV_INPUT_BUFFER_PADDING_SIZE));
-    if (!context_->extradata) { reset(); return false; }
-    memcpy(context_->extradata,config,length); context_->extradata_size=length;
-    context_->sample_rate=44100;
-    av_channel_layout_default(&context_->ch_layout,2);
+    if (codec != adts_aac) {
+        context_->extradata = static_cast<uint8_t *>(av_mallocz(length + AV_INPUT_BUFFER_PADDING_SIZE));
+        if (!context_->extradata) { reset(); return false; }
+        memcpy(context_->extradata,config,length); context_->extradata_size=length;
+        context_->sample_rate=44100;
+        av_channel_layout_default(&context_->ch_layout,2);
+    }
     if (avcodec_open2(context_,decoder,nullptr)<0) { reset(); return false; }
     codec_=codec;
     fprintf(stderr,"[audio] decoder=%s ct=%u\n",decoder->name,codec);
     return true;
+}
+bool AudioDecoder::decode_adts(const uint8_t *data, size_t size, std::vector<uint8_t>& pcm) {
+    return decode(adts_aac, data, size, pcm);
 }
 bool AudioDecoder::decode(unsigned codec, const uint8_t *data, size_t size, std::vector<uint8_t>& pcm) {
     pcm.clear();

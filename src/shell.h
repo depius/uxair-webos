@@ -16,9 +16,9 @@ struct UiRow {
 using UiHistoryBar = UsageBar;
 struct UiHistoryData {
     std::string daily_title,monthly_title;
-    std::string summary,total_time,average,mirror_time,music_time,storage;
+    std::string summary,total_time,average,mirror_time,music_time,direct_time,storage;
     std::vector<UiHistoryBar> daily_bars,monthly_bars;
-    unsigned mirror_percent=0,audio_percent=0;
+    unsigned mirror_percent=0,audio_percent=0,direct_percent=0;
     size_t session_count=0; bool empty=true;
 };
 struct UiDialog {

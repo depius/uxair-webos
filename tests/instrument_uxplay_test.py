@@ -25,6 +25,10 @@ class InstrumentationTest(unittest.TestCase):
                         output.index('logger_log(original)'))
         self.assertLess(output.index('direct_request_diag_log'), output.index('logger_log(original)'))
         self.assertNotIn('raop->hls_support = true', output)
+        self.assertIn('httpd_set_connection_type(raop->httpd,conn,CONNECTION_TYPE_PTTH)', output)
+        self.assertNotIn('CONNECTION_TYPE_EVENT', output)
+        self.assertIn('!strcmp(url,"/info?txtAirPlay")', output)
+        self.assertIn('!strcmp(url,"/fp-setup2")', output)
         with self.assertRaises(ValueError):
             module.instrument_raop(source + module.GATE)
 
@@ -36,7 +40,13 @@ class InstrumentationTest(unittest.TestCase):
             module.instrument_http_request('different upstream parser')
 
     def test_raw_http_logs_are_removed(self):
-        source = '''                if (recv_datalen && logger_debug) {
+        source = '''                    http_request_is_reverse(connection->request);
+            if (new_request) {
+                int readstart = 0;
+                while (readstart < 8) unsafe_busy_loop();
+            }
+            if (http_request_is_reverse(connection->request)) {
+                if (recv_datalen && logger_debug) {
                     logger_log(raw_reverse_buffer);
                 }
                 if (recv_datalen == 0) {
@@ -53,6 +63,10 @@ class InstrumentationTest(unittest.TestCase):
         self.assertNotIn('raw_parse_buffer', output)
         self.assertNotIn('raw_url', output)
         self.assertIn('request data omitted', output)
+        self.assertNotIn('while (readstart < 8)', output)
+        self.assertNotIn('unsafe_busy_loop', output)
+        self.assertIn('http_request_set_reverse(connection->request);', output)
+        self.assertIn('recv_datalen = read_result;', output)
         with self.assertRaises(ValueError):
             module.instrument_httpd('changed upstream HTTP logs')
 

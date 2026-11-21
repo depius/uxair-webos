@@ -46,7 +46,10 @@ def desired_mode(member, archive, app_id):
     if member.isdir():
         # Do not chmod platform-managed containers as part of packaging.
         return member.mode & 0o777 if name in managed else 0o755
-    return 0o755 if archive == 'data.tar.gz' and name in {app+'/uxair', app+'/lib/libstdc++.so.6'} else 0o644
+    executables = {app+'/uxair', app+'/lib/libstdc++.so.6'}
+    if app_id.endswith('.dev'):
+        executables.add(app+'/direct-uri-probe')
+    return 0o755 if archive == 'data.tar.gz' and name in executables else 0o644
 
 
 def process(data, app_id, check=False):

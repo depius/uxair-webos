@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Package corresponding source and original dependency sources; exclude device data."""
+import argparse
 import json
 import pathlib
 import subprocess
@@ -15,8 +16,13 @@ def source_member(info):
 
 
 def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--direct", action="store_true")
+    args=parser.parse_args()
     lock=json.loads((ROOT/'dependencies.lock.json').read_text())
     version=json.loads((ROOT/'packaging/appinfo.json').read_text())['version']
+    if args.direct:
+        version='1.4.0-dev-direct-video'
     destination=ROOT/'dist'/f'uxair-webos-{version}-source.tar.gz'
     destination.parent.mkdir(exist_ok=True)
     subprocess.run(['python3',str(ROOT/'tools/bootstrap.py')],check=True)
@@ -28,7 +34,10 @@ def main():
     with tarfile.open(destination,'w:gz') as archive:
         for name in ['src','tools','tests','assets','packaging','docs','CMakeLists.txt','dependencies.lock.json','README.md','CHANGELOG.md','THIRD_PARTY.md','LICENSE','.github']:
             archive.add(ROOT/name,arcname='uxair-webos/'+name,filter=source_member)
-        for name in ['openssl','libplist','ffmpeg']:
+        bundled=['openssl','libplist','ffmpeg']
+        if args.direct:
+            bundled.append('curl')
+        for name in bundled:
             filename=lock[name]['archive']
             archive.add(ROOT/'.cache'/filename,arcname='uxair-webos/.cache/'+filename)
         archive.add(upstream,arcname='uxair-webos/upstream-uxplay-source.tar')

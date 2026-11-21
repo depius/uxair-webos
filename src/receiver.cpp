@@ -4,6 +4,9 @@
 #include "identity.h"
 #include "capabilities.h"
 #include "pairing_registration.h"
+#ifdef UXAIR_DIRECT_BUILD
+#include "direct_playback.h"
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -18,6 +21,9 @@ extern "C" unsigned uxair_admit_transport(void *p,const char *id,const char *mod
     Receiver& r=self(p);
     std::lock_guard<std::mutex> lock(r.mutex);
     *admit=id && !r.ingress.closing && (r.client.empty()||r.client==id);
+#ifdef UXAIR_DIRECT_BUILD
+    *admit = *admit && !r.direct_active && !r.direct_cleanup_failed;
+#endif
     fprintf(stderr,"[client] model=%.80s admitted=%d\n",model?model:"unknown",int(*admit));
     if(*admit) {
         r.ingress.admit();
@@ -134,7 +140,13 @@ static bool valid_key(const char *p) {
     return strspn(p,"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")==44;
 }
 bool Receiver::start(const std::string& dir, const Settings& settings) {
-    const AdvertisedCapabilities capabilities=advertised_capabilities(settings);
+    AdvertisedCapabilities capabilities=advertised_capabilities(settings);
+#ifdef UXAIR_DIRECT_BUILD
+    if(direct_enabled()) {
+        capabilities.direct_video=capabilities.hls=true;
+        fprintf(stderr,"[direct-protocol] experimental-discovery=enabled\n");
+    }
+#endif
     active_profile=settings;validate_settings(active_profile);
     const MirrorLimits limits=mirror_limits(active_profile);
     max_video_packet_bytes=limits.video_packet_bytes;
@@ -304,5 +316,46 @@ void Receiver::stop() {
     if(dnssd) {dnssd_unregister_airplay(dnssd);dnssd_unregister_raop(dnssd);}
     if(raop) {raop_destroy(raop);raop=nullptr;}
     if(dnssd) {dnssd_destroy(dnssd);dnssd=nullptr;}
+#ifdef UXAIR_DIRECT_BUILD
+    direct.reset();
+#endif
 }
 Receiver::~Receiver() {stop();}
+
+#ifdef UXAIR_DIRECT_BUILD
+bool Receiver::direct_busy_locked() const {
+    return direct_active || direct_cleanup_failed || ingress.closing || !client.empty() ||
+           has_audio || mirror || pairing.visible();
+}
+bool Receiver::direct_busy() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return direct_busy_locked();
+}
+bool Receiver::reserve_direct() {
+    std::lock_guard<std::mutex> lock(mutex);
+    if(direct_busy_locked()) return false;
+    direct_active=true;
+    ++stream_requests;
+    return true;
+}
+void Receiver::release_direct(bool released) {
+    std::lock_guard<std::mutex> lock(mutex);
+    direct_active=false;
+    direct_cleanup_failed=!released;
+}
+extern "C" int uxair_direct_reverse(void *context,const char *owner,int fd,unsigned long token){return self(context).direct.bind_reverse(owner?owner:"",fd,uintptr_t(token))?1:0;}
+extern "C" void uxair_direct_lost(void *context,unsigned long token){self(context).direct.connection_lost(uintptr_t(token));}
+extern "C" int uxair_direct_request(void *context,const char *owner,const char *method,const char *target,const char *type,const char *body,int length,char **output,int *size,const char **mime) {
+    Receiver& r=self(context);
+    if(length<0||length>524288||(!body&&length))return 413;
+    auto response=r.direct.request(owner?owner:"",method?method:"",target?target:"",type?type:"",body?std::string(body,size_t(length)):"",r.direct_busy());
+    *size=int(response.body.size());*output=nullptr;
+    if(*size){*output=static_cast<char*>(malloc(size_t(*size)));if(!*output){*size=0;return 500;}memcpy(*output,response.body.data(),size_t(*size));}
+    *mime=response.type=="text/parameters"?"text/parameters":"text/x-apple-plist+xml";
+    const char *route=target&&!strcmp(target,"/play")?"play":target&&!strcmp(target,"/stop")?"stop":target&&!strcmp(target,"/action")?"action":target&&!strcmp(target,"/playback-info")?"feedback":target&&!strncmp(target,"/scrub",6)?"scrub":target&&!strncmp(target,"/rate",5)?"rate":"property";
+    static std::atomic<unsigned> records{0};
+    if(records.load()<192 && records.fetch_add(1)<192)
+        fprintf(stderr,"[direct-protocol] route=%s response=%d body-bytes=%d\n",route,response.status,length);
+    return response.status;
+}
+#endif

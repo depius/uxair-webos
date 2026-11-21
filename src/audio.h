@@ -8,6 +8,7 @@ class AudioDecoder {
 public:
     ~AudioDecoder();
     bool decode(unsigned codec, const uint8_t *data, size_t size, std::vector<uint8_t>& pcm);
+    bool decode_adts(const uint8_t *data, size_t size, std::vector<uint8_t>& pcm);
     void reset();
 private:
     bool configure(unsigned codec);

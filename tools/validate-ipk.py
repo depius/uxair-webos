@@ -45,18 +45,22 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--development', action='store_true')
     args = parser.parse_args()
-    app = json.loads((ROOT / 'packaging/appinfo.json').read_text())
-    if args.development:
-        app['id'] += '.dev'
-        app['title'] += ' Dev'
-    stage = ROOT / 'build/app'
-    staged = json.loads((stage / 'appinfo.json').read_text())
-    if staged != app:
-        fail('staged appinfo does not match requested package identity')
     backend_marker = ROOT / 'build/media-backend.txt'   # as tools/package.py names it
     backend = backend_marker.read_text().strip() if backend_marker.exists() else ''
     if backend not in ('ndl', 'starfish'):
         fail('missing or invalid media backend marker')
+    app = json.loads((ROOT / 'packaging/appinfo.json').read_text())
+    if args.development:
+        app['id'] += '.dev'
+        app['title'] += ' Dev'
+        if backend == 'starfish':
+            app['version'] = '1.4.0'
+            app['title'] = 'UxAir 1.4.0-dev'
+            app['appDescription'] = 'Experimental Direct AirPlay Video receiver'
+    stage = ROOT / 'build/app'
+    staged = json.loads((stage / 'appinfo.json').read_text())
+    if staged != app:
+        fail('staged appinfo does not match requested package identity')
     platform = {'ndl': 'webos5plus', 'starfish': 'webos3-4'}[backend]
     package = ROOT / 'dist' / f"{app['id']}_{app['version']}_arm-{platform}.ipk"
     if not package.is_file():
@@ -94,6 +98,14 @@ def main():
             fail('packaged launcher icon differs from the current UxAir artwork')
         if content('largeIcon.png') != (ROOT / 'packaging/largeIcon.png').read_bytes():
             fail('packaged large launcher icon differs from the current UxAir artwork')
+        direct = args.development and backend == 'starfish'
+        direct_files = ('direct-uri-probe', 'hls-ca.pem', 'licenses/curl.txt', 'licenses/Mozilla-MPL-2.0.txt')
+        if direct:
+            for name in direct_files:
+                if content(name) != (stage / name).read_bytes():
+                    fail(f'packaged Direct Video file differs from staging: {name}')
+        elif any(any(name == item or name.endswith('/' + item) for item in direct_files) for name in files):
+            fail('Direct Video files are only permitted in the Starfish development package')
         for binary in ('uxair', 'lib/libstdc++.so.6'):
             if content(binary) != (stage / binary).read_bytes():
                 fail(f'packaged {binary} differs from the ELF-verified staging file')

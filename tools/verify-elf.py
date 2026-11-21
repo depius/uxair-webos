@@ -21,7 +21,7 @@ def version(v):
 def main():
     stage = pathlib.Path(sys.argv[1])
     binary = sys.argv[2] if len(sys.argv) > 2 else 'uxair'
-    if binary not in ('uxair', 'hevc-probe'):
+    if binary not in ('uxair', 'hevc-probe', 'direct-uri-probe'):
         sys.exit('Unsupported binary name')
     files = [stage / binary, stage / 'lib/libstdc++.so.6']
     exported = output('-V', files[1]).split('Version needs section')[0]
@@ -46,9 +46,14 @@ def main():
     if binary == 'uxair' and marker.exists() and marker.read_text().strip() == 'starfish':
         if 'libNDL' in dynamic or 'libndl' in dynamic:
             sys.exit('Starfish package unexpectedly depends on NDL')
+    if binary == 'direct-uri-probe' or (binary == 'uxair' and (stage / 'direct-uri-probe').is_file()):
+        symbols = output('-Ws', files[0])
+        foreground = [line for line in symbols.splitlines() if '_ZN17StarfishMediaAPIs16notifyForegroundEv' in line]
+        if not foreground or any('WEAK' not in line or 'UND' not in line for line in foreground):
+            sys.exit('notifyForeground must remain an optional weak native import')
     if '$ORIGIN/lib' not in dynamic:
         sys.exit('Missing private runtime search path')
-    for bad in ['libcrypto.so', 'libplist', 'libavcodec', 'libgstreamer', 'libX11']:
+    for bad in ['libcrypto.so', 'libssl.so', 'libcurl.so', 'libplist', 'libavcodec', 'libavformat', 'libgstreamer', 'libX11']:
         if bad in dynamic:
             sys.exit(f'Unexpected dynamic dependency: {bad}')
     print(f'ELF preflight: ARM ELF32 soft-float ABI; max required GLIBC_{".".join(map(str, max_glibc))} <= 2.19; private C++ runtime resolves version requirements.')

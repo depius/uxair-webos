@@ -1,0 +1,13 @@
+#pragma once
+#include <string>
+#include <cstdint>
+enum {PF_EVENT_TYPE_STR_STATE_UPDATE__LOADCOMPLETED=0x16,PF_EVENT_TYPE_STR_STATE_UPDATE__PLAYING=0x1a,PF_EVENT_TYPE_STR_STATE_UPDATE__ENDOFSTREAM=0x1c,PF_EVENT_TYPE_INT_DURATION=3,PF_EVENT_TYPE_INT_ERROR=0x12,PF_EVENT_TYPE_STR_ERROR=0x13};
+extern int foreground_calls,load_calls;
+class StarfishMediaAPIs {
+public:
+ static void (*callback)(int,int64_t,const char*,void*);static void *context;static std::string payload,last_seek;static int unloads;static bool load_success,play_success,synchronous_load;
+ StarfishMediaAPIs(const char*){} const char *getMediaID(){return "stub";}
+ bool Load(const char *p,void(*cb)(int,int64_t,const char*,void*),void *ctx){if(foreground_calls!=load_calls+1)__builtin_trap();++load_calls;payload=p;callback=cb;context=ctx;if(synchronous_load&&load_success)cb(0x16,0,nullptr,ctx);return load_success;}
+ bool Play(){if(!play_success)return false;callback(0x1a,0,nullptr,context);return true;}bool Pause(){callback(0x1b,0,nullptr,context);return true;}
+ bool Seek(const char *value){last_seek=value;return true;}bool Unload(){++unloads;return true;}int64_t getCurrentPlaytime(){return 1000;}
+};

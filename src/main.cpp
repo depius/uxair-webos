@@ -10,6 +10,10 @@
 #include "settings.h"
 #include "usage_stats.h"
 #include "system_bus.h"
+#ifdef UXAIR_DIRECT_BUILD
+#include "direct_playback.h"
+#include <map>
+#endif
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -338,6 +342,31 @@ int main(int argc,char **argv) {
             rows.push_back(UiRow("Audio delay",std::to_string(receiver.audio_delay_ms.load())+" ms","Set before connecting; step size 25 ms",receiver.idle_for_profile_change()));
 
         } else if(which==UiPage::Diagnostics) {
+#ifdef UXAIR_DIRECT_BUILD
+            if(direct_enabled()) {
+                const auto direct=receiver.direct.snapshot();
+                const char* state=direct.state==DirectState::Buffering?"Buffering":
+                    direct.state==DirectState::Loading?"Loading":direct.state==DirectState::Playing?"Playing":
+                    direct.state==DirectState::Paused?"Paused":direct.state==DirectState::Error?"Error":
+                    direct.state==DirectState::Ended?"Stopped":"Idle";
+                const bool bufferstream=direct.backend==DirectBackend::Bufferstream;
+                const std::string position=duration_text(uint64_t(direct.position*1000));
+                rows.push_back(UiRow("Direct Video",std::string(direct_backend_name(direct.backend))+" / "+state,
+                    (bufferstream?"Estimated position ":"Position ")+position+" of "+duration_text(uint64_t(direct.duration*1000))));
+                rows.push_back(UiRow("Direct video / audio",direct.width?
+                    std::to_string(direct.width)+" x "+std::to_string(direct.height):"Resolution unavailable",
+                    bufferstream&&direct.width?"H.264 / AAC-LC":"Codecs unavailable"));
+                rows.push_back(UiRow("Direct download",std::to_string(direct.downloaded_bytes/1024)+" KiB",
+                    "Fetches "+std::to_string(direct.upstream_fetches)+" / failures "+std::to_string(direct.relay_failures)+
+                    (bufferstream?"; queued "+std::to_string(direct.buffer_bytes/1024)+" KiB":
+                                  "; media GETs "+std::to_string(direct.media_gets))));
+                rows.push_back(UiRow("Direct diagnostics",direct_stage_name(direct.stage),
+                    std::string(direct_error_name(direct.error))+" / fallback "+direct_error_name(direct.fallback_reason)+
+                    "; native callbacks "+std::to_string(direct.callbacks)));
+                if(direct.state!=DirectState::Idle && direct.state!=DirectState::Ended && direct.state!=DirectState::Error)
+                    return rows;
+            }
+#endif
             rows.push_back(UiRow("On-screen overlay",diagnostics_mode_name(settings.diagnostics),"Off, Compact or Detailed"));
             std::string resolution=observed_width?std::to_string(observed_width)+" x "+std::to_string(observed_height):"Awaiting SPS";
             rows.push_back(UiRow("Negotiated codec / SPS",std::string(receiver.incoming_video_codec==2?"HEVC":receiver.incoming_video_codec==1?"H.264":"Awaiting codec")+"  "+resolution,
@@ -362,6 +391,7 @@ int main(int argc,char **argv) {
         } else if(which==UiPage::History) {
             for(const SessionSummary& session:usage.recent) {
                 std::string kind=session.kind==SessionKind::Audio?"AirPlay music":
+                    session.kind==SessionKind::Direct?"Direct Video"+(session.width?" · "+std::to_string(session.width)+" x "+std::to_string(session.height):""):
                     std::string(session_kind_name(session.kind))+" - "+(session.codec==2?"HEVC":"H.264")+" - "+
                     std::to_string(session.width)+"x"+std::to_string(session.height);
                 rows.push_back(UiRow(utc_text(session.started_utc),duration_text(session.duration_ms),kind,false));
@@ -429,8 +459,11 @@ int main(int argc,char **argv) {
             history_data.average=sessions?duration_text(usage.playback_ms/sessions):"No usage";
             history_data.mirror_time=duration_text(thirty.mirror_ms);
             history_data.music_time=duration_text(thirty.audio_ms);
-            history_data.mirror_percent=usage_mirror_percent(thirty.mirror_ms,thirty.audio_ms);
-            history_data.audio_percent=(thirty.mirror_ms||thirty.audio_ms)?100-history_data.mirror_percent:0;
+            if(usage.direct_from_day)history_data.direct_time=duration_text(thirty.direct_ms);
+            const long double total=static_cast<long double>(thirty.mirror_ms)+thirty.audio_ms+thirty.direct_ms;
+            history_data.mirror_percent=total?unsigned(thirty.mirror_ms*100.0L/total+0.5L):0;
+            history_data.audio_percent=total?std::min(100-history_data.mirror_percent,unsigned(thirty.audio_ms*100.0L/total+0.5L)):0;
+            history_data.direct_percent=total?100-history_data.mirror_percent-history_data.audio_percent:0;
             history_data.storage=usage.storage_corrupt?"History file unreadable; reset to restart":"History storage "+std::to_string((history_storage+1023)/1024)+" KB | "+std::to_string(usage.recent.size())+"/100 sessions | 365d";
             history_data.daily_title=days.title;history_data.monthly_title=months.title;
             history_data.daily_bars=days.bars;history_data.monthly_bars=months.bars;
@@ -493,12 +526,131 @@ int main(int argc,char **argv) {
             "HEVC enabled; iOS chooses codec. Check actual codec after reconnect.":
             "H.264 active. Reconnect sender.");
     };
+#ifdef UXAIR_DIRECT_BUILD
+    DirectPlayback direct_player;
+    bool direct_active=false, direct_overlay=false;
+    int64_t direct_started=0, direct_tick=0, direct_maintenance=0;
+    uint64_t direct_started_utc=0, direct_play_ms=0;
+    DirectState direct_previous=DirectState::Idle;
+    std::map<uint32_t,uint64_t> direct_days;
+    auto finish_direct=[&](DirectSnapshot status) {
+        const bool released=direct_player.close();
+        if(!released) {
+            status.state=DirectState::Error;
+            status.error=DirectError::CleanupFailed;
+        }
+        if(status.state!=DirectState::Error)status.state=DirectState::Ended;
+        if(direct_play_ms) {
+            SessionSummary summary;
+            summary.kind=SessionKind::Direct;
+            summary.started_utc=direct_started_utc;
+            summary.duration_ms=direct_play_ms;
+            summary.codec=status.backend==DirectBackend::Bufferstream?1:0;
+            summary.width=status.width;
+            summary.height=status.height;
+            for(const auto& day:direct_days)usage.record_direct_day(day.first,day.second);
+            usage.record(summary,false);
+        }
+        if(status.state==DirectState::Error)++usage.session_errors;
+        if(direct_play_ms||status.state==DirectState::Error) {
+            save_usage_stats(state_dir+"/usage-v1",usage);
+            history_dirty=true;
+        }
+        receiver.direct.publish(status);
+        receiver.release_direct(released);
+        receiver.show(status.state==DirectState::Error?"Direct Video failed":"Direct Video stopped");
+        direct_active=false;
+        ui_visible=true;
+        last_ui=0;
+    };
+#endif
     bool running=true;
     while(running) {
         int64_t now=now_ns();
         if(previous_loop)loop_gap_time.record(uint64_t(std::max<int64_t>(0,now-previous_loop)));
         previous_loop=now;
         Action action=shell.action();
+#ifdef UXAIR_DIRECT_BUILD
+        if(direct_enabled()) {
+            receiver.direct.check_timeout(now/1000000);
+            DirectCommand command;
+            bool stop=false;
+            if(receiver.direct.take(command)) {
+                if(command.kind==DirectCommandKind::Play && !direct_active) {
+                    if(opened || !receiver.reserve_direct()) {
+                        DirectSnapshot busy;
+                        busy.state=DirectState::Error;
+                        busy.stage=DirectStage::Dequeued;
+                        busy.error=DirectError::Busy;
+                        receiver.direct.publish(busy);
+                    } else {
+                        direct_started=direct_tick=now;
+                        direct_started_utc=uint64_t(time(nullptr));
+                        direct_play_ms=0;
+                        direct_previous=DirectState::Idle;
+                        direct_days.clear();
+                        direct_overlay=false;
+                        direct_active=true;
+                        ui_visible=false;
+                        last_ui=0;
+                        start_in_background=false;
+                        if(background_enabled)bus.bring_to_front();
+                        seen_stream_requests=receiver.stream_requests.load();
+                        direct_player.open(command,now,receiver.direct);
+                    }
+                } else if(command.kind==DirectCommandKind::Stop) {
+                    stop=true;
+                    if(!direct_active)receiver.direct.publish(DirectSnapshot());
+                } else if(direct_active)direct_player.control(command,now);
+            }
+            if(direct_active) {
+                if(now-direct_maintenance>=1000000000LL){rotate_log();direct_maintenance=now;}
+                if(direct_previous==DirectState::Playing && now>direct_tick) {
+                    uint64_t played=uint64_t(now-direct_tick)/1000000;
+                    uint64_t stamp=direct_started_utc*1000+uint64_t(direct_tick-direct_started)/1000000;
+                    direct_play_ms+=played;
+                    while(played && direct_days.size()<365) {
+                        const auto day=uint32_t(stamp/86400000);
+                        const auto period=std::min<uint64_t>(played,86400000-stamp%86400000);
+                        direct_days[day]+=period;
+                        stamp+=period;
+                        played-=period;
+                    }
+                }
+                direct_tick=now;
+                const bool abort=stop || action==Action::Back || action==Action::Exit || action==Action::Quit;
+                const auto status=abort?direct_player.snapshot():direct_player.tick(now);
+                if(abort ||
+                   status.state==DirectState::Ended || status.state==DirectState::Error) {
+                    finish_direct(status);
+                    if(action==Action::Quit)break;
+                    action=Action::None;
+                } else {
+                    receiver.direct.publish(status);
+                    if(action==Action::Select){direct_overlay=!direct_overlay;last_ui=0;}
+                    bus.block_screen_saver(status.state==DirectState::Playing);
+                    if(direct_overlay) {
+                        if(now-last_ui>1000000000LL) {
+                            const auto old=page;
+                            page=UiPage::Diagnostics;
+                            draw_page("Direct Video","OK toggles diagnostics  •  Back stops");
+                            page=old;
+                            last_ui=now;
+                        }
+                    } else if(status.state==DirectState::Playing || status.state==DirectState::Paused ||
+                              status.state==DirectState::Buffering) {
+                        if(!last_ui || direct_previous!=status.state){shell.transparent();last_ui=now;}
+                    } else if(!last_ui) {
+                        shell.screen("Direct Video loading","");
+                        last_ui=now;
+                    }
+                    direct_previous=status.state;
+                    SDL_Delay(8);
+                    continue;
+                }
+            }
+        }
+#endif
         if(action==Action::Quit || (action==Action::Exit && !background_enabled))break;
         if(action!=Action::None)np_bright=now;   // any key brightens Now Playing again
         bus.block_screen_saver(opened && media.playing && !last_paused && !audio_flush_paused && !ui_visible);

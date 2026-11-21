@@ -27,6 +27,9 @@ public:
     void eos();
     void pause(bool paused);
     void close();
+#ifdef UXAIR_DIRECT_BUILD
+    void guard_direct_callbacks() { guard_callbacks_ = true; }
+#endif
     MediaOpenFailure open_failure() const { return open_failure_; }
     std::atomic<bool> ready{false}, playing{false}, ended{false}, failed{false};
     std::atomic<unsigned> frames{0};
@@ -48,6 +51,11 @@ private:
     static void event(int type, int64_t value, const char *message, void *user);
     StarfishMediaAPIs *api_ = nullptr;
     long acb_ = 0, task_ = 0;
+#ifdef UXAIR_DIRECT_BUILD
+    static void direct_event(int type, int64_t value, const char *message, void *generation);
+    bool guard_callbacks_ = false;
+    uintptr_t callback_generation_ = 0;
+#endif
     bool loaded_ = false, sink_attached_ = false, play_requested_ = false, acb_playing_ = false;
     unsigned play_attempts_ = 0;
     std::atomic<bool> video_info_pending_{false};

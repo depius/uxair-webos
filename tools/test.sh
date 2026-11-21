@@ -120,3 +120,36 @@ cc -std=c11 -g -Wall -Wextra -fsanitize=address,undefined -pthread -Ddlsym=ndl_t
 c++ -std=c++11 -g -Wall -Wextra -fsanitize=address,undefined -pthread -DUXAIR_MEDIA_NDL -Itests/ndl_stub -Isrc $(pkg-config --cflags sdl2) \
   tests/ndl_media_test.cpp src/media_ndl.cpp src/settings.cpp build/tests/ndl-backend-test.o -o build/tests/ndl-media-test
 build/tests/ndl-media-test
+
+
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc $(pkg-config --cflags libplist-2.0) tests/direct_video_test.cpp src/direct_video.cpp $(pkg-config --libs libplist-2.0) -o build/tests/direct-video-test
+timeout 30s build/tests/direct-video-test
+
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc -Itests/direct_stubs $(pkg-config --cflags libplist-2.0) tests/direct_player_test.cpp src/direct_player.cpp src/direct_native_diag.cpp src/direct_video.cpp src/hls_relay.cpp $(pkg-config --libs libplist-2.0 libcurl) -lcrypto -o build/tests/direct-player-test
+if ! timeout 30s build/tests/direct-player-test 2>build/tests/direct-player.log; then
+  cat build/tests/direct-player.log
+  exit 1
+fi
+python3 tests/direct_player_log_test.py build/tests/direct-player.log
+
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc $(pkg-config --cflags libplist-2.0 libcurl) tests/hls_relay_test.cpp src/hls_relay.cpp src/direct_video.cpp $(pkg-config --libs libplist-2.0 libcurl) -lcrypto -o build/tests/hls-relay-test
+timeout 30s build/tests/hls-relay-test
+
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc $(pkg-config --cflags libplist-2.0 libcurl) tests/hls_network_test.cpp src/hls_relay.cpp src/direct_video.cpp $(pkg-config --libs libplist-2.0 libcurl) -lcrypto -o build/tests/hls-network-test
+timeout 35s python3 tests/hls_network_test.py
+
+timeout 45s python3 tests/direct_control_client_test.py
+
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc $(pkg-config --cflags libplist-2.0) tests/direct_native_diag_test.cpp src/direct_native_diag.cpp src/direct_video.cpp $(pkg-config --libs libplist-2.0) -o build/tests/direct-native-diag-test
+timeout 15s build/tests/direct-native-diag-test
+python3 tests/direct_native_probe_test.py
+timeout 90s python3 tests/direct_fixture_test.py
+timeout 15s python3 tests/native_timeout_test.py
+
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc \
+  $(pkg-config --cflags libplist-2.0 libcurl libavformat libavcodec libavutil libswresample) \
+  tests/direct_bufferstream_test.cpp src/direct_bufferstream.cpp src/direct_hls.cpp \
+  src/direct_video.cpp src/hls_relay.cpp src/audio.cpp src/h264.cpp \
+  $(pkg-config --libs libplist-2.0 libcurl libavformat libavcodec libavutil libswresample) -lcrypto \
+  -o build/tests/direct-bufferstream-test
+timeout 110s python3 tests/direct_bufferstream_network_test.py

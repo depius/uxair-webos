@@ -8,6 +8,24 @@
 #include <cstdlib>
 #include <mutex>
 #include <time.h>
+#ifdef UXAIR_DIRECT_BUILD
+#include <cstring>
+#include <map>
+
+namespace {
+std::mutex direct_callback_mutex;
+std::map<uintptr_t, Media*> direct_callbacks;
+uintptr_t next_direct_generation = 0;
+}
+
+void Media::direct_event(int type, int64_t value, const char* message, void* generation) {
+    std::lock_guard<std::mutex> lock(direct_callback_mutex);
+    const auto found = direct_callbacks.find(reinterpret_cast<uintptr_t>(generation));
+    if (found == direct_callbacks.end()) return;
+    const bool video_info = type == PF_EVENT_TYPE_STR_VIDEO_INFO && message && strnlen(message, 8193) <= 8192;
+    event(type, value, video_info ? message : nullptr, found->second);
+}
+#endif
 
 // This firmware exports a three-argument wrapper; the NDK declaration omits taskId.
 extern "C" int acb_video_info(long, const char *, long *) __asm__("AcbAPI_setMediaVideoData");
@@ -127,6 +145,17 @@ bool Media::open(const char *app_id, int width, int height, bool audio, int rate
     fprintf(stderr,"[media-identity] acb-app-id=%s starfish-app-id=%s source=shared-runtime-id\n",app_id,app_id);
     fprintf(stderr, "[media] Load mode=%s max_fps=%d %s\n", audio_only?"audio-only":"mirroring",max_fps,payload.c_str());
     phase=monotonic_ns();
+#ifdef UXAIR_DIRECT_BUILD
+    if (guard_callbacks_) {
+        {
+            std::lock_guard<std::mutex> lock(direct_callback_mutex);
+            if (++next_direct_generation == 0) ++next_direct_generation;
+            callback_generation_ = next_direct_generation;
+            direct_callbacks.emplace(callback_generation_, this);
+        }
+        loaded_ = api_->Load(payload.c_str(), direct_event, reinterpret_cast<void*>(callback_generation_));
+    } else
+#endif
     loaded_ = api_->Load(payload.c_str(), event, this);
     fprintf(stderr,"[media-init] Starfish Load end ms=%.2f success=%d\n",(monotonic_ns()-phase)/1e6,int(loaded_));
     if (!loaded_) { open_failure_=MediaOpenFailure::StarfishLoad;close(); return false; }
@@ -205,6 +234,13 @@ FeedResult Media::feed(const void *data, size_t size, int64_t pts_ns, bool video
 void Media::eos() { if (api_ && loaded_) api_->pushEOS(); }
 void Media::pause(bool paused) {if(api_&&loaded_) {fprintf(stderr,"[media-state] pause-request=%d ready=%d playing=%d\n",int(paused),int(ready.load()),int(playing.load()));if(paused)api_->Pause();else api_->Play();}}
 void Media::close() {
+#ifdef UXAIR_DIRECT_BUILD
+    if (callback_generation_) {
+        std::lock_guard<std::mutex> lock(direct_callback_mutex);
+        direct_callbacks.erase(callback_generation_);
+        callback_generation_ = 0;
+    }
+#endif
     if(acb_ && loaded_) AcbAPI_setState(acb_,APPSTATE_FOREGROUND,PLAYSTATE_UNLOADED,&task_);
     if (api_) {
         if (loaded_) { api_->Unload(); fprintf(stderr, "[media] unloaded\n"); }

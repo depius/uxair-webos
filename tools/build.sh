@@ -11,7 +11,11 @@ for arg in "$@"; do
   esac
 done
 python3 tools/bootstrap.py
-tools/build-deps.sh
+if [[ "$variant" == development && "$media" == starfish ]]; then
+  tools/build-deps.sh --direct
+else
+  tools/build-deps.sh
+fi
 # no cmake/ninja on the host: the SDK's (the Linux SDK bundles both)
 command -v cmake >/dev/null && command -v ninja >/dev/null ||
   export PATH="$PATH:$PWD/.cache/arm-webos-linux-gnueabi_sdk-buildroot/bin"
