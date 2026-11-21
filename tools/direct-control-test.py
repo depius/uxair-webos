@@ -12,9 +12,9 @@ import urllib.parse
 import uuid
 from xml.parsers.expat import ExpatError
 
-STAGES = set('idle queued dequeued relay acb-create acb-initialize construct media-id load await-load sink loaded-state window seek play await-playing playing paused video-info stopped'.split())
-ERRORS = set('none busy relay-start payload acb-create acb-initialize construct media-id load-rejected native-error sink seek play-rejected load-timeout duration-timeout playing-timeout progress-timeout control-rejected'.split())
-COUNTERS = ('uxairNativeResult', 'uxairCallbackCount', 'uxairLastCallback', 'uxairLastCallbackValue', 'uxairRelayRequests', 'uxairUpstreamFetches', 'uxairDownloadedBytes', 'uxairRelayFailures')
+STAGES = set('idle queued dequeued relay acb-create acb-initialize construct media-id load await-load sink loaded-state window seek play await-playing playing paused video-info stopped fetch bufferstream-load packet-feed'.split())
+ERRORS = set('none busy relay-start payload acb-create acb-initialize construct media-id load-rejected native-error sink seek play-rejected load-timeout duration-timeout playing-timeout progress-timeout control-rejected no-native-progress cleanup-failed fetch-failed unsupported-stream invalid-stream stream-limit discontinuity bufferstream-start bufferstream-feed'.split())
+COUNTERS = ('uxairNativeResult', 'uxairCallbackCount', 'uxairLastCallback', 'uxairLastCallbackValue', 'uxairRelayRequests', 'uxairUpstreamFetches', 'uxairDownloadedBytes', 'uxairRelayFailures', 'uxairMediaGets', 'uxairBufferBytes')
 
 class ClientFailure(Exception):
     pass
@@ -34,11 +34,12 @@ def safe_summary(info):
         value = info.get(key)
         if isinstance(value, (bool, int, float)) and abs(value) <= 2**63 and math.isfinite(value):
             out[key] = value
-    for key, choices in (('uxairStage', STAGES), ('uxairError', ERRORS)):
+    for key, choices in (('uxairStage', STAGES), ('uxairError', ERRORS), ('uxairFallbackReason', ERRORS),
+                         ('uxairBackend', ('Idle', 'Native URI', 'BUFFERSTREAM'))):
         if isinstance(info.get(key), str) and info[key] in choices: out[key] = info[key]
     return out
 
-def run(receiver_url, source, poll_interval=1, wait_seconds=20):
+def run(receiver_url, source, poll_interval=1, wait_seconds=40):
     receiver = urllib.parse.urlsplit(receiver_url)
     owner = str(uuid.uuid4())
     stop = threading.Event()
@@ -113,10 +114,10 @@ def run(receiver_url, source, poll_interval=1, wait_seconds=20):
             time.sleep(poll_interval)
             info = command('GET', '/playback-info')
             if info.get('readyToPlay') and info.get('rate') == 1: break
-            if last_event.get('state') == 'stopped': raise ClientFailure('session stopped before native playback became ready')
-            if 'connection' in last_event: raise ClientFailure('reverse connection ended before native playback became ready')
+            if last_event.get('state') == 'stopped': raise ClientFailure('session stopped before playback became ready')
+            if 'connection' in last_event: raise ClientFailure('reverse connection ended before playback became ready')
         else:
-            raise ClientFailure('native playback did not become ready within the test deadline')
+            raise ClientFailure('playback did not become ready within the test deadline')
         time.sleep(poll_interval); command('GET', '/playback-info')
         command('POST', '/rate?value=0'); time.sleep(poll_interval); command('GET', '/playback-info')
         command('POST', '/rate?value=1'); time.sleep(poll_interval)

@@ -34,6 +34,8 @@ struct DirectDemuxedSegment {
     std::vector<DirectAccessUnit> packets;
     int width = 0;
     int height = 0;
+    int aac_sample_rate = 0;
+    int aac_channels = 0;
     int64_t first_video_dts_ns = 0;
     size_t bytes = 0;
 };

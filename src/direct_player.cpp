@@ -38,6 +38,7 @@ void DirectPlayer::event(int type,int64_t value,const char* message,void *user){
     if(first&&p.event_records_++<32)fprintf(stderr,"[direct-player] event=0x%x raw_value=%lld name=%s json=%s\n",type,(long long)value,direct_native_event_name(type),direct_native_json_summary(direct_native_event_has_text(type)?message:nullptr).c_str());
     if(p.state_==int(DirectState::Error))return;
     switch(type){
+    case PF_EVENT_TYPE_FRAMEREADY:p.frame_ready_=true;break;
     case PF_EVENT_TYPE_STR_STATE_UPDATE__LOADCOMPLETED:p.loaded_=true;break;
     case PF_EVENT_TYPE_STR_STATE_UPDATE__PLAYING:p.stage_=int(DirectStage::Playing);p.state_=int(DirectState::Playing);break;
     case 0x1b:p.stage_=int(DirectStage::Paused);p.state_=int(DirectState::Paused);break;
@@ -54,7 +55,7 @@ void DirectPlayer::event(int type,int64_t value,const char* message,void *user){
 DirectPlayer::~DirectPlayer(){close();}
 bool DirectPlayer::open(const std::string& uri,double position,int64_t now,DirectSession *session,bool seconds,DirectLoadContract contract,bool fixture_direct){
     close();state_=int(DirectState::Loading);session_=session;
-    released_=true;fixture_direct_=fixture_direct;progress_samples_=0;
+    released_=true;fixture_direct_=fixture_direct;progress_samples_=0;frame_ready_=false;
     const char *fcup=getenv("UXAIR_DIRECT_FCUP");
     relay_.sender_manifest=session&&fcup&&!strcmp(fcup,"1")?[session](const std::string& url){return session->sender_manifest(url);}:std::function<std::string(const std::string&)>();
     begin(DirectStage::Relay);auto began=clock_ms();const auto local=relay_.start(uri);result(DirectStage::Relay,!local.empty(),began);

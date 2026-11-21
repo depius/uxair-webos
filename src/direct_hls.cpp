@@ -119,15 +119,18 @@ struct Demuxer {
     }
 };
 
-bool adts_aac_lc(const AVPacket& packet) {
-    if (packet.size < 7) return false;
+struct AdtsFormat { int sample_rate; int channels; };
+
+AdtsFormat adts_aac_lc(const AVPacket& packet) {
+    if (packet.size < 7) return {};
     const auto* data = packet.data;
     const unsigned rate = (data[2] >> 2) & 15;
     const unsigned channels = ((data[2] & 1) << 2) | (data[3] >> 6);
     const int frame_bytes = ((data[3] & 3) << 11) | (data[4] << 3) | (data[5] >> 5);
-    return data[0] == 0xff && (data[1] & 0xf6) == 0xf0 && (data[2] >> 6) == 1 &&
-           (rate == 3 || rate == 4) && (channels == 1 || channels == 2) &&
-           (data[6] & 3) == 0 && frame_bytes == packet.size;
+    if (data[0] != 0xff || (data[1] & 0xf6) != 0xf0 || (data[2] >> 6) != 1 ||
+        (rate != 3 && rate != 4) || (channels != 1 && channels != 2) ||
+        (data[6] & 3) || frame_bytes != packet.size) return {};
+    return {rate == 3 ? 48000 : 44100, int(channels)};
 }
 
 bool has_pps(const std::vector<uint8_t>& configuration) {
@@ -211,6 +214,8 @@ DirectHlsResult direct_demux_ts(const std::string& data, const std::atomic<bool>
     if (!demux.open(reader)) return cancelled ? DirectHlsResult::Cancelled : DirectHlsResult::Invalid;
     int video_index = -1, audio_index = -1, result = 0;
     unsigned packets = 0;
+    int64_t audio_pts_anchor = AV_NOPTS_VALUE;
+    int audio_samples = 0;
     while (!cancelled && (result = av_read_frame(demux.format, demux.packet)) >= 0) {
         if (++packets > max_segment_packets) return DirectHlsResult::Limit;
         AVPacket& packet = *demux.packet;
@@ -219,19 +224,15 @@ DirectHlsResult direct_demux_ts(const std::string& data, const std::atomic<bool>
         const bool is_audio = stream.codecpar->codec_type == AVMEDIA_TYPE_AUDIO;
         if (!video && !is_audio) { av_packet_unref(&packet); continue; }
         if (packet.size <= 0 || size_t(packet.size) > max_packet_bytes) return DirectHlsResult::Limit;
-        if (packet.flags & AV_PKT_FLAG_CORRUPT || packet.pts == AV_NOPTS_VALUE ||
-            (video && packet.dts == AV_NOPTS_VALUE)) return DirectHlsResult::Invalid;
+        if (packet.flags & AV_PKT_FLAG_CORRUPT) return DirectHlsResult::Invalid;
         const AVRational ns = {1, int(second)};
         DirectAccessUnit unit;
         unit.video = video;
-        unit.pts_ns = av_rescale_q(packet.pts, stream.time_base, ns);
-        unit.dts_ns = av_rescale_q(packet.dts == AV_NOPTS_VALUE ? packet.pts : packet.dts, stream.time_base, ns);
-        unit.duration_ns = av_rescale_q(packet.duration, stream.time_base, ns);
-        constexpr int64_t max_timestamp = 2 * 24 * 60 * 60 * second;
-        if (unit.pts_ns < -second || unit.pts_ns > max_timestamp || unit.dts_ns < -second ||
-            unit.dts_ns > max_timestamp || unit.duration_ns < 0 || unit.duration_ns > second)
-            return DirectHlsResult::Invalid;
         if (video) {
+            if (packet.pts == AV_NOPTS_VALUE || packet.dts == AV_NOPTS_VALUE) return DirectHlsResult::Invalid;
+            unit.pts_ns = av_rescale_q(packet.pts, stream.time_base, ns);
+            unit.dts_ns = av_rescale_q(packet.dts, stream.time_base, ns);
+            unit.duration_ns = av_rescale_q(packet.duration, stream.time_base, ns);
             if (stream.codecpar->codec_id != AV_CODEC_ID_H264 ||
                 (video_index >= 0 && packet.stream_index != video_index)) return DirectHlsResult::Unsupported;
             const auto info = inspect_h264(packet.data, size_t(packet.size));
@@ -249,13 +250,32 @@ DirectHlsResult direct_demux_ts(const std::string& data, const std::atomic<bool>
                 return DirectHlsResult::Unsupported;
             unit.data.assign(packet.data, packet.data + packet.size);
         } else {
-            if (stream.codecpar->codec_id != AV_CODEC_ID_AAC || !adts_aac_lc(packet) ||
+            const auto adts = adts_aac_lc(packet);
+            if (stream.codecpar->codec_id != AV_CODEC_ID_AAC || !adts.sample_rate ||
+                (segment.aac_sample_rate && (segment.aac_sample_rate != adts.sample_rate ||
+                                             segment.aac_channels != adts.channels)) ||
                 (audio_index >= 0 && packet.stream_index != audio_index)) return DirectHlsResult::Unsupported;
+            segment.aac_sample_rate = adts.sample_rate;
+            segment.aac_channels = adts.channels;
+            const AVRational sample_time = {1, adts.sample_rate};
+            // MPEG-TS timestamps the PES. Splitting ADTS access units can leave
+            // subsequent frames without a timestamp until the next PES anchor.
+            if (packet.pts != AV_NOPTS_VALUE) {
+                audio_pts_anchor = av_rescale_q(packet.pts, stream.time_base, ns);
+                audio_samples = 0;
+            }
+            if (audio_pts_anchor == AV_NOPTS_VALUE) return DirectHlsResult::Invalid;
+            unit.pts_ns = unit.dts_ns = audio_pts_anchor + av_rescale_q(audio_samples, sample_time, ns);
+            audio_samples += 1024;
+            unit.duration_ns = av_rescale_q(1024, sample_time, ns);
             if (!audio.decode_adts(packet.data, size_t(packet.size), unit.data) || unit.data.empty())
                 return DirectHlsResult::Invalid;
             audio_index = packet.stream_index;
-            unit.duration_ns = int64_t(unit.data.size() / 4) * second / 44100;
         }
+        constexpr int64_t max_timestamp = 2 * 24 * 60 * 60 * second;
+        if (unit.pts_ns < -second || unit.pts_ns > max_timestamp || unit.dts_ns < -second ||
+            unit.dts_ns > max_timestamp || unit.duration_ns < 0 || unit.duration_ns > second)
+            return DirectHlsResult::Invalid;
         if (unit.data.size() > max_segment_bytes - segment.bytes) return DirectHlsResult::Limit;
         segment.bytes += unit.data.size();
         segment.packets.push_back(std::move(unit));

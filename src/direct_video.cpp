@@ -146,8 +146,9 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         if(reverse_running_){events_.push_back("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>category</key><string>video</string><key>state</key><string>loading</string></dict></plist>");event_cv_.notify_all();}
     } else if(method=="POST"&&target=="/stop") {commands_.clear();}
     else if(method=="POST"&&target.compare(0,6,"/rate?")==0){
-        if(target=="/rate?value=0")command.kind=DirectCommandKind::Pause;
-        else if(target=="/rate?value=1")command.kind=DirectCommandKind::Resume;else return reply;
+        double rate=0;
+        if(target.compare(0,12,"/rate?value=")!=0||!number(target.substr(12),rate)||(rate!=0&&rate!=1))return reply;
+        command.kind=rate==0?DirectCommandKind::Pause:DirectCommandKind::Resume;
     } else if(method=="POST"&&target.compare(0,16,"/scrub?position=")==0) {
         if(!number(target.substr(16),command.position))return reply;command.kind=DirectCommandKind::Seek;
     } else if(method=="GET"&&(target=="/scrub"||target=="/playback-info")) {

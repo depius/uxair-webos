@@ -20,6 +20,7 @@ class DirectPlayer {
     bool cleanup();
     bool native_load_accepted_=false, released_=true, fixture_direct_=false;
     unsigned progress_samples_=0;
+    std::atomic<bool> frame_ready_{false};
     static void event(int,int64_t,const char*,void*);
 public:
     ~DirectPlayer();
@@ -27,6 +28,6 @@ public:
     bool control(const DirectCommand& command);
     DirectSnapshot tick(int64_t now);
     DirectSnapshot snapshot() const;
-    bool progress_observed() const { return progress_samples_>=2 && (fixture_direct_ || relay_.media_gets>0); }
+    bool progress_observed() const { return progress_samples_>=2 && (frame_ready_ || (width_ && height_)) && (fixture_direct_ || relay_.media_gets>0); }
     bool close();
 };

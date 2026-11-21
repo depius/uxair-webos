@@ -72,7 +72,7 @@ void DirectBufferstream::download(DirectCommand play) {
         --segment;
         AudioDecoder audio;
         int64_t origin = 0, previous_dts = 0, previous_duration = 0;
-        int width = 0, height = 0;
+        int width = 0, height = 0, aac_rate = 0, aac_channels = 0;
         for (; segment != playlist.segments.end(); ++segment) {
             {
                 std::unique_lock<std::mutex> lock(mutex_);
@@ -93,7 +93,10 @@ void DirectBufferstream::download(DirectCommand play) {
                 origin = media.packets.front().dts_ns;
                 width = media.width;
                 height = media.height;
+                aac_rate = media.aac_sample_rate;
+                aac_channels = media.aac_channels;
             } else if (media.width != width || media.height != height ||
+                       media.aac_sample_rate != aac_rate || media.aac_channels != aac_channels ||
                        std::llabs(media.first_video_dts_ns - previous_dts - previous_duration) > 250000000) {
                 download_error_ = DirectError::Discontinuity;
                 return;

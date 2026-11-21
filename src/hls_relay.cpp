@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <algorithm>
 #include <chrono>
+#include <iterator>
 #include <cerrno>
 static const size_t manifest_limit=262144,segment_limit=8*1024*1024;
 void HlsRelay::trace(const char *stage,int code,long http){
@@ -97,12 +98,32 @@ std::string HlsRelay::register_url(const std::string& uri,bool manifest){
 std::string HlsRelay::rewrite(const std::string& input,const std::string& base){
     if(input.size()>manifest_limit||input.compare(0,7,"#EXTM3U")!=0||input.find('\0')!=std::string::npos)return {};
     std::istringstream in(input);std::string line,out;bool variant=false;
+    if(!std::getline(in,line) || (line!="#EXTM3U" && line!="#EXTM3U\r"))return {};
+    out="#EXTM3U\n";
     while(std::getline(in,line)){
         if(!line.empty()&&line.back()=='\r')line.pop_back();if(line.size()>8192||line.find("BYTERANGE")!=std::string::npos||line.find("CONTENT-STEERING")!=std::string::npos)return {};
         if(line.compare(0,10,"#EXT-X-KEY")==0&&line!="#EXT-X-KEY:METHOD=NONE")return {}; // no DRM/key relay
-        if(line.find("{$")!=std::string::npos || line.find("#EXT-X-DEFINE")==0 ||
-           line.find("#EXT-X-PRELOAD-HINT")==0 || line.find("#EXT-X-PART")==0 ||
-           line.find("#EXT-X-RENDITION-REPORT")==0) return {};
+        if(line.find("{$")!=std::string::npos) return {};
+        if(line.compare(0,4,"#EXT")==0) {
+            // Forward only tags whose URI handling is understood. Every network
+            // reference must be registered here before native firmware sees it.
+            const auto name=line.substr(0,line.find(':'));
+            const std::string allowed[]={
+                "#EXTINF","#EXT-X-VERSION","#EXT-X-TARGETDURATION","#EXT-X-MEDIA-SEQUENCE",
+                "#EXT-X-DISCONTINUITY-SEQUENCE","#EXT-X-DISCONTINUITY","#EXT-X-ENDLIST",
+                "#EXT-X-PLAYLIST-TYPE","#EXT-X-INDEPENDENT-SEGMENTS","#EXT-X-PROGRAM-DATE-TIME",
+                "#EXT-X-START","#EXT-X-STREAM-INF","#EXT-X-MEDIA","#EXT-X-I-FRAME-STREAM-INF",
+                "#EXT-X-MAP","#EXT-X-KEY"
+            };
+            if(std::find(std::begin(allowed),std::end(allowed),name)==std::end(allowed)) return {};
+            const bool permits_uri=name=="#EXT-X-MEDIA" || name=="#EXT-X-I-FRAME-STREAM-INF" || name=="#EXT-X-MAP";
+            if(permits_uri) {
+                // Reject malformed URI attributes rather than relying on native parser leniency.
+                const auto uri=line.find("URI");
+                if(uri!=std::string::npos && line.compare(uri,5,"URI=\"")!=0)return {};
+                if(uri==std::string::npos && name!="#EXT-X-MEDIA")return {};
+            }
+        }
         if(line.compare(0,18,"#EXT-X-SESSION-KEY")==0)return {};
         if(!line.empty()&&line[0]!='#'){line=register_url(resolve(base,line),variant);variant=false;if(line.empty())return {};}
         else {size_t pos=0;while((pos=line.find("URI=\"",pos))!=std::string::npos){const size_t first=pos+5,last=line.find('"',first);if(last==std::string::npos)return {};
@@ -112,14 +133,29 @@ std::string HlsRelay::rewrite(const std::string& input,const std::string& base){
     }
     return out;
 }
-static bool send_all(int fd,const std::string& data){size_t sent=0;while(sent<data.size()){auto n=send(fd,data.data()+sent,data.size()-sent,MSG_NOSIGNAL);if(n<=0)return false;sent+=size_t(n);}return true;}
+static bool send_all(int fd,const std::string& data){
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+    size_t sent=0;
+    while(sent<data.size() && std::chrono::steady_clock::now()<deadline){
+        const auto n=send(fd,data.data()+sent,data.size()-sent,MSG_NOSIGNAL);
+        if(n<=0)return false;
+        sent+=size_t(n);
+    }
+    return sent==data.size();
+}
 void HlsRelay::serve(){
     while(running_){
         int fd=accept(listener_,nullptr,nullptr);if(fd<0)break;
-        {std::lock_guard<std::mutex> lock(clients_mutex_);clients_.push_back(fd);}
+        {
+            std::lock_guard<std::mutex> lock(clients_mutex_);
+            if(!running_){close(fd);break;}
+            clients_.push_back(fd);
+        }
         timeval timeout={2,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
         std::string request;char buffer[1024];
-        while(request.find("\r\n\r\n")==std::string::npos&&request.size()<4096){auto n=recv(fd,buffer,std::min(sizeof(buffer),4096-request.size()),0);if(n<=0)break;request.append(buffer,size_t(n));}
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+        while(request.find("\r\n\r\n")==std::string::npos&&request.size()<4096&&
+              std::chrono::steady_clock::now()<deadline){auto n=recv(fd,buffer,std::min(sizeof(buffer),4096-request.size()),0);if(n<=0)break;request.append(buffer,size_t(n));}
         ++incoming_requests;
         HlsFetch response;response.status=404;std::string target,method;std::istringstream header(request);header>>method>>target;
         const std::string prefix="/"+token_+"/";bool manifest=false;long resource=-1;
@@ -146,7 +182,7 @@ void HlsRelay::serve(){
                 }
             }
         }
-        if(response.status!=200)response.data.clear();
+        if(response.status!=200){response.data.clear();response.type="application/octet-stream";}
         const char *label=method=="GET"?"GET":method=="HEAD"?"HEAD":"other";
         if(diagnostic_records_.load()<64&&diagnostic_records_.fetch_add(1)<64)
             fprintf(stderr,"[hls-relay] request=%s resource=%ld manifest=%d http=%d bytes=%zu\n",label,resource,int(manifest),response.status,response.data.size());

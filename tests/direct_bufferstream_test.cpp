@@ -63,6 +63,16 @@ void Media::close() { if (decoder_open) { ++closes; decoder_open = false; } read
 int main(int argc, char** argv) {
     assert(argc == 2);
     const std::string base = argv[1];
+    DirectPlaylist selected;
+    const std::string master = "#EXTM3U\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=1280x720,CODECS=\"avc1.42c01f,mp4a.40.2\"\n"
+        "variants/main.m3u8?token=PRIVATE\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=3840x2160,CODECS=\"hvc1.1.6,mp4a.40.2\"\n"
+        "ultra.m3u8\n";
+    assert(direct_parse_playlist(master, base + "/master.m3u8", selected) == DirectHlsResult::Ok);
+    assert(selected.variant == base + "/variants/main.m3u8?token=PRIVATE");
+    assert(direct_parse_playlist("#EXTM3U\n#EXT-X-DISCONTINUITY\n", base + "/media.m3u8", selected)
+           == DirectHlsResult::Unsupported);
     DirectBufferstream player;
     DirectCommand play;
     play.kind = DirectCommandKind::Play;
