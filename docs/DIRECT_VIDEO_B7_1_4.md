@@ -28,7 +28,7 @@ Leave the launcher running. Its default tries Native URI and falls back to BUFFE
 1. Read the AirPlay receiver port from the sanitized startup line using the command below. Run the control client in another terminal.
 
    ```powershell
-   ssh "root@$tvIp" 'for r in /media/developer/apps/usr/palm/applications /media/cryptofs/apps/usr/palm/applications; do p=$r/com.github.depius.uxair.dev/uxair.log; if [ -f "$p" ]; then grep "UxAir ready port=" "$p" | tail -1; fi; done'
+   ssh "root@$tvIp" 'for r in /media/developer/apps/usr/palm/applications /media/cryptofs/apps/usr/palm/applications /media/developer/apps/var/lib; do p=$r/com.github.depius.uxair.dev/state/uxair.log; if [ -f "$p" ]; then grep "UxAir ready port=" "$p" | tail -1; fi; done'
    $port = 45607 # Replace with the port from the current startup line.
    python tools/direct-control-test.py --receiver "http://${tvIp}:$port" --source "http://${fixtureIp}:8080/master.m3u8"
    ```
@@ -38,7 +38,7 @@ Leave the launcher running. Its default tries Native URI and falls back to BUFFE
 4. If playback fails, report the backend, what you saw and heard, the fixture's role/status lines and the output below. This filter selects bounded, URL-free Direct Video diagnostic records.
 
    ```powershell
-   ssh "root@$tvIp" 'for r in /media/developer/apps/usr/palm/applications /media/cryptofs/apps/usr/palm/applications; do p=$r/com.github.depius.uxair.dev/uxair.log; if [ -f "$p" ]; then grep -E "^\[(direct-player|direct-bufferstream|direct-protocol|hls-relay)\]" "$p" | tail -100; fi; done'
+   ssh "root@$tvIp" 'for r in /media/developer/apps/usr/palm/applications /media/cryptofs/apps/usr/palm/applications /media/developer/apps/var/lib; do p=$r/com.github.depius.uxair.dev/state/uxair.log; if [ -f "$p" ]; then grep -E "^\[(direct-player|direct-bufferstream|direct-protocol|hls-relay)\]" "$p" | tail -100; fi; done'
    ```
 
 The optional six-case native probe compares three loopback HLS contracts, two direct-LAN HLS contracts and one direct-LAN MP4 fixture. Close the running development receiver before launching it. Match the candidate to the visible picture and audible tone, since firmware callbacks alone cannot confirm either.

@@ -189,7 +189,7 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
         last_feed_at_ = now;
     }
     if (opened_) media_.tick();
-    if (media_.failed) fail(DirectError::NativeError);
+    if (opened_ && media_.failed) fail(DirectError::NativeError);
     if (!presented_ && now - opened_at_ > startup_timeout) fail(DirectError::PlayingTimeout);
     if (status_.state == DirectState::Error) { update_snapshot(); return status_; }
 
@@ -221,7 +221,8 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
     }
     if (status_.state == DirectState::Error) { update_snapshot(); return status_; }
 
-    if (!presented_ && media_.frames && media_.feed_video_accepted && media_.feed_audio_accepted) {
+    if (opened_ && media_.ready && media_.playing && !presented_ &&
+        media_.frames && media_.feed_video_accepted && media_.feed_audio_accepted) {
         presented_ = true;
         started_at_ = now;
         if (paused_) media_.pause(true);

@@ -109,6 +109,8 @@ int main(int argc, char** argv) {
     control.kind = DirectCommandKind::Seek;
     control.position = 5;
     assert(player.control(control, now));
+    const auto seeking = player.tick(now);
+    assert(seeking.state == DirectState::Loading || opens == 2);
     const auto sought = poll_for(DirectState::Playing, 4);
     assert(sought.position < 5 && opens == 2 && closes == 1);
     const auto ended = poll_for(DirectState::Ended);
