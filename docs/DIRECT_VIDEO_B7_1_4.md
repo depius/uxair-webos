@@ -25,9 +25,11 @@ ssh "root@$tvIp" "sh /tmp/uxair-direct-test.sh $fixtureIp auto"
 
 Leave the launcher running. Its default tries Native URI and falls back to BUFFERSTREAM when it has no confirmed startup. The same IPK accepts the launcher argument bufferstream for a direct hardware-feed check, or native for an isolated URI check.
 
-1. Read the AirPlay receiver port from the sanitized startup line using the command below. Run the control client in another terminal.
+1. In a third PowerShell terminal, read the AirPlay receiver port from the sanitized startup line and run the control client.
 
    ```powershell
+   $tvIp = '192.168.1.27'
+   $fixtureIp = '192.168.1.89'
    ssh "root@$tvIp" 'for r in /media/developer/apps/usr/palm/applications /media/cryptofs/apps/usr/palm/applications /media/developer/apps/var/lib; do p=$r/com.github.depius.uxair.dev/state/uxair.log; if [ -f "$p" ]; then grep "UxAir ready port=" "$p" | tail -1; fi; done'
    $port = 45607 # Replace with the port from the current startup line.
    python tools/direct-control-test.py --receiver "http://${tvIp}:$port" --source "http://${fixtureIp}:8080/master.m3u8"
