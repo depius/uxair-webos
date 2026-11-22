@@ -142,7 +142,7 @@ static bool valid_key(const char *p) {
 bool Receiver::start(const std::string& dir, const Settings& settings) {
     AdvertisedCapabilities capabilities=advertised_capabilities(settings);
 #ifdef UXAIR_DIRECT_BUILD
-    if(direct_enabled()) {
+    if(uxair_direct_enabled()) {
         capabilities.direct_video=capabilities.hls=true;
         fprintf(stderr,"[direct-protocol] experimental-discovery=enabled\n");
     }

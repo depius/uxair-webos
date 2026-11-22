@@ -13,10 +13,24 @@ int foreground_calls=0,load_calls=0;
 static bool foreground_result=true;
 extern "C" bool test_foreground(StarfishMediaAPIs*) __asm__("_ZN17StarfishMediaAPIs16notifyForegroundEv");
 extern "C" bool test_foreground(StarfishMediaAPIs*){++foreground_calls;return foreground_result;}
+#ifndef UXAIR_TEST_NO_NATIVE_URI_API
+extern "C" int64_t test_playtime(StarfishMediaAPIs*) __asm__("_ZN17StarfishMediaAPIs18getCurrentPlaytimeEv");
+extern "C" int64_t test_playtime(StarfishMediaAPIs* api) { return api->getCurrentPlaytime(); }
+extern "C" bool test_seek(StarfishMediaAPIs*, const char*) __asm__("_ZN17StarfishMediaAPIs4SeekEPKc");
+extern "C" bool test_seek(StarfishMediaAPIs* api, const char* value) { return api->Seek(value); }
+#endif
 bool StarfishMediaAPIs::load_success=true,StarfishMediaAPIs::play_success=true,StarfishMediaAPIs::synchronous_load=false;
 bool acb_initialize_success=true,acb_sink_success=true;int acb_player_type=-1,acb_sink_calls=0;
 extern "C" int AcbAPI_setMediaVideoData(long,const char*,long*){return 1;}
 int main(){
+#ifdef UXAIR_TEST_NO_NATIVE_URI_API
+ DirectPlayer player;
+ assert(!player.open("https://media.example/vod.m3u8",0,1));
+ const auto unavailable=player.snapshot();
+ assert(unavailable.state==DirectState::Error && unavailable.error==DirectError::NativeApiUnavailable);
+ assert(load_calls==0 && foreground_calls==0 && player.close());
+ puts("PASS: missing optional Starfish URI methods leave the process and BUFFERSTREAM available");
+#else
  DirectPlayer p;assert(p.open("https://media.example/vod.m3u8",0,1));
  assert(StarfishMediaAPIs::payload.find("HLS")!=std::string::npos);
  assert(foreground_calls==1&&load_calls==1);
@@ -79,4 +93,5 @@ int main(){
  assert(p.open("https://media.example/vod.m3u8",0,1));StarfishMediaAPIs::play_success=false;cb(0x16,0,nullptr,StarfishMediaAPIs::context);assert(p.tick(2).error==DirectError::PlayRejected);p.close();StarfishMediaAPIs::play_success=true;
  assert(!p.open("file:///etc/passwd",0,1));
  puts("PASS: native adapter load/play/pause/resume/seek/EOS/timeout with simulated firmware");
+#endif
 }

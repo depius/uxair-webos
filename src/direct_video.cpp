@@ -1,4 +1,5 @@
 #include "direct_video.h"
+#include "identity.h"
 #include <plist/plist.h>
 #include <cmath>
 #include <cstdio>
@@ -16,7 +17,7 @@ const char *direct_stage_name(DirectStage s) {
 }
 const char *direct_error_name(DirectError e) {
     static const char *names[]={"none","busy","relay-start","payload","acb-create","acb-initialize","construct","media-id","load-rejected","native-error","sink","seek","play-rejected","load-timeout","duration-timeout","playing-timeout","progress-timeout","control-rejected","no-native-progress","cleanup-failed","fetch-failed","unsupported-stream",
-        "invalid-stream","stream-limit","discontinuity","bufferstream-start","bufferstream-feed"};
+        "invalid-stream","stream-limit","discontinuity","bufferstream-start","bufferstream-feed","native-api-unavailable"};
     const unsigned n=unsigned(e);return n<sizeof(names)/sizeof(*names)?names[n]:"unknown";
 }
 const char *direct_backend_name(DirectBackend backend) {
@@ -62,7 +63,7 @@ bool direct_uri_valid(const std::string& uri) {
 }
 static std::string escape(const std::string& s){std::string out;for(char c:s){if(c=='"'||c=='\\')out+='\\';out+=c;}return out;}
 std::string direct_load_payload(const std::string& uri,const std::string& app,bool internal,DirectLoadContract contract) {
-    if((!direct_uri_valid(uri)&&!(internal&&uri.compare(0,17,"http://127.0.0.1:")==0&&uri.find_first_of("\r\n\"\\")==std::string::npos))||app!="com.github.depius.uxair.dev")return {};
+    if((!direct_uri_valid(uri)&&!(internal&&uri.compare(0,17,"http://127.0.0.1:")==0&&uri.find_first_of("\r\n\"\\")==std::string::npos))||app!=UXAIR_DEV_APP_ID)return {};
     const std::string option="\"option\":{\"appId\":\""+app+"\",\"mediaFormat\":{\"type\":\"video\"},\"adaptiveStreaming\":{\"maxWidth\":1920,\"maxHeight\":1080},\"queryPosition\":true}";
     if(contract==DirectLoadContract::ArgsHls)return "{\"args\":[{\"uri\":\""+escape(uri)+"\",\"mediaTransportType\":\"HLS\","+option+"}]}";
     // The URI envelope is from uMediaClient::loadAsync, not the SMP BUFFERSTREAM

@@ -68,7 +68,9 @@ std::string data_directory() {
     const bool use_lib=selected==lib;
     state_environment(app,lib,selected,ndl);
     if(prepare_state(selected,use_lib,!ndl && selected==app))return dir=selected;
+    const int error=errno;
     fprintf(stderr,"[state] unsafe or inaccessible persistent directory; refusing temporary identity\n");
+    errno=error;
     return "";
 }
 bool start_log(const char *name) {

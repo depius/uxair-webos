@@ -53,7 +53,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(github.ref == 'refs/heads/codex/uxair-queue-disconnects' && '[{"media":"starfish","platform":"webos3-4","maturity":"TEST"}]' || '[{"media":"starfish","platform":"webos3-4","maturity":"Stable"},{"media":"ndl","platform":"webos5plus","maturity":"Beta-Experimental"}]') }}
+        include: ${{ fromJSON(github.ref == 'refs/heads/feature/direct-video-hls-1.4' && '[{"media":"starfish","platform":"webos3-4","maturity":"Direct Video Dev","variant":"development"},{"media":"starfish","platform":"webos3-4","maturity":"Stable identity","variant":"production"},{"media":"ndl","platform":"webos5plus","maturity":"Beta-Experimental","variant":"production"}]' || github.ref == 'refs/heads/codex/uxair-queue-disconnects' && '[{"media":"starfish","platform":"webos3-4","maturity":"TEST"}]' || '[{"media":"starfish","platform":"webos3-4","maturity":"Stable"},{"media":"ndl","platform":"webos5plus","maturity":"Beta-Experimental"}]') }}
     needs: native-tests
     # Both targets use the pinned Linux x86-64 SDK.
     # bootstrap.py selects the already checksum-pinned Linux x86-64 ARM SDK.
@@ -85,7 +85,7 @@ jobs:
       # Separate link targets/packages; NDL hardware acceptance remains pending.
       - name: Build and verify the backend-specific IPK
         run: |
-          if [[ "$GITHUB_REF_NAME" == feature/direct-video-hls-1.4 && "${{ matrix.media }}" == starfish ]]; then
+          if [[ "${{ matrix.variant }}" == development ]]; then
             tools/build.sh --media=starfish --development
             python3 tools/verify-elf.py build/app direct-uri-probe | tee dist/ELF_REPORT-NativeUriProbe.txt
             python3 tools/validate-ipk.py --development | tee dist/IPK_REPORT.txt
@@ -96,7 +96,7 @@ jobs:
           python3 tools/verify-elf.py build/app | tee dist/ELF_REPORT-${{ matrix.platform }}.txt
       - name: Build corresponding source archive
         run: |
-          if [[ "$GITHUB_REF_NAME" == feature/direct-video-hls-1.4 && "${{ matrix.media }}" == starfish ]]; then
+          if [[ "${{ matrix.variant }}" == development ]]; then
             tools/source-package.py --direct
           else
             tools/source-package.py
@@ -110,7 +110,7 @@ jobs:
           (cd dist && shasum -a 256 -c SHA256SUMS)
           cat dist/BUILD_COMMIT.txt dist/SHA256SUMS dist/ELF_REPORT.txt
       - name: Upload verified Direct Video development package
-        if: github.ref == 'refs/heads/feature/direct-video-hls-1.4' && matrix.media == 'starfish'
+        if: github.ref == 'refs/heads/feature/direct-video-hls-1.4' && matrix.variant == 'development'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: UxAir-1.4.0-dev-DirectVideo-Starfish

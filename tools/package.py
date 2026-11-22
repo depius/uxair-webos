@@ -57,7 +57,6 @@ def main():
     shutil.copy2(ROOT / 'dependencies.lock.json', stage / 'dependencies.lock.json')
     strip = SDK / 'bin/arm-webos-linux-gnueabi-strip'
     subprocess.run([str(strip), str(stage / 'uxair')], check=True)
-    subprocess.run(['python3', str(ROOT / 'tools/verify-elf.py'), str(stage)], check=True)
     if args.development and backend == 'starfish':
         shutil.copy2(ROOT / 'build/direct-uri-probe', stage / 'direct-uri-probe')
         shutil.copy2(ROOT / 'assets/hls-ca.pem', stage / 'hls-ca.pem')
@@ -65,6 +64,7 @@ def main():
         shutil.copy2(ROOT / 'packaging/Mozilla-MPL-2.0.txt', stage / 'licenses/Mozilla-MPL-2.0.txt')
         subprocess.run([str(strip), str(stage / 'direct-uri-probe')], check=True)
         subprocess.run(['python3', str(ROOT / 'tools/verify-elf.py'), str(stage), 'direct-uri-probe'], check=True)
+    subprocess.run(['python3', str(ROOT / 'tools/verify-elf.py'), str(stage)], check=True)
     (ROOT / 'dist').mkdir(exist_ok=True)
     # one package per player: ndl for webOS 5 and later, starfish for webOS 3-4
     package = ROOT / 'dist' / f"{app['id']}_{app['version']}_arm-{platform}.ipk"

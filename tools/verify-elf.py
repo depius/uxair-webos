@@ -24,6 +24,7 @@ def main():
     if binary not in ('uxair', 'hevc-probe', 'direct-uri-probe'):
         sys.exit('Unsupported binary name')
     files = [stage / binary, stage / 'lib/libstdc++.so.6']
+    direct = binary == 'direct-uri-probe' or (binary == 'uxair' and (stage / 'direct-uri-probe').is_file())
     exported = output('-V', files[1]).split('Version needs section')[0]
     max_glibc = (0, 0)
     for file in files:
@@ -46,11 +47,22 @@ def main():
     if binary == 'uxair' and marker.exists() and marker.read_text().strip() == 'starfish':
         if 'libNDL' in dynamic or 'libndl' in dynamic:
             sys.exit('Starfish package unexpectedly depends on NDL')
-    if binary == 'direct-uri-probe' or (binary == 'uxair' and (stage / 'direct-uri-probe').is_file()):
-        symbols = output('-Ws', files[0])
-        foreground = [line for line in symbols.splitlines() if '_ZN17StarfishMediaAPIs16notifyForegroundEv' in line]
-        if not foreground or any('WEAK' not in line or 'UND' not in line for line in foreground):
-            sys.exit('notifyForeground must remain an optional weak native import')
+    if direct:
+        if max_glibc > (2, 7):
+            sys.exit('Direct Video must retain the v1.3.0 Starfish GLIBC_2.7 launch baseline')
+        versions = output('-V', files[0]).split('Version needs section')[-1]
+        for required in re.findall(r'Name: GLIBCXX_([0-9.]+)', versions):
+            if version(required) > (3, 4, 29):
+                sys.exit(f'Direct Video adds a mandatory GLIBCXX_{required} launch dependency')
+        symbols = output('--dyn-syms', '--wide', files[0])
+        for name in ('16notifyForegroundEv', '18getCurrentPlaytimeEv', '4SeekEPKc'):
+            symbol = '_ZN17StarfishMediaAPIs' + name
+            imports = [line.split() for line in symbols.splitlines() if symbol in line.split()]
+            if len(imports) != 1 or imports[0][4] != 'WEAK' or imports[0][6] != 'UND':
+                sys.exit(f'{symbol} must remain an optional weak native import')
+        if '[Requesting program interpreter: /lib/ld-linux.so.3]' not in output('-l', files[0]):
+            sys.exit('Direct Video changed the v1.3.0 native launcher interpreter')
+        print('Direct Video launch ABI: GLIBC <= 2.7, GLIBCXX <= 3.4.29, optional Starfish URI symbols.')
     if '$ORIGIN/lib' not in dynamic:
         sys.exit('Missing private runtime search path')
     for bad in ['libcrypto.so', 'libssl.so', 'libcurl.so', 'libplist', 'libavcodec', 'libavformat', 'libgstreamer', 'libX11']:

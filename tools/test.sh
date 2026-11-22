@@ -131,6 +131,19 @@ if ! timeout 30s build/tests/direct-player-test 2>build/tests/direct-player.log;
   exit 1
 fi
 python3 tests/direct_player_log_test.py build/tests/direct-player.log
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -DUXAIR_TEST_NO_NATIVE_URI_API -Isrc -Itests/direct_stubs \
+  $(pkg-config --cflags libplist-2.0) tests/direct_player_test.cpp src/direct_player.cpp src/direct_native_diag.cpp \
+  src/direct_video.cpp src/hls_relay.cpp $(pkg-config --libs libplist-2.0 libcurl) -lcrypto -o build/tests/direct-no-native-api-test
+timeout 30s build/tests/direct-no-native-api-test
+
+cc -std=c11 -Wall -Wextra -Werror -Isrc tests/direct_config_test.c -o build/tests/direct-production-config-test
+build/tests/direct-production-config-test
+cc -std=c11 -Wall -Wextra -Werror -DUXAIR_DEV_BUILD -Isrc tests/direct_config_test.c -o build/tests/direct-ndl-dev-config-test
+build/tests/direct-ndl-dev-config-test
+cc -std=c11 -Wall -Wextra -Werror -DUXAIR_DIRECT_BUILD -Isrc tests/direct_config_test.c -o build/tests/direct-http-config-test
+build/tests/direct-http-config-test
+c++ -x c++ -std=c++11 -Wall -Wextra -Werror -DUXAIR_DIRECT_BUILD -Isrc tests/direct_config_test.c -o build/tests/direct-receiver-config-test
+build/tests/direct-receiver-config-test
 
 c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc $(pkg-config --cflags libplist-2.0 libcurl) tests/hls_relay_test.cpp src/hls_relay.cpp src/direct_video.cpp $(pkg-config --libs libplist-2.0 libcurl) -lcrypto -o build/tests/hls-relay-test
 timeout 30s build/tests/hls-relay-test

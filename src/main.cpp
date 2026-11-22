@@ -13,6 +13,8 @@
 #ifdef UXAIR_DIRECT_BUILD
 #include "direct_playback.h"
 #include <map>
+#include <cerrno>
+#include <unistd.h>
 #endif
 #include <cstring>
 #include <cstdio>
@@ -70,7 +72,36 @@ static const int64_t kMaxHoldNs=0;
 #endif
 
 int main(int argc,char **argv) {
-    umask(0077);if(!start_log("uxair.log"))return 1;
+    umask(0077);
+#ifdef UXAIR_DIRECT_BUILD
+    fprintf(stderr,"[startup] phase=entry app=%s euid=%lu\n",UXAIR_APP_ID,static_cast<unsigned long>(geteuid()));
+    fflush(stderr);
+#endif
+    const bool log_ready=start_log("uxair.log");
+#ifdef UXAIR_DIRECT_BUILD
+    const int log_error=log_ready?0:errno;
+    if(!log_ready) {
+        fprintf(stderr,"[startup] phase=private-state-or-log errno=%d euid=%lu\n",
+                log_error,static_cast<unsigned long>(geteuid()));
+        fflush(stderr);
+        // Present the failure under the normal launcher. Never start RAOP or
+        // select another identity after private storage validation failed.
+        Shell error_screen;
+        if(error_screen.open()) {
+            const std::vector<UiRow> rows{
+                UiRow("Startup stopped","Private state or log unavailable",
+                      "The receiver needs valid private storage before it can start.",false),
+                UiRow("Launch credentials","UID "+std::to_string(geteuid()),
+                      "Filesystem error "+std::to_string(log_error),false)};
+            error_screen.page(UiPage::Diagnostics,"UxAir Dev startup",rows,0,"Back to exit");
+            while(error_screen.pump())SDL_Delay(50);
+        }
+        return 1;
+    }
+    fprintf(stderr,"[startup] phase=graphics app=%s\n",UXAIR_APP_ID);
+#else
+    if(!log_ready)return 1;
+#endif
     Shell shell;if(!shell.open())return 1;
     shell.screen("Starting AirPlay receiver","");
     const std::string state_dir=data_directory()+"/state";
@@ -125,10 +156,17 @@ int main(int argc,char **argv) {
         receiver.stop();return false;
     };
     const char *runtime_app_id=getenv("APPID");
+#ifdef UXAIR_DIRECT_BUILD
+    const char *app_id=UXAIR_APP_ID;
+    const bool launcher_has_id=runtime_app_id&&*runtime_app_id;
+    fprintf(stderr,"[media-identity] app=%s launcher-id=%s\n",app_id,
+            !launcher_has_id?"absent":strcmp(runtime_app_id,app_id)==0?"matches":"different");
+#else
     const char *app_id=runtime_app_id&&*runtime_app_id?runtime_app_id:UXAIR_APP_ID;
     fprintf(stderr,"[media-identity] runtime-source=%s runtime-app-id=%s compiled-app-id=%s match=%d\n",
             runtime_app_id&&*runtime_app_id?"APPID":"compiled-fallback",app_id,UXAIR_APP_ID,
             int(std::string(app_id)==UXAIR_APP_ID));
+#endif
     Media media;AudioDecoder decoder;HevcStream hevc;HevcStartupGate hevc_startup;
     // the TV's system bus: screen saver, coming to the front, going back
     SystemBus bus;
@@ -343,7 +381,7 @@ int main(int argc,char **argv) {
 
         } else if(which==UiPage::Diagnostics) {
 #ifdef UXAIR_DIRECT_BUILD
-            if(direct_enabled()) {
+            if(uxair_direct_enabled()) {
                 const auto direct=receiver.direct.snapshot();
                 const char* state=direct.state==DirectState::Buffering?"Buffering":
                     direct.state==DirectState::Loading?"Loading":direct.state==DirectState::Playing?"Playing":
@@ -571,7 +609,7 @@ int main(int argc,char **argv) {
         previous_loop=now;
         Action action=shell.action();
 #ifdef UXAIR_DIRECT_BUILD
-        if(direct_enabled()) {
+        if(uxair_direct_enabled()) {
             receiver.direct.check_timeout(now/1000000);
             DirectCommand command;
             bool stop=false;

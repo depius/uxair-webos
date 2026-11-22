@@ -14,7 +14,7 @@ enum class DirectBackend { None, NativeUri, Bufferstream };
 const char *direct_backend_name(DirectBackend);
 enum class DirectStage { Idle, Queued, Dequeued, Relay, AcbCreate, AcbInitialize, Construct, MediaId, Load, AwaitLoad, Sink, LoadedState, Window, Seek, Play, AwaitPlaying, Playing, Paused, VideoInfo, Stopped, Fetch, BufferstreamLoad, PacketFeed };
 enum class DirectError { None, Busy, RelayStart, Payload, AcbCreate, AcbInitialize, Construct, MediaId, LoadRejected, NativeError, Sink, Seek, PlayRejected, LoadTimeout, DurationTimeout, PlayingTimeout, ProgressTimeout, ControlRejected, NoNativeProgress, CleanupFailed, FetchFailed, UnsupportedStream,
-    InvalidStream, StreamLimit, Discontinuity, BufferstreamStart, BufferstreamFeed };
+    InvalidStream, StreamLimit, Discontinuity, BufferstreamStart, BufferstreamFeed, NativeApiUnavailable };
 const char *direct_stage_name(DirectStage);
 const char *direct_error_name(DirectError);
 struct DirectSnapshot {

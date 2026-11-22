@@ -48,7 +48,7 @@ PROBE = '''        int probe_body_length = -1;
                                 probe_body_length, probe_session);
 '''
 
-DIRECT_GATE = r'''    if (!cseq && getenv("UXAIR_DIRECT_VIDEO") && !strcmp(getenv("UXAIR_DIRECT_VIDEO"), "1") &&
+DIRECT_GATE = r'''    if (!cseq && uxair_direct_enabled() &&
         (!strcmp(url,"/info") || !strcmp(url,"/info?txtAirPlay") || !strcmp(url,"/info?txtRAOP") || !strcmp(url,"/fp-setup2") || !strcmp(url,"/play") || !strncmp(url,"/scrub",6) || !strncmp(url,"/rate",5) ||
          !strcmp(url,"/stop") || !strcmp(url,"/server-info") || !strcmp(url,"/playback-info") || !strcmp(url,"/reverse") || !strcmp(url,"/action") || !strncmp(url,"/getProperty?",13) || !strncmp(url,"/setProperty?",13))) {
         if ((!strcmp(url,"/info") || !strcmp(url,"/info?txtAirPlay") || !strcmp(url,"/info?txtRAOP")) && !strcmp(method,"GET")) {
@@ -98,7 +98,7 @@ def instrument_raop(source, direct_enabled=True):
         return source.replace(INCLUDE, INCLUDE + '#include "direct_request_diag.h"\n', 1).replace(GATE, GATE + PROBE, 1)
     source=source.replace('    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");',
         '    uxair_direct_lost(raop->callbacks.cls,(unsigned long)conn);\n    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");',1)
-    return source.replace(INCLUDE, INCLUDE + '#include "direct_request_diag.h"\n#include "direct_bridge.h"\n', 1).replace(
+    return source.replace(INCLUDE, INCLUDE + '#include "direct_request_diag.h"\n#include "direct_bridge.h"\n#include "direct_config.h"\n', 1).replace(
         GATE, DIRECT_GATE + GATE + PROBE, 1)
 
 

@@ -50,6 +50,8 @@ if [[ "${1:-}" == --direct ]] && { [ "$build_stamp" != "$previous_stamp" ] || [ 
     (cd .cache/curl-8.23.0
      # The SDK pkg-config wrapper prepends its sysroot to absolute private
      # prefixes. Use the pinned OpenSSL headers/libraries directly here.
+     # Use curl's portable socket paths to keep the B7 launcher libc baseline.
+     ac_cv_func_accept4=no ac_cv_func_pipe2=no ac_cv_func_eventfd=no \
      PKG_CONFIG=false CPPFLAGS="-I$prefix/include" LDFLAGS="$LDFLAGS -L$prefix/lib" ./configure --host=arm-webos-linux-gnueabi --prefix="$prefix" --disable-shared --enable-static \
        --with-openssl="$prefix" --without-libpsl --without-zlib --without-brotli --without-zstd \
        --without-libidn2 --without-libssh2 --without-librtmp --without-nghttp2 --without-ngtcp2 --without-nghttp3 --disable-ldap --disable-ldaps \

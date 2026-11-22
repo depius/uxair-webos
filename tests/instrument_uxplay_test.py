@@ -29,6 +29,11 @@ class InstrumentationTest(unittest.TestCase):
         self.assertNotIn('CONNECTION_TYPE_EVENT', output)
         self.assertIn('!strcmp(url,"/info?txtAirPlay")', output)
         self.assertIn('!strcmp(url,"/fp-setup2")', output)
+        self.assertIn('!cseq && uxair_direct_enabled()', output)
+        self.assertIn('#include "direct_config.h"', output)
+        production_routes = module.instrument_raop(source, False)
+        self.assertNotIn('uxair_direct_enabled()', production_routes)
+        self.assertNotIn('uxair_direct_request(', production_routes)
         with self.assertRaises(ValueError):
             module.instrument_raop(source + module.GATE)
 

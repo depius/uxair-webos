@@ -1,11 +1,8 @@
 #pragma once
 
 #include "direct_bufferstream.h"
+#include "direct_config.h"
 #include "direct_player.h"
-
-enum class DirectStrategy { Auto, NativeUri, Bufferstream };
-bool direct_enabled();
-DirectStrategy direct_strategy();
 
 class DirectPlayback {
 public:

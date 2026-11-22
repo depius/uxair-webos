@@ -13,7 +13,7 @@ import uuid
 from xml.parsers.expat import ExpatError
 
 STAGES = set('idle queued dequeued relay acb-create acb-initialize construct media-id load await-load sink loaded-state window seek play await-playing playing paused video-info stopped fetch bufferstream-load packet-feed'.split())
-ERRORS = set('none busy relay-start payload acb-create acb-initialize construct media-id load-rejected native-error sink seek play-rejected load-timeout duration-timeout playing-timeout progress-timeout control-rejected no-native-progress cleanup-failed fetch-failed unsupported-stream invalid-stream stream-limit discontinuity bufferstream-start bufferstream-feed'.split())
+ERRORS = set('none busy relay-start payload acb-create acb-initialize construct media-id load-rejected native-error sink seek play-rejected load-timeout duration-timeout playing-timeout progress-timeout control-rejected no-native-progress cleanup-failed fetch-failed unsupported-stream invalid-stream stream-limit discontinuity bufferstream-start bufferstream-feed native-api-unavailable'.split())
 COUNTERS = ('uxairNativeResult', 'uxairCallbackCount', 'uxairLastCallback', 'uxairLastCallbackValue', 'uxairRelayRequests', 'uxairUpstreamFetches', 'uxairDownloadedBytes', 'uxairRelayFailures', 'uxairMediaGets', 'uxairBufferBytes')
 
 class ClientFailure(Exception):

@@ -18,5 +18,7 @@ done
 backend=${2:-auto}
 case "$backend" in auto|bufferstream|native) ;; *) echo 'Use auto, bufferstream or native'; exit 2;; esac
 export UXAIR_DIRECT_VIDEO=1 UXAIR_DIRECT_LAN="$lan" UXAIR_DIRECT_BACKEND="$backend"
-cd "$app"
-exec ./uxair
+# Optional LAN-fixture entry point. Use the same jail and credentials as a native app.
+export XDG_RUNTIME_DIR=/tmp/xdg
+exec /usr/bin/jailer -t native_devmode -i com.github.depius.uxair.dev -p "$app" "$app/uxair" \
+    '{"@system_native_app":true,"nid":"com.github.depius.uxair.dev"}'

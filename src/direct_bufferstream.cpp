@@ -3,6 +3,7 @@
 #include "identity.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 
@@ -76,7 +77,8 @@ void DirectBufferstream::download(DirectCommand play) {
         for (; segment != playlist.segments.end(); ++segment) {
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                slot_.wait(lock, [&] { return cancelled_ || !pending_; });
+                // A timed wait uses the pthread ABI supported by the B7 toolchain.
+                while (!cancelled_ && pending_) slot_.wait_for(lock, std::chrono::milliseconds(250));
                 if (cancelled_) return;
             }
 

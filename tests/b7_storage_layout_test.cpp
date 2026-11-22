@@ -7,7 +7,7 @@
 #include <grp.h>
 #include <sys/wait.h>
 
-static std::string run_as(const std::string& app,uid_t uid,gid_t gid,bool expected) {
+static std::string run_as(const std::string& app,uid_t uid,gid_t gid,bool expected,bool starfish=false) {
     int output[2];assert(pipe(output)==0);
     pid_t child=fork();assert(child>=0);
     if(!child) {
@@ -15,7 +15,7 @@ static std::string run_as(const std::string& app,uid_t uid,gid_t gid,bool expect
         assert(setgroups(0,nullptr)==0);assert(setgid(gid)==0);assert(setuid(uid)==0);
         const std::string lib=app+"-absent-var-lib";
         state_environment(app,lib,select_state_root(app,lib,false),false);
-        assert(prepare_state(app,false)==expected);
+        assert(prepare_state(app,false,starfish)==expected);
         fflush(stderr);_exit(0);
     }
     close(output[1]);std::string log;char buf[1024];ssize_t n;
@@ -114,7 +114,23 @@ int main() {
     unlink(bad.c_str());
     for(const char *leaf:{"device.id","server.key","paired.keys","settings-v1","usage-v1","uxair.log","uxair.log.previous"})
         assert(unlink((app+"/state/"+leaf).c_str())==0);
-    assert(rmdir((app+"/state").c_str())==0);assert(rmdir(app.c_str())==0);assert(rmdir(root.c_str())==0);
+    assert(rmdir((app+"/state").c_str())==0);assert(rmdir(app.c_str())==0);
+
+    // In the reported development layout the install owner is 1001:0.
+    // The documented B7 native jail runs as 5999:5000.
+    const std::string dev=root+"/com.github.depius.uxair.dev";
+    const std::string dev_state=dev+"/state";
+    assert(mkdir(dev.c_str(),0700)==0 && chown(dev.c_str(),1001,0)==0 && chmod(dev.c_str(),0777)==0);
+    log=run_as(dev,5999,5000,true,true);
+    assert(log.find("rejected")==std::string::npos);
+    assert(stat(dev_state.c_str(),&info)==0 && info.st_uid==5999 && (info.st_mode&07777)==0700);
+    log=run_as(dev,5999,5000,true,true);
+    assert(log.find("rejected")==std::string::npos);
+    assert(chown(dev_state.c_str(),1001,0)==0 && chmod(dev_state.c_str(),0700)==0);
+    log=run_as(dev,5999,5000,false,true);
+    assert(log.find("check=open-state-no-follow errno=")!=std::string::npos);
+    assert(stat(dev_state.c_str(),&info)==0 && info.st_uid==1001 && (info.st_mode&07777)==0700);
+    assert(rmdir(dev_state.c_str())==0 && rmdir(dev.c_str())==0 && rmdir(root.c_str())==0);
     assert(state_log_path("a\nb")=="a?b");
     puts("PASS: B7 5999:5000 persistence across launches, identity reuse, settings/history, log rotation, unsafe files and unchanged installation metadata; strict policy preserved");
 }

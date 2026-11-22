@@ -1,24 +1,9 @@
 #include "direct_playback.h"
 
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
 
 namespace {
 constexpr int64_t native_startup_ns = 12000000000LL;
-
-bool has_setting(const char* name, const char* value) {
-    const char* setting = std::getenv(name);
-    return setting && std::strcmp(setting, value) == 0;
-}
-}
-
-bool direct_enabled() { return has_setting("UXAIR_DIRECT_VIDEO", "1"); }
-
-DirectStrategy direct_strategy() {
-    if (has_setting("UXAIR_DIRECT_BACKEND", "native")) return DirectStrategy::NativeUri;
-    if (has_setting("UXAIR_DIRECT_BACKEND", "bufferstream")) return DirectStrategy::Bufferstream;
-    return DirectStrategy::Auto;
 }
 
 bool DirectPlayback::open(const DirectCommand& play, int64_t now, DirectSession& session) {

@@ -1,4 +1,5 @@
 #include "direct_player.h"
+#include "identity.h"
 #include <StarfishMediaAPIs.h>
 #include <AcbAPI.h>
 #include <cstdio>
@@ -7,8 +8,10 @@
 #include <cstdlib>
 #include <chrono>
 extern "C" int direct_acb_video_info(long,const char*,long*) __asm__("AcbAPI_setMediaVideoData");
-// Weak binding preserves startup on firmware without this optional method.
+// Direct URI methods are optional additions to the proven BUFFERSTREAM ABI.
 extern "C" bool direct_notify_foreground(StarfishMediaAPIs*) __asm__("_ZN17StarfishMediaAPIs16notifyForegroundEv") __attribute__((weak));
+extern "C" int64_t direct_current_playtime(StarfishMediaAPIs*) __asm__("_ZN17StarfishMediaAPIs18getCurrentPlaytimeEv") __attribute__((weak));
+extern "C" bool direct_seek(StarfishMediaAPIs*, const char*) __asm__("_ZN17StarfishMediaAPIs4SeekEPKc") __attribute__((weak));
 static std::mutex context_mutex;static std::map<uintptr_t,DirectPlayer*> contexts;static std::atomic<uintptr_t> next_context{1};
 static int64_t clock_ms(){return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 static void direct_acb(long,long task,long event,long app,long play,const char*){
@@ -56,19 +59,26 @@ DirectPlayer::~DirectPlayer(){close();}
 bool DirectPlayer::open(const std::string& uri,double position,int64_t now,DirectSession *session,bool seconds,DirectLoadContract contract,bool fixture_direct){
     close();state_=int(DirectState::Loading);session_=session;
     released_=true;fixture_direct_=fixture_direct;progress_samples_=0;frame_ready_=false;
+    if(!direct_current_playtime || !direct_seek) {
+        fprintf(stderr,"[direct-player] uri-abi playtime=%d seek=%d\n",
+                int(direct_current_playtime!=nullptr),int(direct_seek!=nullptr));
+        fail(DirectError::NativeApiUnavailable);
+        session_=nullptr;
+        return false;
+    }
     const char *fcup=getenv("UXAIR_DIRECT_FCUP");
     relay_.sender_manifest=session&&fcup&&!strcmp(fcup,"1")?[session](const std::string& url){return session->sender_manifest(url);}:std::function<std::string(const std::string&)>();
     begin(DirectStage::Relay);auto began=clock_ms();const auto local=relay_.start(uri);result(DirectStage::Relay,!local.empty(),began);
     if(local.empty()){fail(DirectError::RelayStart);cleanup();return false;}
     const char *lan=getenv("UXAIR_DIRECT_LAN");
     if(fixture_direct&&!direct_fixture_uri_valid(uri,lan?lan:"")){fail(DirectError::Payload);cleanup();return false;}
-    const auto payload=direct_load_payload(fixture_direct?uri:local,"com.github.depius.uxair.dev",!fixture_direct,contract);
+    const auto payload=direct_load_payload(fixture_direct?uri:local,UXAIR_DEV_APP_ID,!fixture_direct,contract);
     if(payload.empty()){fail(DirectError::Payload);cleanup();return false;}
     start_position_=position;start_seconds_=seconds;opened_ns_=last_progress_ns_=now;last_position_ms_=-1;
     begin(DirectStage::AcbCreate);began=clock_ms();acb_=AcbAPI_create();result(DirectStage::AcbCreate,acb_,began);
     if(!acb_){fail(DirectError::AcbCreate);cleanup();return false;}
     // Native URI playback is VIDEO; MSE is the buffer-stream mirroring role.
-    begin(DirectStage::AcbInitialize);began=clock_ms();const bool initialized=AcbAPI_initialize(acb_,PLAYER_TYPE_VIDEO,"com.github.depius.uxair.dev",direct_acb);result(DirectStage::AcbInitialize,initialized,began);
+    begin(DirectStage::AcbInitialize);began=clock_ms();const bool initialized=AcbAPI_initialize(acb_,PLAYER_TYPE_VIDEO,UXAIR_DEV_APP_ID,direct_acb);result(DirectStage::AcbInitialize,initialized,began);
     if(!initialized){fail(DirectError::AcbInitialize);cleanup();return false;}
     begin(DirectStage::Construct);began=clock_ms();
     try{api_=new StarfishMediaAPIs(nullptr);}catch(...){fail(DirectError::Construct);cleanup();return false;}
@@ -106,7 +116,7 @@ bool DirectPlayer::control(const DirectCommand& c){
     begin(stage);const auto began=clock_ms();
     if(c.kind==DirectCommandKind::Pause)accepted=api_->Pause();
     else if(c.kind==DirectCommandKind::Resume)accepted=api_->Play();
-    else {char value[48];snprintf(value,sizeof(value),"%.0f",c.position*1000);accepted=api_->Seek(value);}
+    else {char value[48];snprintf(value,sizeof(value),"%.0f",c.position*1000);accepted=direct_seek(api_,value);}
     result(stage,accepted,began);
     if(!accepted&&state_!=int(DirectState::Error))fail(c.kind==DirectCommandKind::Seek?DirectError::Seek:DirectError::ControlRejected);
     return accepted&&state_!=int(DirectState::Error);
@@ -148,7 +158,7 @@ DirectSnapshot DirectPlayer::tick(int64_t now){
         fprintf(stderr,"[direct-player] waiting stage=%s callbacks=%llu native_requests=%llu upstream_fetches=%llu bytes=%llu failures=%llu elapsed_ms=%lld\n",
             direct_stage_name(s.stage),(unsigned long long)s.callbacks,(unsigned long long)s.relay_requests,(unsigned long long)s.upstream_fetches,(unsigned long long)s.downloaded_bytes,(unsigned long long)s.relay_failures,(long long)((now-opened_ns_)/1000000));}
     auto s=snapshot();
-    if(api_&&started_&&s.state!=DirectState::Error){const auto position=api_->getCurrentPlaytime();s.position=position/1000.0;
+    if(api_&&started_&&s.state!=DirectState::Error){const auto position=direct_current_playtime(api_);s.position=position/1000.0;
         if(s.state==DirectState::Playing&&last_position_ms_>=0&&position>last_position_ms_&&progress_samples_<2)
             ++progress_samples_;
         if(position!=last_position_ms_||s.state!=DirectState::Playing){last_position_ms_=position;last_progress_ns_=now;}
