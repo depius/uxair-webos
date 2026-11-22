@@ -9,5 +9,5 @@ public:
  StarfishMediaAPIs(const char*){} const char *getMediaID(){return "stub";}
  bool Load(const char *p,void(*cb)(int,int64_t,const char*,void*),void *ctx){if(foreground_calls!=load_calls+1)__builtin_trap();++load_calls;payload=p;callback=cb;context=ctx;if(synchronous_load&&load_success)cb(0x16,0,nullptr,ctx);return load_success;}
  bool Play(){if(!play_success)return false;callback(0x1a,0,nullptr,context);return true;}bool Pause(){callback(0x1b,0,nullptr,context);return true;}
- bool Seek(const char *value){last_seek=value;return true;}bool Unload(){++unloads;return true;}int64_t getCurrentPlaytime(){return 1000;}
+ bool Unload(){++unloads;return true;}
 };

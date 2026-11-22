@@ -15,9 +15,9 @@ extern "C" bool test_foreground(StarfishMediaAPIs*) __asm__("_ZN17StarfishMediaA
 extern "C" bool test_foreground(StarfishMediaAPIs*){++foreground_calls;return foreground_result;}
 #ifndef UXAIR_TEST_NO_NATIVE_URI_API
 extern "C" int64_t test_playtime(StarfishMediaAPIs*) __asm__("_ZN17StarfishMediaAPIs18getCurrentPlaytimeEv");
-extern "C" int64_t test_playtime(StarfishMediaAPIs* api) { return api->getCurrentPlaytime(); }
+extern "C" int64_t test_playtime(StarfishMediaAPIs*) { return 1000; }
 extern "C" bool test_seek(StarfishMediaAPIs*, const char*) __asm__("_ZN17StarfishMediaAPIs4SeekEPKc");
-extern "C" bool test_seek(StarfishMediaAPIs* api, const char* value) { return api->Seek(value); }
+extern "C" bool test_seek(StarfishMediaAPIs*, const char* value) { StarfishMediaAPIs::last_seek=value; return true; }
 #endif
 bool StarfishMediaAPIs::load_success=true,StarfishMediaAPIs::play_success=true,StarfishMediaAPIs::synchronous_load=false;
 bool acb_initialize_success=true,acb_sink_success=true;int acb_player_type=-1,acb_sink_calls=0;
