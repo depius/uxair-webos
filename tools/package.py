@@ -4,6 +4,7 @@ import json
 import pathlib
 import shutil
 import subprocess
+import tarfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SDK = ROOT / '.cache/arm-webos-linux-gnueabi_sdk-buildroot'
@@ -59,6 +60,14 @@ def main():
     subprocess.run([str(strip), str(stage / 'uxair')], check=True)
     if args.development and backend == 'starfish':
         shutil.copy2(ROOT / 'build/direct-uri-probe', stage / 'direct-uri-probe')
+        shutil.copy2(ROOT / 'build/libuxair-video-control.so', stage / 'lib/libuxair-video-control.so')
+        go_root = pathlib.Path(subprocess.check_output(['go', 'env', 'GOROOT'], text=True).strip())
+        for name in ('LICENSE', 'PATENTS'):
+            shutil.copy2(go_root / name, stage / 'licenses' / f'Go-{name}.txt')
+        with tarfile.open(ROOT / '.cache/video-control/upstream-video-control-source.tar') as archive:
+            for notice in ('LICENSE', 'COPYING.GPL', 'THIRD_PARTY_NOTICES.md', 'SOURCE.md'):
+                with archive.extractfile('third_party/airplay-control/' + notice) as src:
+                    (stage / 'licenses' / ('AirPlay-Control-' + notice)).write_bytes(src.read())
         shutil.copy2(ROOT / 'assets/hls-ca.pem', stage / 'hls-ca.pem')
         shutil.copy2(ROOT / '.cache/curl-8.23.0/COPYING', stage / 'licenses/curl.txt')
         shutil.copy2(ROOT / 'packaging/Mozilla-MPL-2.0.txt', stage / 'licenses/Mozilla-MPL-2.0.txt')

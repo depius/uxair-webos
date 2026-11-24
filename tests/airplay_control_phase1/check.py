@@ -25,6 +25,8 @@ def main():
     parser.add_argument("--cgo", action="store_true", help="include the reference C ABI build")
     parser.add_argument("--race", action="store_true", help="enable race detection for host tests")
     parser.add_argument("--arm-output", type=Path, help="also cross-build the Linux ARMv7 TCP tests here")
+    parser.add_argument("--shared-output", type=Path, help="build the C ABI library instead of running tests")
+    parser.add_argument("--reference-archive", type=Path, help="save the exact library source tar for redistribution")
     args = parser.parse_args()
     for repo, commit in ((args.go_atv, GO_ATV), (args.iphone_mirror, IPHONE_MIRROR)):
         if git(repo, "rev-parse", f"{commit}^{{commit}}") != commit:
@@ -35,6 +37,11 @@ def main():
         receiver = git(args.iphone_mirror, "rev-parse", f"{IPHONE_MIRROR}:{SUBSET}/{directory}")
         if sender != receiver:
             parser.error(f"reference implementations differ in {directory}")
+    if args.reference_archive:
+        subprocess.run(
+            ["git", "-C", str(args.iphone_mirror), "archive", "--format=tar",
+             f"--output={args.reference_archive.resolve()}", IPHONE_MIRROR, SUBSET], check=True,
+        )
 
     project = Path(__file__).resolve().parent
     with tempfile.TemporaryDirectory(prefix="uxair-phase1-") as tmp:
@@ -59,6 +66,16 @@ def main():
             GOWORK=str(temp / "go.work"),
         )
         subprocess.run([args.go, "work", "init", str(project), str(reference)], cwd=temp, env=env, check=True)
+        if args.shared_output:
+            env["CGO_ENABLED"] = "1"
+            if os.environ.get("GOARCH") == "arm":
+                env.update(GOOS="linux", GOARCH="arm", GOARM="7,softfloat")
+            subprocess.run(
+                [args.go, "build", "-buildmode=c-shared", "-trimpath", "-ldflags=-s -w",
+                 "-o", str(args.shared_output.resolve()), "./cmd/shared"],
+                cwd=project, env=env, check=True,
+            )
+            return
         flags = ["-race"] if args.race else []
         for module in (reference, project):
             subprocess.run([args.go, "test", "-count=1", "-v", *flags, "./..."], cwd=module, env=env, check=True)

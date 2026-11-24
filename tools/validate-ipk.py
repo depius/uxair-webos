@@ -99,7 +99,10 @@ def main():
         if content('largeIcon.png') != (ROOT / 'packaging/largeIcon.png').read_bytes():
             fail('packaged large launcher icon differs from the current UxAir artwork')
         direct = args.development and backend == 'starfish'
-        direct_files = ('direct-uri-probe', 'hls-ca.pem', 'licenses/curl.txt', 'licenses/Mozilla-MPL-2.0.txt')
+        direct_files = ('direct-uri-probe', 'hls-ca.pem', 'licenses/curl.txt', 'licenses/Mozilla-MPL-2.0.txt',
+                        'lib/libuxair-video-control.so', 'licenses/AirPlay-Control-LICENSE',
+                        'licenses/AirPlay-Control-COPYING.GPL', 'licenses/AirPlay-Control-THIRD_PARTY_NOTICES.md',
+                        'licenses/AirPlay-Control-SOURCE.md', 'licenses/Go-LICENSE.txt', 'licenses/Go-PATENTS.txt')
         if direct:
             for name in direct_files:
                 if content(name) != (stage / name).read_bytes():

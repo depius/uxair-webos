@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -13,14 +12,9 @@ import (
 	"net"
 	"sync/atomic"
 	"time"
-
-	"github.com/jkiddo/go-atv/internal/fairplay"
-	"github.com/jkiddo/go-atv/internal/fpcontrol"
 )
 
 const controlEnvelopeSize = 120
-
-var errEnvelope = errors.New("upgrade-envelope")
 
 const idlePlayback = `<?xml version="1.0"?><plist version="1.0"><dict><key>duration</key><real>0</real><key>position</key><real>0</real><key>rate</key><real>0</real><key>readyToPlay</key><false/></dict></plist>`
 
@@ -86,12 +80,13 @@ func (r *Receiver) Serve(socket net.Conn) (err error) {
 	s.stage = "pair-verified"
 	s.log(s.stage)
 
-	input, output, err := s.upgrade(secret)
+	transport, err := s.upgrade(secret)
 	clear(secret)
 	if err != nil {
 		return err
 	}
-	return s.control(input, output)
+	defer transport.Close()
+	return s.control(transport)
 }
 
 func (s *connection) log(event string) {
@@ -132,33 +127,33 @@ func (s *connection) respond(body []byte) error {
 	return s.write(data)
 }
 
-func (s *connection) upgrade(secret []byte) (*fpcontrol.Records, *fpcontrol.Records, error) {
-	sap, err := fairplay.NewReceiver(rand.Reader)
+func (s *connection) upgrade(secret []byte) (*Transport, error) {
+	transport, err := NewTransport()
 	if err != nil {
-		return nil, nil, errors.New("sap-entropy")
+		return nil, errors.New("sap-entropy")
 	}
 	for _, stage := range []string{"sap-m1", "sap-m3"} {
 		s.stage = stage
 		req, err := s.expect("POST", "/fp-setup")
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		reply, err := sap.Exchange(req.body)
+		reply, err := transport.Exchange(req.body)
 		clear(req.body)
 		if err != nil {
-			return nil, nil, errors.New("sap-invalid")
+			return nil, errors.New("sap-invalid")
 		}
 		err = s.respond(reply)
 		clear(reply)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		s.log(stage + "-accepted")
 	}
 	s.stage = "fp-setup2"
 	req, err := s.expect("POST", "/fp-setup2")
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer clear(req.body)
 	shape := "unrecognized"
@@ -168,31 +163,15 @@ func (s *connection) upgrade(secret []byte) (*fpcontrol.Records, *fpcontrol.Reco
 		shape = "fply-v1-2"
 	}
 	s.log(fmt.Sprintf("fp-setup2 shape=%s length=%d", shape, len(req.body)))
-	material, err := sap.Unwrap(req.body)
-	defer clear(material[:])
-	if err != nil {
-		return nil, nil, errEnvelope
-	}
-	// Separate directional keys even if a registered peer supplies weak material.
-	var exhausted [16]byte
-	for i := range exhausted {
-		exhausted[i] = 0xff
-	}
-	if bytes.Equal(material[:16], material[32:48]) ||
-		bytes.Equal(material[16:32], exhausted[:]) || bytes.Equal(material[48:], exhausted[:]) {
-		return nil, nil, errors.New("upgrade-material")
-	}
-	// The client's first/write state is the receiver's inbound state.
-	input, output, err := fpcontrol.Sender(material, secret, true)
-	if err != nil {
-		return nil, nil, errors.New("upgrade-derive")
+	if err := transport.Upgrade(req.body, secret); err != nil {
+		return nil, err
 	}
 	if err := s.respond(nil); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	s.stage = "encrypted"
 	s.log("upgrade-accepted")
-	return input, output, nil
+	return transport, nil
 }
 
 func clearBuffered(reader *bufio.Reader) {
@@ -202,7 +181,7 @@ func clearBuffered(reader *bufio.Reader) {
 
 type recordsReader struct {
 	connection *connection
-	input      *fpcontrol.Records
+	transport  *Transport
 	pending    []byte
 }
 
@@ -216,15 +195,15 @@ func (r *recordsReader) Read(dst []byte) (int, error) {
 			return 0, errors.New("record-header-read")
 		}
 		n := binary.BigEndian.Uint32(header[:])
-		if n > fpcontrol.MaxPayload {
+		if n > MaxRecordPayload {
 			return 0, errors.New("record-size")
 		}
-		record := make([]byte, int(n)+20)
+		record := make([]byte, int(n)+RecordOverhead)
 		copy(record, header[:])
 		if _, err := io.ReadFull(r.connection.wire, record[4:]); err != nil {
 			return 0, errors.New("record-body-read")
 		}
-		pending, err := r.input.Open(record)
+		pending, err := r.transport.Open(record)
 		if err != nil {
 			return 0, errors.New("record-authentication")
 		}
@@ -237,8 +216,8 @@ func (r *recordsReader) Read(dst []byte) (int, error) {
 	return n, nil
 }
 
-func (s *connection) control(input, output *fpcontrol.Records) error {
-	records := &recordsReader{connection: s, input: input}
+func (s *connection) control(transport *Transport) error {
+	records := &recordsReader{connection: s, transport: transport}
 	plaintext := bufio.NewReaderSize(records, maxHTTPHeader)
 	defer func() {
 		clear(records.pending)
@@ -260,7 +239,7 @@ func (s *connection) control(input, output *fpcontrol.Records) error {
 			s.log("first-request method=GET endpoint=/playback-info")
 		}
 		data := response("text/x-apple-plist+xml", []byte(idlePlayback))
-		record, err := output.Seal(data)
+		record, err := transport.Seal(data)
 		clear(data)
 		if err != nil {
 			return errors.New("record-seal")

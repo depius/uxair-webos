@@ -37,8 +37,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes build-essential ffmpeg pkg-config libsdl2-dev libsdl2-ttf-dev libsdl2-image-2.0-0 fonts-dejavu-core libavcodec-dev libavutil-dev libswresample-dev libavformat-dev libplist-dev libcurl4-openssl-dev libssl-dev
       - name: Validate source and run sanitizer-backed tests
+        if: github.ref != 'refs/heads/feature/direct-video-hls-1.4'
         env:
           UBSAN_OPTIONS: halt_on_error=1
+        run: |
+          python3 tools/validate-metadata.py
+          tools/test.sh
+      - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        if: github.ref == 'refs/heads/feature/direct-video-hls-1.4'
+        with:
+          go-version: '1.25.5'
+          cache: false
+      - name: Run native sanitizer and encrypted TCP suites
+        if: github.ref == 'refs/heads/feature/direct-video-hls-1.4'
+        env:
+          UBSAN_OPTIONS: halt_on_error=1
+          UXAIR_RUN_NATIVE_VIDEO_TEST: '1'
+          IPHONE_MIRROR_TEST_FFMPEG: /usr/bin/ffmpeg
         run: |
           python3 tools/validate-metadata.py
           tools/test.sh
@@ -53,7 +68,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(github.ref == 'refs/heads/feature/direct-video-hls-1.4' && '[{"media":"starfish","platform":"webos3-4","maturity":"Direct Video Dev","variant":"development"},{"media":"starfish","platform":"webos3-4","maturity":"Stable identity","variant":"production"},{"media":"ndl","platform":"webos5plus","maturity":"Beta-Experimental","variant":"production"}]' || github.ref == 'refs/heads/codex/uxair-queue-disconnects' && '[{"media":"starfish","platform":"webos3-4","maturity":"TEST"}]' || '[{"media":"starfish","platform":"webos3-4","maturity":"Stable"},{"media":"ndl","platform":"webos5plus","maturity":"Beta-Experimental"}]') }}
+        include: ${{ fromJSON(github.ref == 'refs/heads/feature/direct-video-hls-1.4' && '[{"media":"starfish","platform":"webos3-4","maturity":"Direct Video Dev","variant":"development"}]' || github.ref == 'refs/heads/codex/uxair-queue-disconnects' && '[{"media":"starfish","platform":"webos3-4","maturity":"TEST"}]' || '[{"media":"starfish","platform":"webos3-4","maturity":"Stable"},{"media":"ndl","platform":"webos5plus","maturity":"Beta-Experimental"}]') }}
     needs: native-tests
     # Both targets use the pinned Linux x86-64 SDK.
     # bootstrap.py selects the already checksum-pinned Linux x86-64 ARM SDK.
@@ -82,6 +97,11 @@ jobs:
           test -x tools/webos-cli/node_modules/.bin/ares-package
       - name: Validate source metadata
         run: python3 tools/validate-metadata.py
+      - uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        if: matrix.variant == 'development'
+        with:
+          go-version: '1.25.5'
+          cache: false
       # Separate link targets/packages; NDL hardware acceptance remains pending.
       - name: Build and verify the backend-specific IPK
         run: |

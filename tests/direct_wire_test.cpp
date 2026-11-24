@@ -210,7 +210,6 @@ void video_handshake(Receiver& receiver, int fd, unsigned short port, const std:
     complete.expect("HTTP/1.1",200);
     assert(complete.body.size()==32 && complete.body.compare(0,7,"FPLY\x03\x01\x04")==0);
     assert(complete.body.substr(12)==suffix);
-    send_request(fd,"POST /fp-setup2 HTTP/1.1",session+bytes,first).expect("HTTP/1.1",501);
     DirectCommand command;
     assert(!receiver.direct.take(command));
 
@@ -237,6 +236,16 @@ void video_handshake(Receiver& receiver, int fd, unsigned short port, const std:
     send_request(fd,"PUT /setProperty?WIRE-QUERY-PRIVATE HTTP/1.1",session+plist,encode(envelope)).expect("HTTP/1.1",501);
     send_request(fd,"PUT /setProperty?forwardEndTime HTTP/1.1",session+plist,"bplist00bad").expect("HTTP/1.1",400);
     send_request(fd,"PUT /setProperty HTTP/1.1",session+plist,time_property(0)).expect("HTTP/1.1",400);
+    auto selection=plist_new_dict();
+    auto tracks=plist_new_array();
+    auto track=plist_new_dict();
+    plist_dict_set_item(track,"mediaType",plist_new_string("WIRE-MEDIA-PRIVATE"));
+    plist_dict_set_item(track,"WIRE-KEY-PRIVATE",plist_new_string("WIRE-PLIST-PRIVATE"));
+    plist_array_append_item(tracks,track);
+    plist_array_append_item(tracks,plist_new_bool(1));
+    plist_dict_set_item(selection,"value",tracks);
+    send_request(fd,"PUT /setProperty?selectedMediaArray HTTP/1.1",session+plist,encode(selection))
+        .expect("HTTP/1.1",501);
 
     auto location=plist_new_dict();
     plist_dict_set_item(location,"uuid",plist_new_string("WIRE-SCRUB-PRIVATE"));
@@ -258,6 +267,10 @@ void video_handshake(Receiver& receiver, int fd, unsigned short port, const std:
     send_request(fd,scrub,session+plist,seek_body).expect("HTTP/1.1",200);
     assert(receiver.direct.take(command) && command.kind==DirectCommandKind::Seek && command.position==24);
     receiver.direct.reset();
+    std::string control_envelope(120,'\0');
+    control_envelope.replace(0,12,"FPLY\x01\x02\x01\x00\x00\x00\x00\x6c",12);
+    control_envelope[35]=64;
+    send_request(fd,"POST /fp-setup2 HTTP/1.1",session+bytes,control_envelope).expect("HTTP/1.1",470);
 }
 void pairing_routes(Receiver& receiver, unsigned short port) {
     const std::string session="x-apple-session-id: "+std::string(owner)+"\r\nSession: WIRE-RTSP-PRIVATE\r\n";
@@ -334,7 +347,7 @@ void split_request_line() {
 }
 }
 
-int main() {
+int main(int argc, char **argv) {
     split_request_line();
     char path[]="/tmp/uxair-wire-XXXXXX";
     assert(mkdtemp(path));
@@ -344,8 +357,29 @@ int main() {
     assert(receiver.start(path,settings));
     const auto port=raop_get_port(receiver.raop);
     assert(port);
+    if (argc == 2 && !strcmp(argv[1], "--encrypted-fixture")) {
+        unsigned char seed[32], key[32], encoded[45];
+        memset(seed, 0x42, sizeof(seed));
+        EVP_PKEY *identity = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr, seed, sizeof(seed));
+        size_t length = sizeof(key);
+        assert(identity && EVP_PKEY_get_raw_public_key(identity, key, &length) == 1 && length == sizeof(key));
+        EVP_PKEY_free(identity);
+        assert(EVP_EncodeBlock(encoded, key, sizeof(key)) == 44);
+        {
+            std::lock_guard<std::mutex> lock(receiver.mutex);
+            receiver.keys.insert(reinterpret_cast<const char *>(encoded));
+        }
+        printf("UXAIR_PORT=%u\n", port);
+        fflush(stdout);
+        while (getchar() == 'd') receiver.disconnect();
+        receiver.stop();
+        assert(!unlink((std::string(path)+"/server.key").c_str()));
+        assert(!unlink((std::string(path)+"/device.id").c_str()));
+        assert(!rmdir(path));
+        return 0;
+    }
     pairing_routes(receiver,port);
-    exchange(port,"POST /fp-setup2 HTTP/1.1","X-Apple-Session-ID: "+std::string(owner)+"\r\n").expect("HTTP/1.1",501);
+    exchange(port,"POST /fp-setup2 HTTP/1.1","X-Apple-Session-ID: "+std::string(owner)+"\r\n").expect("HTTP/1.1",470);
     const uint64_t expected=(UXPLAY_PINNED_FEATURES | 17) & ~(1ULL << 2);
     assert(dnssd_get_airplay_features(receiver.dnssd)==expected);
     assert(feature_mask(exchange(port,"GET /info HTTP/1.1"))==expected);

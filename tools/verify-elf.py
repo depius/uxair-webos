@@ -18,6 +18,31 @@ def output(*args):
 def version(v):
     return tuple(map(int, v.split('.')))
 
+def verify_video_control(stage, app_dynamic):
+    lib = stage / 'lib/libuxair-video-control.so'
+    if lib.name in app_dynamic:
+        sys.exit('Encrypted video library became a mandatory launcher dependency')
+    header = output('-h', lib)
+    if ('ELF32' not in header or not re.search(r'Machine:\s+ARM\b', header)
+            or 'soft-float ABI' not in header or not re.search(r'Type:\s+DYN', header)):
+        sys.exit(f'Wrong ARM shared-library ABI: {lib}')
+    dynamic = output('-d', lib)
+    versions = output('-V', lib).split('Version needs section')[-1]
+    if 'GLIBC_PRIVATE' in versions or any(version(v) > (2, 19) for v in re.findall(r'Name: GLIBC_([0-9.]+)', versions)):
+        sys.exit(f'Encrypted video library exceeds webOS 3.9 libc: {lib}')
+    allowed = {'libc.so.6', 'libpthread.so.0', 'libdl.so.2', 'librt.so.1', 'libgcc_s.so.1', 'libm.so.6'}
+    unexpected = set(re.findall(r'NEEDED.*\[(.*?)\]', dynamic)) - allowed
+    if unexpected or 'GLIBCXX_' in versions or 'CXXABI_' in versions or 'TEXTREL' in dynamic:
+        sys.exit(f'Unexpected encrypted video library ABI requirements: {sorted(unexpected)}')
+    symbols = output('--dyn-syms', '--wide', lib)
+    for name in ('version', 'new', 'free', 'sap', 'upgrade', 'open', 'seal'):
+        if not re.search(rf'\bGLOBAL\s+DEFAULT\s+\d+\s+uxair_vc_{name}$', symbols, re.MULTILINE):
+            sys.exit(f'Missing encrypted video library ABI export uxair_vc_{name}')
+    print(f'{lib.name}: optional ARM ELF32 soft-float DSO, GLIBC <= 2.19')
+    print(dynamic)
+    print(versions)
+
+
 def main():
     stage = pathlib.Path(sys.argv[1])
     binary = sys.argv[2] if len(sys.argv) > 2 else 'uxair'
@@ -63,6 +88,8 @@ def main():
         if '[Requesting program interpreter: /lib/ld-linux.so.3]' not in output('-l', files[0]):
             sys.exit('Direct Video changed the v1.3.0 native launcher interpreter')
         print('Direct Video launch ABI: GLIBC <= 2.7, GLIBCXX <= 3.4.29, optional Starfish URI symbols.')
+        if binary == 'uxair':
+            verify_video_control(stage, dynamic)
     if '$ORIGIN/lib' not in dynamic:
         sys.exit('Missing private runtime search path')
     for bad in ['libcrypto.so', 'libssl.so', 'libcurl.so', 'libplist', 'libavcodec', 'libavformat', 'libgstreamer', 'libX11']:

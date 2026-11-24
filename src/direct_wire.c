@@ -1,5 +1,5 @@
 #include "direct_wire.h"
-#include "direct_controls.h"
+#include "direct_wire_shapes.h"
 #include <limits.h>
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
@@ -37,7 +37,7 @@ uxair_video_route_t uxair_video_route(http_request_t *request) {
     return UX_VIDEO_NONE;
 }
 
-static const char *known_path(const char *path) {
+const char *uxair_wire_path(const char *path) {
     const char *names[] = {"/info", "/server-info", "/reverse", "/play", "/playback-info", "/stop",
         "/scrub", "/rate", "/getProperty", "/setProperty", "/action", "/event", "/audioMode",
         "/command", "/feedback", "/pair-pin-start", "/pair-setup-pin", "/pair-setup", "/pair-verify",
@@ -49,7 +49,7 @@ static const char *known_path(const char *path) {
     return "redacted";
 }
 
-static const char *known_method(const char *value) {
+const char *uxair_wire_method(const char *value) {
     const char *names[] = {"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "ANNOUNCE",
         "SETUP", "RECORD", "FLUSH", "FLUSHBUFFERED", "TEARDOWN", "SET_PARAMETER", "GET_PARAMETER",
         "SETPEERS", "SETPEERSX", "SETRATEANCHORTIME", "SETRATEANCHORTIM", "PAUSE"};
@@ -58,7 +58,7 @@ static const char *known_method(const char *value) {
     return "other";
 }
 
-static int response_status(http_response_t *response) {
+int uxair_wire_status(http_response_t *response) {
     if (!response) return 0;
     int length = 0;
     const char *data = http_response_get_data(response, &length);
@@ -152,16 +152,20 @@ static int trace_budget(uxair_wire_stats_t *stats, unsigned port, unsigned group
 void uxair_trace_summary(const uxair_wire_stats_t *stats, unsigned port, const char *point) {
     if (!stats->connections) return;
     fprintf(stderr, "[airplay-wire-summary] point=%s service=airplay+raop port=%u connections=%u video=%u "
-            "audio_setup=%u pairing_failures=%u unknown=%u admitted=%u\n", point, port,
-            stats->connections, stats->video, stats->audio, stats->pair_failures, stats->unknown, stats->admitted);
+            "audio_setup=%u pairing_failures=%u unknown=%u admitted=%u encrypted_attempts=%u "
+            "encrypted_upgrades=%u envelope_failures=%u gcm_auth_failures=%u encrypted_records=%u "
+            "encrypted_requests=%u admission_attempts=%u\n", point, port,
+            stats->connections, stats->video, stats->audio, stats->pair_failures, stats->unknown, stats->admitted,
+            stats->crypto_attempts, stats->crypto_upgrades, stats->crypto_envelope_failures,
+            stats->crypto_tag_failures, stats->crypto_records, stats->crypto_requests, stats->admission_attempts);
 }
 
 void uxair_trace_exchange(uxair_wire_stats_t *stats, unsigned connection, unsigned port, unsigned sequence,
                           http_request_t *request, http_response_t *response,
                           uxair_route_t route, const char *reason, const char *auth) {
     const char *raw_path = http_request_get_url(request);
-    const char *path = known_path(raw_path);
-    const char *method = known_method(http_request_get_method(request));
+    const char *path = uxair_wire_path(raw_path);
+    const char *method = uxair_wire_method(http_request_get_method(request));
     const char *protocol = http_request_get_protocol(request);
     if (!protocol || (strcmp(protocol, "HTTP/1.1") && strcmp(protocol, "RTSP/1.0") &&
         strcmp(protocol, "HTTP/1.0") && strcmp(protocol, "RTSP/2.0"))) protocol = "other";
@@ -169,7 +173,7 @@ void uxair_trace_exchange(uxair_wire_stats_t *stats, unsigned connection, unsign
     const int is_command = !strcmp(path, "/command");
     const int is_mode = !strcmp(path, "/audioMode");
     const int is_pair = !strncmp(path, "/pair-", 6) || !strncmp(path, "/fp-setup", 9);
-    const int status = response_status(response);
+    const int status = uxair_wire_status(response);
     const int disconnected = response && http_response_get_disconnect(response);
     const int is_video = route == UX_ROUTE_DIRECT;
     const int admitted = is_video && !strcmp(method, "POST") && !strcmp(raw_path, "/play") && status == 200;
@@ -179,6 +183,7 @@ void uxair_trace_exchange(uxair_wire_stats_t *stats, unsigned connection, unsign
     if (failed_pair) ++stats->pair_failures;
     if (unknown) ++stats->unknown;
     if (admitted) ++stats->admitted;
+    if (is_video && !strcmp(method, "POST") && !strcmp(raw_path, "/play")) ++stats->admission_attempts;
 
     int bytes = 0;
     const char *body = http_request_get_data(request, &bytes);
@@ -236,6 +241,7 @@ void uxair_trace_exchange(uxair_wire_stats_t *stats, unsigned connection, unsign
     }
     const char *query_part = raw_path ? strchr(raw_path, '?') : NULL;
     const char *control = "none", *control_shape = "none";
+    char media_array[1024] = "-";
     int property = !strcmp(path, "/setProperty") || !strcmp(path, "/getProperty");
     int scrub = !strcmp(path, "/scrub");
     if (property || scrub) {
@@ -243,8 +249,12 @@ void uxair_trace_exchange(uxair_wire_stats_t *stats, unsigned connection, unsign
         if (property) {
             const char *name = query_part ? uxair_known_property(query_part + 1) : NULL;
             control = name ? name : query_part ? "unknown-property" : "missing-property";
-            if (PLIST_IS_DICT(root)) control_shape = uxair_property_value_shape(plist_dict_get_item(root, "value"));
-            else if (bytes) control_shape = "not-binary-dict";
+            if (PLIST_IS_DICT(root)) {
+                plist_t value = plist_dict_get_item(root, "value");
+                control_shape = uxair_property_value_shape(value);
+                if (PLIST_IS_ARRAY(value))
+                    uxair_media_array_shape(value, media_array, sizeof(media_array));
+            } else if (bytes) control_shape = "not-binary-dict";
         } else {
             control = !query_part ? "no-position-query" :
                 !strncmp(query_part, "?position=", 10) ? "position-query" : "other-query";
@@ -254,13 +264,16 @@ void uxair_trace_exchange(uxair_wire_stats_t *stats, unsigned connection, unsign
         }
         plist_free(root);
     }
+    const char *envelope = !strcmp(path, "/fp-setup2") ? uxair_fp_envelope_shape(body, (size_t)bytes) : "-";
+    const char *pd = is_pair ? http_request_get_header(request, "X-Apple-PD") : NULL;
     int query = uxair_info_query(raw_path);
     fprintf(stderr, "[airplay-wire] method=%s path=%s protocol=%s route=%s status=%d category=%s "
             "conn=%u port=%u reason=%s auth=%s cseq=%s session=%d rtsp_sid=%s "
-            "session_header=%d sid=%s query=%s txt=%d content=%s bytes=%d detail=%s stream_mask=0x%x queued=%d seq=%u control=%s control_body=%s\n",
+            "session_header=%d sid=%s query=%s txt=%d content=%s bytes=%d detail=%s stream_mask=0x%x queued=%d seq=%u control=%s control_body=%s media_array=%s fp_envelope=%s pair_pd=%s\n",
             method, path, protocol, routes[route], status, category, connection, port, reason, auth,
             !cseq ? "absent" : uxair_parse_cseq(cseq) < 0 ? "invalid" : "decimal",
             session != NULL, rtsp_alias, apple_session != NULL, alias,
             raw_path && strchr(raw_path, '?') ? "present" : "none", query < 0 ? 0 : query,
-            format, bytes, detail, streams, admitted, sequence, control, control_shape);
+            format, bytes, detail, streams, admitted, sequence, control, control_shape, media_array, envelope,
+            !pd ? "absent" : !strcmp(pd, "1") ? "1" : "other");
 }

@@ -13,6 +13,7 @@ done
 python3 tools/bootstrap.py
 if [[ "$variant" == development && "$media" == starfish ]]; then
   tools/build-deps.sh --direct
+  bash tools/build-video-control.sh arm
 else
   tools/build-deps.sh
 fi

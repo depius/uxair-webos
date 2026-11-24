@@ -41,6 +41,9 @@ def main():
             filename=lock[name]['archive']
             archive.add(ROOT/'.cache'/filename,arcname='uxair-webos/.cache/'+filename)
         archive.add(upstream,arcname='uxair-webos/upstream-uxplay-source.tar')
+        if args.direct:
+            archive.add(ROOT/'.cache/video-control/upstream-video-control-source.tar',
+                        arcname='uxair-webos/upstream-video-control-source.tar')
     print(destination)
 
 if __name__=='__main__':

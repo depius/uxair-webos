@@ -18,12 +18,12 @@ lib="$vendor/lib"
 python3 tools/instrument-uxplay.py "$lib" "$out" --direct
 python3 tools/instrument-lifecycle.py "$lib" "$out/raop.c" "$out/raop_rtp_mirror.c" "$out"
 
-sources=("$out"/lifecycle-*.c "$out/http_request.c" "$out/httpd.c"
+sources=("$out"/lifecycle-*.c "$out/http_request.c" "$out/httpd.c" "$out/pairing.c"
     "$lib"/llhttp/*.c "$lib"/playfair/*.c "$lib"/mdnsd/*.c
-    "$root/src/direct_request_diag.c" "$root/src/direct_wire.c")
+    "$root/src/direct_request_diag.c" "$root/src/direct_wire.c" "$root/src/direct_crypto.c")
 for source in "$lib"/*.c; do
     case "${source##*/}" in
-        raop.c|raop_rtp.c|raop_rtp_mirror.c|http_request.c|httpd.c) ;;
+        raop.c|raop_rtp.c|raop_rtp_mirror.c|http_request.c|httpd.c|pairing.c) ;;
         *) sources+=("$source") ;;
     esac
 done
@@ -57,6 +57,8 @@ grep -E 'path=/fp-setup protocol=HTTP/1.1 route=direct status=200 .*reason=fairp
 grep -E 'path=/fp-setup protocol=HTTP/1.1 route=direct status=470 .*reason=video-proof-required' wire.log
 grep -E 'path=/setProperty protocol=HTTP/1.1 route=direct status=200 .*control=forwardEndTime control_body=cm-time' wire.log
 grep -E 'path=/scrub protocol=HTTP/1.1 route=direct status=409 .*reason=no-video-session .*control=position-query control_body=dict-with-uuid' wire.log
+grep -E 'path=/fp-setup2 protocol=HTTP/1.1 route=direct status=470 .*reason=pair-bound-proof-required .*fp_envelope=legacy-control-envelope-shape' wire.log
+grep -E 'path=/setProperty protocol=HTTP/1.1 route=direct status=501 .*control=selectedMediaArray control_body=array media_array=2:\[dict\(2\)\{mediaType:string,unlisted:string\},boolean\]' wire.log
 grep -E 'point=listener-stop .*video=[1-9][0-9]* .*pairing_failures=[1-9][0-9]* unknown=[1-9][0-9]* admitted=3' wire.log
 python3 - <<'PYTHON'
 import re
@@ -69,7 +71,12 @@ correlated = [re.search(r" conn=(\d+).* sid=([0-9a-f]{16})", line).groups() for 
 assert len(set(conn for conn, _ in correlated)) >= 3
 assert len(set(sid for _, sid in correlated)) == 1
 PYTHON
-if grep -F -e 'wire-session-private' -e 'WIRE-PRIVATE' -e 'media.example' -e 'WIRE-RTSP-PRIVATE' -e 'WIRE-DIFFERENT-OWNER' -e 'WIRE-FP-PRIVATE-DATA' -e 'WIRE-PLIST-PRIVATE' -e 'WIRE-QUERY-PRIVATE' -e 'WIRE-SCRUB-PRIVATE' wire.log; then
+if grep -F -e 'wire-session-private' -e 'WIRE-PRIVATE' -e 'media.example' -e 'WIRE-RTSP-PRIVATE' -e 'WIRE-DIFFERENT-OWNER' -e 'WIRE-FP-PRIVATE-DATA' -e 'WIRE-PLIST-PRIVATE' -e 'WIRE-QUERY-PRIVATE' -e 'WIRE-SCRUB-PRIVATE' -e 'WIRE-MEDIA-PRIVATE' -e 'WIRE-KEY-PRIVATE' wire.log; then
     echo 'AirPlay trace leaked a request value' >&2
     exit 1
+fi
+if [[ "${UXAIR_RUN_NATIVE_VIDEO_TEST:-}" == 1 ]]; then
+    bash "$root/tools/build-video-control.sh" host
+    UXAIR_NATIVE_VIDEO_TEST="$out/direct-wire-test" LD_LIBRARY_PATH="$out${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        bash "$root/tools/build-video-control.sh" test
 fi

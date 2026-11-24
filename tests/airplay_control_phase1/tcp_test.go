@@ -171,6 +171,11 @@ func (p *peer) pair() {
 func (p *peer) completeSAP() {
 	p.t.Helper()
 	p.pair()
+	p.exchangeSAP()
+}
+
+func (p *peer) exchangeSAP() {
+	p.t.Helper()
 	var err error
 	p.sap, err = fairplay.NewSender(rand.Reader)
 	must(p.t, err)

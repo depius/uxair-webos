@@ -11,6 +11,7 @@ PINNED_BLOBS = {
     'httpd.c': '56a3742f5f9e1bb1ccbcc2879b4663d2e747c726',
     'raop_rtp_mirror.c': '4ddedfdb16e7a35295bc5fd150a35284b15361c0',
 }
+PAIRING_BLOB = 'c38f191cc31b1e59d75922d096b5d67d99c06890'
 INCLUDE = '#include "raop.h"\n'
 GATE = '    if (!cseq && !raop->hls_support && !ble) {\n'
 PROBE = '''        int probe_body_length = -1;
@@ -93,7 +94,60 @@ on_header_field(""")
         '    request->parser_settings.on_protocol = &on_protocol;\n')
     source = replace_once(source, '        if (!strcmp(request->headers[i], name)) {',
                           '        if (!strcasecmp(request->headers[i], name)) {')
-    return '#include <strings.h>\n' + source
+    source = replace_once(source, '    int complete;\n',
+        '    int complete, consumed;\n    bool encrypted;\n    size_t header_bytes;\n')
+    for field in ('on_url', 'on_header_field', 'on_header_value'):
+        start = f'{field}(llhttp_t *parser, const char *at, size_t length)\n{{\n    http_request_t *request = parser->data;\n'
+        source = replace_once(source, start, start +
+            '    if (request->encrypted && (request->header_bytes += length + 1) > 8192) return -1;\n')
+    source = replace_once(source, 'static int\non_message_complete', r"""static int
+on_headers_complete(llhttp_t *parser)
+{
+    http_request_t *request = parser->data;
+    bool fp2 = request->url && !strcmp(request->url, "/fp-setup2");
+    if (!request->encrypted && !fp2) return 0;
+    if (parser->flags & (F_CHUNKED | F_TRANSFER_ENCODING) ||
+        parser->content_length > (fp2 ? 120U : 16384U) ||
+        (request->encrypted && (strcmp(request->protocol, "HTTP") ||
+            llhttp_get_http_major(parser) != 1 || llhttp_get_http_minor(parser) != 1 ||
+            parser->method == HTTP_CONNECT || !request->url || request->url[0] != '/'))) return -1;
+    /* Treat an encrypted /reverse Upgrade header as metadata for dispatch. */
+    if (request->encrypted) parser->upgrade = 0;
+    else if (parser->upgrade) return -1;
+    return 0;
+}
+
+static int
+on_message_complete""")
+    source = replace_once(source, '    request->complete = 1;\n    return 0;\n',
+        '    request->complete = 1;\n'
+        '    if (request->encrypted || (request->url && !strcmp(request->url, "/fp-setup2"))) return HPE_PAUSED;\n'
+        '    return 0;\n')
+    source = replace_once(source, '    request->parser_settings.on_message_complete = &on_message_complete;\n',
+        '    request->parser_settings.on_headers_complete = &on_headers_complete;\n'
+        '    request->parser_settings.on_message_complete = &on_message_complete;\n')
+    source = replace_once(source, '    int ret = llhttp_execute(&request->parser, data, datalen);\n',
+        '    int ret = llhttp_execute(&request->parser, data, datalen);\n'
+        '    if (ret == HPE_PAUSED && request->complete) {\n'
+        '        request->consumed = (int)(llhttp_get_error_pos(&request->parser) - data);\n'
+        '        llhttp_resume(&request->parser);\n'
+        '        return HPE_OK;\n'
+        '    }\n')
+    source = replace_once(source, 'int\nhttp_request_is_complete', r"""int uxair_request_consumed(const http_request_t *request) { return request->consumed; }
+void uxair_request_encrypted(http_request_t *request) { request->encrypted = true; }
+
+int
+http_request_is_complete""")
+    source = replace_once(source, '        free(request->url);\n',
+        '        if (request->encrypted && request->url) OPENSSL_cleanse(request->url, strlen(request->url));\n'
+        '        free(request->url);\n')
+    source = replace_once(source, '            free(request->headers[i]);\n',
+        '            if (request->encrypted && request->headers[i]) OPENSSL_cleanse(request->headers[i], strlen(request->headers[i]));\n'
+        '            free(request->headers[i]);\n')
+    source = replace_once(source, '        free(request->data);\n',
+        '        if (request->encrypted && request->data) OPENSSL_cleanse(request->data, request->datalen);\n'
+        '        free(request->data);\n')
+    return '#include <strings.h>\n#include <openssl/crypto.h>\n' + source
 
 
 def instrument_raop(source, direct_enabled=True):
@@ -103,16 +157,18 @@ def instrument_raop(source, direct_enabled=True):
         return source.replace(INCLUDE, INCLUDE + '#include "direct_request_diag.h"\n', 1).replace(GATE, GATE + PROBE, 1)
     source = source.replace(INCLUDE, INCLUDE + '#include "direct_request_diag.h"\n', 1)
     source = replace_once(source, 'struct raop_s {',
-        '#include "direct_wire.h"\n\nstruct raop_s {\n    uxair_wire_stats_t wire;')
+        '#include "direct_wire.h"\n#include "direct_crypto.h"\n\nstruct raop_s {\n    uxair_wire_stats_t wire;')
     source = replace_once(source, 'struct raop_conn_s {',
         'struct raop_conn_s {\n'
         '    unsigned wire_id, wire_request;\n'
         '    char video_pair_owner[129];\n'
         '    pairing_session_t *video_verify;\n'
         '    fairplay_t *video_fairplay;\n'
-        '    bool video_verified;')
+        '    bool video_verified, video_pair_bound;\n'
+        '    unsigned char video_secret[32];\n'
+        '    uxair_crypto_t video_crypto;')
     source = replace_once(source, '#include "http_handlers.h"\n',
-                          '#include "http_handlers.h"\n#include "direct_dispatch.h"\n')
+                          '#include "http_handlers.h"\n#include "direct_dispatch.h"\n#include "direct_encrypted_dispatch.h"\n')
     source = replace_once(source,
         'conn_request(void *ptr, http_request_t *request, http_response_t **response) {',
         'conn_request_routed(void *ptr, http_request_t *request, http_response_t **response, uxair_route_t *route, const char **reason) {')
@@ -144,6 +200,16 @@ def instrument_raop(source, direct_enabled=True):
         return;
     }
     if (uxair_dispatch_direct(conn, request, response, cseq, route, reason)) return;
+    if (conn->video_pair_bound) {
+        *route = UX_ROUTE_REJECTED;
+        *reason = "encrypted-upgrade-required";
+        *response = uxair_response(protocol, cseq, 409);
+        if (*response) {
+            http_response_add_header(*response, "Content-Length", "0");
+            http_response_finish(*response, NULL, 0);
+        }
+        return;
+    }
 
 """ + GATE + r"""        *route = UX_ROUTE_REJECTED;
         *reason = "no-cseq-route";
@@ -185,6 +251,7 @@ def instrument_raop(source, direct_enabled=True):
         '        raop_stop_httpd(raop);\n'
         '        uxair_trace_summary(&raop->wire, raop->port, "listener-stop");\n')
     return replace_once(source, '    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");',
+        '    uxair_video_cipher_log_close(conn);\n'
         '    uxair_video_pairing_clear(conn);\n'
         '    uxair_direct_lost(raop->callbacks.cls,(unsigned long)conn);\n'
         '    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");')
@@ -252,6 +319,48 @@ def instrument_httpd(source):
         '                httpd->callbacks.conn_request(connection->user_data, connection->request, &response);\n',
         '                // Request metadata is emitted only by the sanitized probe at the AirPlay gate.\n')
     return source
+
+
+def instrument_encrypted_httpd(source):
+    source = replace_once(source, '#include "httpd.h"\n',
+        '#include "httpd.h"\n#include "direct_crypto.h"\n')
+    source = replace_once(source, '            if (httpd->connections[i].pending_remove) {\n',
+        '            if (httpd->connections[i].pending_remove ||\n'
+        '                uxair_video_cipher_expired(httpd->connections[i].user_data)) {\n')
+    source = replace_once(source, '            if (!connection->request) {\n',
+        '            if (!connection->request && !uxair_video_cipher_active(connection->user_data)) {\n')
+    source = replace_once(source, '            recv_datalen = read_result;\n',
+        '            recv_datalen = read_result;\n'
+        '            if (uxair_video_cipher_active(connection->user_data)) {\n'
+        '                if (uxair_video_cipher_input(connection->user_data, connection->socket_fd, buffer, (size_t)recv_datalen))\n'
+        '                    httpd_remove_connection(httpd, connection, 0);\n'
+        '                continue;\n'
+        '            }\n')
+    source = replace_once(source, '                http_request_destroy(connection->request);\n',
+        '                const int consumed = uxair_request_consumed(connection->request);\n'
+        '                http_request_destroy(connection->request);\n')
+    source = replace_once(source, '                        ret = send(connection->socket_fd, data+written, datalen-written, 0);\n',
+        '                        ret = send(connection->socket_fd, data+written, datalen-written,\n'
+        '                                   uxair_video_cipher_pending(connection->user_data) ? MSG_NOSIGNAL : 0);\n'
+        '                        if (ret == 0) break;\n')
+    source = replace_once(source, '                    if (http_response_get_disconnect(response)) {\n',
+        '                    if (uxair_video_cipher_pending(connection->user_data)) {\n'
+        '                        if (written != datalen || consumed <= 0 || consumed > recv_datalen) {\n'
+        '                            uxair_video_cipher_abort(connection->user_data, "upgrade-ack-write-or-boundary");\n'
+        '                            httpd_remove_connection(httpd, connection, 0);\n'
+        '                        } else if (uxair_video_cipher_activate(connection->user_data) ||\n'
+        '                            uxair_video_cipher_input(connection->user_data, connection->socket_fd,\n'
+        '                                                    buffer + consumed, (size_t)(recv_datalen - consumed)))\n'
+        '                            httpd_remove_connection(httpd, connection, 0);\n'
+        '                    } else if (http_response_get_disconnect(response)) {\n')
+    return source
+
+
+def instrument_pairing(source):
+    return '#include <openssl/crypto.h>\n' + replace_once(source,
+        '        free(session);\n    }\n}',
+        '        OPENSSL_cleanse(session->ecdh_secret, sizeof(session->ecdh_secret));\n'
+        '        free(session);\n    }\n}')
 
 
 def harden_mirror(source):
@@ -345,18 +454,24 @@ def main():
     source_dir, output_dir = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
     # Verify every input before writing any generated source.
     originals = {}
-    for name, expected in PINNED_BLOBS.items():
+    pins = dict(PINNED_BLOBS)
+    if direct_enabled:
+        pins['pairing.c'] = PAIRING_BLOB
+    for name, expected in pins.items():
         source = (source_dir / name).read_bytes()
         blob = hashlib.sha1(b'blob ' + str(len(source)).encode() + b'\0' + source).hexdigest()
         if blob != expected:
             raise SystemExit(f'UxPlay {name} is not the pinned source: {blob}')
         originals[name] = source.decode('utf-8')
+    httpd = instrument_httpd(originals['httpd.c'])
     generated = {
         'raop.c': instrument_raop(originals['raop.c'], direct_enabled),
         'http_request.c': instrument_http_request(originals['http_request.c'], direct_enabled),
-        'httpd.c': instrument_httpd(originals['httpd.c']),
+        'httpd.c': instrument_encrypted_httpd(httpd) if direct_enabled else httpd,
         'raop_rtp_mirror.c': harden_mirror(originals['raop_rtp_mirror.c']),
     }
+    if direct_enabled:
+        generated['pairing.c'] = instrument_pairing(originals['pairing.c'])
     output_dir.mkdir(parents=True, exist_ok=True)
     for name, source in generated.items():
         (output_dir / name).write_text(source, encoding='utf-8', newline='\n')

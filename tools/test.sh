@@ -36,6 +36,9 @@ if [[ "${1:-}" == "--diagnostics-only" ]]; then
   exit 0
 fi
 
+cc -std=c11 -g -Wall -Wextra -Werror -fsanitize=address,undefined -Isrc \
+  tests/direct_wire_shapes_test.c $(pkg-config --cflags --libs libplist-2.0) -o build/tests/direct-wire-shapes-test
+build/tests/direct-wire-shapes-test
 bash tests/direct_wire_test.sh
 c++ -std=c++11 -g -fsanitize=address,undefined -Isrc \
   tests/state_test.cpp src/settings.cpp src/usage_stats.cpp -o build/tests/state-test
