@@ -15,6 +15,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/textproto"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -39,13 +41,14 @@ type harness struct {
 
 type peer struct {
 	*harness
-	t      *testing.T
-	socket *net.TCPConn
-	wire   *bufio.Reader
-	result <-chan error
-	sap    *fairplay.Sender
-	secret []byte
-	tx, rx *fpcontrol.Records
+	t            *testing.T
+	socket       *net.TCPConn
+	wire         *bufio.Reader
+	result       <-chan error
+	pairProtocol string
+	sap          *fairplay.Sender
+	secret       []byte
+	tx, rx       *fpcontrol.Records
 }
 
 func newHarness(t *testing.T) *harness {
@@ -101,7 +104,15 @@ func (p *peer) write(part []byte) {
 }
 
 func post(path string, body []byte) []byte {
-	header := fmt.Sprintf("POST %s HTTP/1.1\r\nHost: localhost\r\nX-Apple-PD: 1\r\nX-Apple-Session-ID: %s\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n", path, testSession, len(body))
+	return wirePost("HTTP/1.1", path, "1", body)
+}
+
+func wirePost(protocol, path, pd string, body []byte) []byte {
+	header := fmt.Sprintf("POST %s %s\r\nHost: localhost\r\n", path, protocol)
+	if pd != "" {
+		header += "X-Apple-PD: " + pd + "\r\n"
+	}
+	header += fmt.Sprintf("X-Apple-Session-ID: %s\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n", testSession, len(body))
 	return append([]byte(header), body...)
 }
 
@@ -125,6 +136,56 @@ func (p *peer) post(path string, data []byte) []byte {
 	return reply
 }
 
+func (p *peer) pairRequest(pd string, body []byte) []byte {
+	protocol := p.pairProtocol
+	if protocol == "" {
+		protocol = "HTTP/1.1"
+	}
+	return wirePost(protocol, "/pair-verify", pd, body)
+}
+
+func (p *peer) readRTSPPairReply(status int) []byte {
+	p.t.Helper()
+	r := textproto.NewReader(p.wire)
+	line, err := r.ReadLine()
+	must(p.t, err)
+	if !strings.HasPrefix(line, fmt.Sprintf("RTSP/1.0 %d ", status)) {
+		p.t.Fatalf("unexpected RTSP Pair-Verify response: %q", line)
+	}
+	headers, err := r.ReadMIMEHeader()
+	must(p.t, err)
+	if _, present := headers["Cseq"]; present {
+		p.t.Fatal("video Pair-Verify reply unexpectedly included CSeq")
+	}
+	length := headers.Get("Content-Length")
+	if length == "" && status != 200 {
+		return nil // The native error response ends at the header boundary.
+	}
+	n, err := strconv.Atoi(length)
+	if err != nil || (n != 0 && n != 96) {
+		p.t.Fatalf("invalid Pair-Verify response length: %q", length)
+	}
+	body := make([]byte, n)
+	_, err = io.ReadFull(p.wire, body)
+	must(p.t, err)
+	return body
+}
+
+func (p *peer) exchangePairProof(body []byte) []byte {
+	p.t.Helper()
+	p.write(p.pairRequest("1", body))
+	if p.pairProtocol == "RTSP/1.0" {
+		return p.readRTSPPairReply(200)
+	}
+	_, reply := readResponse(p.t, p.wire)
+	return reply
+}
+
+func (p *peer) pairOpening(clientPublic []byte) []byte {
+	request := append([]byte{1, 0, 0, 0}, clientPublic...)
+	return append(request, p.signingKey.Public().(ed25519.PublicKey)...)
+}
+
 // Independently construct the client transcript and CTR stream. The receiver
 // signature is checked using the key the client registered before this test.
 func (p *peer) challenge() []byte {
@@ -137,9 +198,7 @@ func (p *peer) challenge() []byte {
 func (p *peer) challengeWith(client *ecdh.PrivateKey) []byte {
 	p.t.Helper()
 	clientPublic := client.PublicKey().Bytes()
-	request := append([]byte{1, 0, 0, 0}, clientPublic...)
-	request = append(request, p.signingKey.Public().(ed25519.PublicKey)...)
-	reply := p.post("/pair-verify", request)
+	reply := p.exchangePairProof(p.pairOpening(clientPublic))
 	if len(reply) != 96 {
 		p.t.Fatalf("pair-challenge length=%d", len(reply))
 	}
@@ -163,7 +222,7 @@ func (p *peer) challengeWith(client *ecdh.PrivateKey) []byte {
 
 func (p *peer) pair() {
 	p.t.Helper()
-	if body := p.post("/pair-verify", p.challenge()); len(body) != 0 {
+	if body := p.exchangePairProof(p.challenge()); len(body) != 0 {
 		p.t.Fatal("pair verify acknowledgment was not empty")
 	}
 }

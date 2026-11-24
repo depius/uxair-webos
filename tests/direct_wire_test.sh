@@ -53,6 +53,7 @@ grep -F 'descriptor=https-hls queued=1' wire.log
 grep -E 'path=/pair-setup protocol=RTSP/1.0 route=video-pairing status=200 .*reason=public-key-only .*cseq=absent session=1 rtsp_sid=[0-9a-f]{16} session_header=1 sid=[0-9a-f]{16}' wire.log
 grep -E 'path=/pair-verify protocol=HTTP/1.1 route=video-pairing status=200 .*reason=proof-verified auth=video-verified' wire.log
 grep -E 'path=/pair-verify protocol=RTSP/1.0 route=video-pairing status=470 .*reason=proof-rejected' wire.log
+grep -E 'path=/pair-verify protocol=RTSP/1.0 route=raop status=200 .*cseq=decimal .*pair_pd=1' wire.log
 grep -E 'path=/fp-setup protocol=HTTP/1.1 route=direct status=200 .*reason=fairplay-v3-handshake auth=video-verified cseq=absent' wire.log
 grep -E 'path=/fp-setup protocol=HTTP/1.1 route=direct status=470 .*reason=video-proof-required' wire.log
 grep -E 'path=/setProperty protocol=HTTP/1.1 route=direct status=200 .*control=forwardEndTime control_body=cm-time' wire.log

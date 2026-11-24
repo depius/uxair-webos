@@ -168,7 +168,10 @@ static int uxair_dispatch_video_pairing(raop_conn_t *conn, http_request_t *reque
             }
         } else {
             *reason = "pairing-unavailable";
-            if (pd && (strcmp(pd, "1") || strcmp(protocol, "HTTP/1.1") ||
+            /* Safari uses RTSP/1.0 for legacy video Pair-Verify and can then
+               switch to HTTP/1.1 on this socket for the FairPlay exchanges. */
+            const bool legacy_wire = !strcmp(protocol, "RTSP/1.0") || !strcmp(protocol, "HTTP/1.1");
+            if (pd && (strcmp(pd, "1") || !legacy_wire ||
                        conn->connection_type != CONNECTION_TYPE_UNKNOWN ||
                        (length == 68 && body[0] == 0 && !conn->video_pair_bound))) {
                 *reason = "unsupported-pairing-mode";

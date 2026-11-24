@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -125,7 +126,15 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	}
 
 	a, b := makePeer(), makePeer()
-	a.completeSAP()
+	// The B7 trace uses RTSP for both video proofs, with PD and the session
+	// header and no CSeq. The same socket then carries HTTP video setup.
+	a.pairProtocol = "RTSP/1.0"
+	a.pair()
+	a.write([]byte("GET /server-info HTTP/1.1\r\nHost: localhost\r\nX-Apple-Session-ID: " + testSession + "\r\n\r\n"))
+	if !bytes.Contains(checkReply(a.wire, 200), []byte("<key>features</key>")) {
+		t.Fatal("no server-info after Safari-style Pair-Verify")
+	}
+	a.exchangeSAP()
 	b.completeSAP()
 	envelope := a.envelope(randomMaterial(t))
 	b.write(post("/fp-setup2", envelope[:]))
@@ -164,14 +173,35 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	raopOptions(2)
 
 	x, y := makePeer(), makePeer()
+	x.pairProtocol, y.pairProtocol = "RTSP/1.0", "RTSP/1.0"
 	ephemeral, err := ecdh.X25519().GenerateKey(rand.Reader)
 	must(t, err)
 	proof := x.challengeWith(ephemeral)
 	y.challengeWith(ephemeral)
-	y.write(post("/pair-verify", proof))
-	checkReply(y.wire, 470)
+	y.write(y.pairRequest("1", proof))
+	y.readRTSPPairReply(470)
 	requireClosed(y)
 	x.socket.Close()
+
+	badSignature := makePeer()
+	badSignature.pairProtocol = "RTSP/1.0"
+	proof = badSignature.challenge()
+	proof[4] ^= 1
+	badSignature.write(badSignature.pairRequest("1", proof))
+	badSignature.readRTSPPairReply(470)
+	requireClosed(badSignature)
+
+	malformed := makePeer()
+	malformed.pairProtocol = "RTSP/1.0"
+	malformed.write(malformed.pairRequest("1", []byte{1, 0, 0, 0}))
+	malformed.readRTSPPairReply(400)
+	requireClosed(malformed)
+
+	unsupported := makePeer()
+	unsupported.pairProtocol = "RTSP/1.0"
+	unsupported.write(unsupported.pairRequest("2", unsupported.pairOpening(ephemeral.PublicKey().Bytes())))
+	unsupported.readRTSPPairReply(400)
+	requireClosed(unsupported)
 
 	bad := makePeer()
 	bad.upgrade()
@@ -191,11 +221,20 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	must(t, input.Close())
 	must(t, command.Wait())
 	log := diagnostics.String()
+	safariProof := regexp.MustCompile(`(?m)^\[airplay-wire\] method=POST path=/pair-verify protocol=RTSP/1\.0 route=video-pairing status=200 category=pairing conn=(\d+) [^\n]*reason=proof-verified auth=video-verified cseq=absent [^\n]*session_header=1 [^\n]*pair_pd=1$`).FindStringSubmatch(log)
+	if safariProof == nil {
+		t.Fatal("missing successful Safari-style Pair-Verify diagnostic")
+	}
+	conn := "conn=" + safariProof[1] + " "
 	for _, milestone := range []string{
-		"stage=pair-verify result=verified", "stage=sap result=complete", "result=envelope-authenticated",
-		"stage=upgrade result=encrypted", "encrypted_records_rx=1",
-		"path=/playback-info authenticated=1 first=1 route=direct status=200",
+		conn + "stage=pair-verify result=verified",
+		conn + "stage=sap result=complete",
+		conn + "stage=fp-setup2 result=envelope-authenticated",
+		conn + "stage=upgrade result=encrypted",
+		conn + "encrypted_records_rx=1",
+		conn + "method=GET path=/playback-info authenticated=1 first=1 route=direct status=200",
 		"path=/play authenticated=1 first=0 route=play-deferred status=501",
+		"reason=proof-rejected", "reason=unsupported-pairing-format", "reason=unsupported-pairing-mode",
 		"reason=record-authentication", "reason=encrypted-http-framing",
 		"admitted=0 encrypted_attempts=5 encrypted_upgrades=4 envelope_failures=1 gcm_auth_failures=1",
 	} {

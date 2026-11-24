@@ -13,6 +13,14 @@ The Go shared object keeps the validated SAP and record code and isolates its lo
 
 The build uses a private DSO under the Dev application's `lib/` directory. It uses the application's existing runtime search path. The `netgo` build tag keeps the host module's incidental Go `net` import from linking the C resolver into the DSO. Development Starfish includes the LGPL notices and corresponding source archive for the pinned library. The C ABI supports replacing the DSO with an interface-compatible build. Rebuilding the component uses the exact reference commits, checked by `check.py`. To build a modified library from the accompanying source, extract the reference tar, initialize a Go workspace against its `third_party/airplay-control` directory and UxAir's `tests/airplay_control_phase1` module, and build `./cmd/shared` with `-buildmode=c-shared -tags=netgo` and the same SDK compiler. [Phase 1 license review](ENCRYPTED_VIDEO_CONTROL_PHASE1_1_4.md#pinned-sources-and-licensing)
 
+## Safari RTSP Pair-Verify regression
+
+The B7 showed `RTSP/1.0`, `X-Apple-PD: 1`, an AirPlay session header, and no `CSeq` on video Pair-Verify. Build `8835dd1` routed that request to the legacy verifier and had already verified the controller's proof. Build `ed3216f` added an HTTP/1.1-only check when `X-Apple-PD` was present. The check ran before proof handling and returned `400 unsupported-pairing-mode`. The reported counters never reached `/fp-setup2`.
+
+The video route now accepts the pair-bound mode over either RTSP/1.0 or HTTP/1.1. The accepted legacy challenge and proof formats in the old build match the Phase 1 sender's X25519 and Ed25519 transcript. The current receiver still checks the registered signing key, initializes a fresh challenge and verifies the controller's signature before retaining the shared secret for that socket. `X-Apple-PD: 1` is selected on the first message, and a second message cannot switch an unbound exchange into that mode. The session header binds the messages to their negotiated session, and `CSeq` continues to select native RAOP Pair-Verify. [Reference legacy proof and key derivation](https://github.com/jkiddo/go-atv/blob/f47a3ffcfa9458aac40562d73c314de1447df013/airplay/fairplay_control.go#L25)
+
+The native regression sends both proofs as RTSP/1.0 with the reported header combination. On the same TCP socket it requests `/server-info` and completes both SAP exchanges and the existing HTTP `/fp-setup2` upgrade. It then independently authenticates the encrypted playback-info reply. A separate TCP test covers RAOP Pair-Verify with `CSeq`. The Safari-style cases reject malformed frames, an unsupported PD value, modified signatures and cross-socket proof reuse. The real Safari envelope and first encrypted request still require the B7 retest.
+
 ## Connection state
 
 1. The native registered-key callback authorizes the controller's Ed25519 key. The existing Pair-Verify code proves possession and generates fresh X25519 material. A video socket that negotiated `X-Apple-PD: 1` retains its own verified shared secret. The AirPlay session header binds request ownership without authenticating anyone.
@@ -44,7 +52,7 @@ The packaging job produced one development Starfish IPK from `ed3216fefa6d582b45
 ## LG B7 acceptance
 
 1. Install the Dev IPK over the existing `com.github.depius.uxair.dev` application. Launch **UxAir 1.4.0-dev** from the TV Home launcher. Confirm the complete interface, Magic Remote navigation, discovery and PIN pairing if prompted.
-2. In iPhone Safari, play an unprotected H.264/AAC video. Use the AirPlay button inside the player and choose UxAir Dev. End the Safari attempt once the result is visible. Successful Phase 2 hardware negotiation means the same connection alias reports an authenticated envelope, `result=encrypted`, and a first authenticated `[video-control]` request. Record the endpoint. A visible menu is expected while media admission is deferred.
+2. In iPhone Safari, play an unprotected H.264/AAC video. Use the AirPlay button inside the player and choose UxAir Dev. End the Safari attempt once the result is visible. The immediate retest passes when the RTSP video Pair-Verify reports `proof-verified` and that connection reaches `/fp-setup2`. Phase 2 hardware negotiation passes when the same alias reports an authenticated envelope, `result=encrypted`, and a first authenticated `[video-control]` request. Record the endpoint. A visible menu is expected while media admission is deferred.
 3. Verify H.264 mirroring, HEVC mirroring if enabled, audio-only AirPlay, disconnect and reconnect. Stop UxAir Dev to capture the final listener summary. Copy the complete Dev log from PowerShell.
 
 ```powershell

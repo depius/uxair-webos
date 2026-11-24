@@ -328,6 +328,18 @@ void pairing_routes(Receiver& receiver, unsigned short port) {
     send_request(fd,verify,session+type,verify_finish).expect("RTSP/1.0",470);
     send_request(fd,verify,session+type,proof).expect("RTSP/1.0",470);
     close(fd);
+
+    // CSeq still selects the native RAOP pairing path even with the video headers.
+    fd=connect_to(port);
+    send_request(fd,setup,session+type+"CSeq: 1\r\n",setup_body).expect("RTSP/1.0",200);
+    const std::string pd="X-Apple-PD: 1\r\n";
+    const auto raop_challenge=send_request(fd,verify,session+type+pd+"CSeq: 2\r\n",verify_start);
+    raop_challenge.expect("RTSP/1.0",200);
+    const auto raop_proof=client_proof(raop_challenge,ephemeral,identity);
+    const auto raop_verified=send_request(fd,verify,session+type+pd+"CSeq: 3\r\n",raop_proof);
+    raop_verified.expect("RTSP/1.0",200);
+    assert(raop_verified.headers.find("CSeq: 3")!=std::string::npos && raop_verified.body.empty());
+    close(fd);
     ed25519_key_destroy(identity);
     x25519_key_destroy(ephemeral);
 }
