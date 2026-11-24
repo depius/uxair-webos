@@ -172,6 +172,10 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
     dnssd=dnssd_init(UXAIR_DISPLAY_NAME,strlen(UXAIR_DISPLAY_NAME),reinterpret_cast<char *>(mac),6,1,&err);
     if(!dnssd || err) { show("AirPlay discovery failed");return false; }
     dnssd_set_airplay_features(dnssd,0,int(capabilities.direct_video));dnssd_set_airplay_features(dnssd,4,int(capabilities.hls));
+#ifdef UXAIR_DIRECT_BUILD
+    // The pinned legacy profile carries bit 2, but the URL player cannot render FairPlay DRM video.
+    if(capabilities.direct_video) dnssd_set_airplay_features(dnssd,2,0);
+#endif
     dnssd_set_airplay_features(dnssd,42,int(capabilities.hevc));dnssd_set_airplay_features(dnssd,27,int(capabilities.legacy_pairing));
     raop_callbacks_t cb={};cb.cls=this;
     cb.conn_feedback=[](void *p){self(p).activity=now_ns();};

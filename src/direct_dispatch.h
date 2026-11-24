@@ -86,12 +86,11 @@ static int uxair_video_verify(raop_conn_t *conn, const unsigned char *body, int 
 
     uxair_video_pairing_clear(conn);
     const unsigned char *key = body + 4 + X25519_KEY_SIZE;
-    char *encoded = NULL;
-    ed25519_pk_to_base64(key, &encoded);
+    unsigned char encoded[4 * ((ED25519_KEY_SIZE + 2) / 3) + 1];
+    const int encoded_length = EVP_EncodeBlock(encoded, key, ED25519_KEY_SIZE);
     const raop_callbacks_t *callbacks = &conn->raop->callbacks;
-    bool registered = encoded && callbacks->check_register &&
-        callbacks->check_register(callbacks->cls, encoded);
-    free(encoded);
+    bool registered = encoded_length == sizeof(encoded) - 1 && callbacks->check_register &&
+        callbacks->check_register(callbacks->cls, (const char *)encoded);
     if (!registered) {
         *reason = "pin-registration-required";
         return 470;
@@ -260,6 +259,12 @@ static int uxair_dispatch_direct(raop_conn_t *conn, http_request_t *request,
     if (owner && conn->video_pair_owner[0] && strcmp(owner, conn->video_pair_owner)) {
         *reason = "session-conflict";
         *result = uxair_response(protocol, cseq, 409);
+        if (*result) http_response_finish(*result, NULL, 0);
+        return 1;
+    }
+    if (!strcmp(http_request_get_url(request), "/fp-setup2")) {
+        *reason = "protected-video-unsupported";
+        *result = uxair_response(protocol, cseq, 501);
         if (*result) http_response_finish(*result, NULL, 0);
         return 1;
     }

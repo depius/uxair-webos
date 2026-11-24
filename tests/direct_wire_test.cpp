@@ -3,6 +3,7 @@
 extern "C" {
 #include "http_request.h"
 #include "pairing.h"
+#include <openssl/evp.h>
 #include <plist/plist.h>
 }
 #include <arpa/inet.h>
@@ -180,14 +181,12 @@ void pairing_routes(Receiver& receiver, unsigned short port) {
     x25519_key_get_raw(keys,ephemeral);
     ed25519_key_get_raw(keys+X25519_KEY_SIZE,identity);
     exchange(port,verify,session+type,verify_start).expect("RTSP/1.0",470);
-    char *registered=nullptr;
-    ed25519_pk_to_base64(keys+X25519_KEY_SIZE,&registered);
-    assert(registered);
+    unsigned char registered[4 * ((ED25519_KEY_SIZE + 2) / 3) + 1];
+    assert(EVP_EncodeBlock(registered,keys+X25519_KEY_SIZE,ED25519_KEY_SIZE)==sizeof(registered)-1);
     {
         std::lock_guard<std::mutex> lock(receiver.mutex);
-        receiver.keys.insert(registered);
+        receiver.keys.insert(reinterpret_cast<const char *>(registered));
     }
-    free(registered);
     std::string invalid_key=verify_start;
     memset(&invalid_key[4],0,X25519_KEY_SIZE);
     exchange(port,verify,session+type,invalid_key).expect("RTSP/1.0",400);
@@ -239,7 +238,8 @@ int main() {
     const auto port=raop_get_port(receiver.raop);
     assert(port);
     pairing_routes(receiver,port);
-    const uint64_t expected=UXPLAY_PINNED_FEATURES | 17;
+    exchange(port,"POST /fp-setup2 HTTP/1.1","X-Apple-Session-ID: "+std::string(owner)+"\r\n").expect("HTTP/1.1",501);
+    const uint64_t expected=(UXPLAY_PINNED_FEATURES | 17) & ~(1ULL << 2);
     assert(dnssd_get_airplay_features(receiver.dnssd)==expected);
     assert(feature_mask(exchange(port,"GET /info HTTP/1.1"))==expected);
     assert(feature_mask(exchange(port,"GET /server-info RTSP/1.0","cseq: 12\r\n"))==expected);
@@ -253,11 +253,11 @@ int main() {
     char *data=nullptr;
     uint64_t bytes=0;
     plist_get_data_val(txt_airplay,&data,&bytes);
-    assert(data && std::string(data,size_t(bytes)).find("features=0x5A7FFEF7,0x0")!=std::string::npos);
+    assert(data && std::string(data,size_t(bytes)).find("features=0x5A7FFEF3,0x0")!=std::string::npos);
     free(data);
     data=nullptr;
     plist_get_data_val(plist_dict_get_item(txt,"txtRAOP"),&data,&bytes);
-    assert(data && std::string(data,size_t(bytes)).find("ft=0x5A7FFEF7,0x0")!=std::string::npos);
+    assert(data && std::string(data,size_t(bytes)).find("ft=0x5A7FFEF3,0x0")!=std::string::npos);
     free(data);
     plist_free(txt);
 
@@ -326,6 +326,17 @@ int main() {
     assert(disabled.start(disabled_path,settings));
     assert(dnssd_get_airplay_features(disabled.dnssd)==UXPLAY_PINNED_FEATURES);
     assert(feature_mask(exchange(raop_get_port(disabled.raop),"GET /info HTTP/1.1"))==UXPLAY_PINNED_FEATURES);
+    disabled.stop();
+
+    unsetenv("UXAIR_DIRECT_VIDEO");
+    Settings hevc=settings;
+    hevc.codec=MirrorCodec::ExperimentalHevc;
+    assert(disabled.start(disabled_path,hevc));
+    const uint64_t hevc_mask=expected | (1ULL << 42);
+    assert(dnssd_get_airplay_features(disabled.dnssd)==hevc_mask);
+    const auto hevc_port=raop_get_port(disabled.raop);
+    assert(feature_mask(exchange(hevc_port,"GET /info HTTP/1.1"))==hevc_mask);
+    assert(feature_mask(exchange(hevc_port,"GET /server-info HTTP/1.1"))==hevc_mask);
     disabled.stop();
     assert(!unlink((std::string(disabled_path)+"/server.key").c_str()));
     assert(!unlink((std::string(disabled_path)+"/device.id").c_str()));
