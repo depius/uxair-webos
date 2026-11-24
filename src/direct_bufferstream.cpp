@@ -188,7 +188,7 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
         status_.height = current_->segment.height;
         position_ns_ = current_->position_ns;
 #ifdef UXAIR_DIRECT_BUILD
-        media_.guard_direct_callbacks();
+        media_.guard_direct_callbacks(direct_native_json_summary);
 #endif
         opened_ = media_.open(UXAIR_APP_ID, status_.width, status_.height, true, 44100,
                               2 * 1024 * 1024, 1920, 1080, MirrorCodec::H264, 60);

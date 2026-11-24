@@ -9,7 +9,6 @@
 #include <mutex>
 #include <time.h>
 #ifdef UXAIR_DIRECT_BUILD
-#include "direct_native_diag.h"
 #include "direct_starfish_error.h"
 #include <cstring>
 #include <map>
@@ -54,7 +53,7 @@ void Media::event(int type, int64_t value, const char *message, void *user) {
     if (type == PF_EVENT_TYPE_FRAMEREADY) { ++m->frames; m->last_frame_event_ns=monotonic_ns(); return; }
     if (type == PF_EVENT_TYPE_INT_NEED_DATA || type == PF_EVENT_TYPE_INT_ENOUGH_DATA || type == PF_EVENT_TYPE_INT_BUFFERLOW || type == 0x2a) return;
 #ifdef UXAIR_DIRECT_BUILD
-    if (m->guard_callbacks_)
+    if (m->direct_load_shape_)
         fprintf(stderr, "[smp] event=0x%x value=%lld\n", type, (long long)value);
     else
 #endif
@@ -110,7 +109,7 @@ bool Media::open(const char *app_id, int width, int height, bool audio, int rate
     }
     close();
 #ifdef UXAIR_DIRECT_BUILD
-    if (guard_callbacks_ && !direct_released_) {
+    if (direct_load_shape_ && !direct_released_) {
         open_failure_ = MediaOpenFailure::StarfishLoad;
         return false;
     }
@@ -157,9 +156,9 @@ bool Media::open(const char *app_id, int width, int height, bool audio, int rate
         width,height,audio,rate,video_source_buffer_bytes,frame_rate,audio_only);
     fprintf(stderr,"[media-identity] acb-app-id=%s starfish-app-id=%s source=shared-runtime-id\n",app_id,app_id);
 #ifdef UXAIR_DIRECT_BUILD
-    if (guard_callbacks_) {
+    if (direct_load_shape_) {
         fprintf(stderr, "[direct-player] load-schema api=StarfishMediaAPIs::Load contract=BUFFERSTREAM acb-role=MSE source=demuxed-hls video=H264 audio=PCM uri=absent request-plugins=absent fields=%s\n",
-                direct_native_json_summary(payload.c_str()).c_str());
+                direct_load_shape_(payload.c_str()).c_str());
         {
             std::lock_guard<std::mutex> lock(direct_callback_mutex);
             if (++next_direct_generation == 0) ++next_direct_generation;
@@ -273,7 +272,7 @@ void Media::close() {
     if(acb_ && unload_state) AcbAPI_setState(acb_,APPSTATE_FOREGROUND,PLAYSTATE_UNLOADED,&task_);
     if (api_) {
 #ifdef UXAIR_DIRECT_BUILD
-        if (guard_callbacks_) {
+        if (direct_load_shape_) {
             if (loaded_ || direct_load_uncertain_) {
                 bool unloaded = false;
                 try {
@@ -298,7 +297,7 @@ void Media::close() {
     }
     loaded_ = sink_attached_ = play_requested_ = acb_playing_ = false;
 #ifdef UXAIR_DIRECT_BUILD
-    if (guard_callbacks_) ready = playing = ended = false;
+    if (direct_load_shape_) ready = playing = ended = false;
 #endif
     play_attempts_=0;
     video_info_pending_ = false;

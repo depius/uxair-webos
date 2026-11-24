@@ -1,3 +1,4 @@
+#include "direct_native_diag.h"
 #include "identity.h"
 #include "media.h"
 #include <AcbAPI.h>
@@ -30,7 +31,7 @@ static std::string string_field(plist_t dict, const char *key) {
 
 int main() {
     Media media;
-    media.guard_direct_callbacks();
+    media.guard_direct_callbacks(direct_native_json_summary);
     const auto open = [&] {
         return media.open(UXAIR_DEV_APP_ID, 1280, 720, true, 44100, 2097152,
                           1920, 1080, MirrorCodec::H264, 60);

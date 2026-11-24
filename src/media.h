@@ -28,7 +28,7 @@ public:
     void pause(bool paused);
     void close();
 #ifdef UXAIR_DIRECT_BUILD
-    void guard_direct_callbacks() { guard_callbacks_ = true; }
+    void guard_direct_callbacks(std::string (*describe_load)(const char*)) { direct_load_shape_ = describe_load; }
     bool direct_released() const { return direct_released_; }
 #endif
     MediaOpenFailure open_failure() const { return open_failure_; }
@@ -54,7 +54,7 @@ private:
     long acb_ = 0, task_ = 0;
 #ifdef UXAIR_DIRECT_BUILD
     static void direct_event(int type, int64_t value, const char *message, void *generation);
-    bool guard_callbacks_ = false;
+    std::string (*direct_load_shape_)(const char*) = nullptr;
     bool direct_load_uncertain_ = false, direct_released_ = true;
     uintptr_t callback_generation_ = 0;
 #endif
