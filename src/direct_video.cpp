@@ -1,6 +1,6 @@
 #include "direct_video.h"
 #include "identity.h"
-#include <plist/plist.h>
+#include "direct_controls.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -112,11 +112,81 @@ static bool play_body(const std::string& mime,const std::string& body,std::strin
     }
     if(seconds)start=absolute;return found&&direct_uri_valid(uri);
 }
+static DirectReply set_property(const char *path, const std::string& body) {
+    DirectReply reply;
+    const char *query = strchr(path, '?');
+    if (!query || !query[1]) {
+        reply.reason = "property-name-required";
+        return reply;
+    }
+    const char *name = uxair_known_property(query + 1);
+    if (!name) {
+        reply.status = 501;
+        reply.reason = "unsupported-property";
+        return reply;
+    }
+    plist_t root = uxair_control_plist(body.data(), body.size());
+    plist_t value = PLIST_IS_DICT(root) ? plist_dict_get_item(root, "value") : nullptr;
+    if (!value) {
+        plist_free(root);
+        reply.reason = "invalid-property-plist";
+        return reply;
+    }
+
+    // These assignments select behaviors the single-item player actually has:
+    // no time limits, no subsequent item, and no date-range notifications.
+    bool supported = false;
+    if (!strcmp(name, "forwardEndTime") || !strcmp(name, "reverseEndTime")) {
+        const char *const fields[] = {"value", "timescale", "epoch", "flags"};
+        supported = PLIST_IS_DICT(value) && plist_dict_get_size(value) == 4;
+        for (const char *field : fields) {
+            if (!supported) break;
+            plist_t node = plist_dict_get_item(value, field);
+            uint64_t integer = 1;
+            if (PLIST_IS_UINT(node)) plist_get_uint_val(node, &integer);
+            supported = integer == 0;
+        }
+    } else if (!strcmp(name, "actionAtItemEnd") && PLIST_IS_UINT(value)) {
+        uint64_t action = 1;
+        plist_get_uint_val(value, &action);
+        supported = action == 0;
+    } else if (!strcmp(name, "isInterestedInDateRange") && PLIST_IS_BOOLEAN(value)) {
+        uint8_t interested = 1;
+        plist_get_bool_val(value, &interested);
+        supported = !interested;
+    }
+    plist_free(root);
+    if (!supported) {
+        reply.status = 501;
+        reply.reason = "unsupported-property-value";
+        return reply;
+    }
+
+    plist_t result = plist_new_dict();
+    if (result) plist_dict_set_item(result, "errorCode", plist_new_uint(0));
+    char *response = nullptr;
+    uint32_t size = 0;
+    if (result) plist_to_bin(result, &response, &size);
+    plist_free(result);
+    if (!response || !size) {
+        free(response);
+        reply.status = 503;
+        reply.reason = "property-response-unavailable";
+        return reply;
+    }
+    reply.body.assign(response, size);
+    free(response);
+    reply.type = "application/x-apple-binary-plist";
+    reply.status = 200;
+    reply.reason = "property-default-applied";
+    return reply;
+}
+
 DirectReply DirectSession::request(const std::string& owner,const std::string& method,const std::string& target,const std::string& type,const std::string& body,bool busy) {
     DirectReply reply;
     if(owner.empty()||owner.size()>128||owner.find_first_of("\r\n")!=std::string::npos||target.size()>256||body.size()>524288)return reply;
     std::lock_guard<std::mutex> lock(mutex_);
-    if(!owner_.empty()&&owner_!=owner){reply.status=409;return reply;}
+    if(!owner_.empty()&&owner_!=owner){reply.status=409;reply.reason="session-conflict";return reply;}
     last_request_ms_=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     DirectCommand command;command.kind=DirectCommandKind::Stop;
     if(method=="POST"&&target=="/action") {
@@ -141,6 +211,8 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         if(kind=="playlistRemove") {commands_.clear();command.kind=DirectCommandKind::Stop;}
         else {reply.status=501;plist_free(root);return reply;}
         plist_free(root);
+    } else if(method=="PUT" && uxair_control_path(target.c_str(),"/setProperty")) {
+        return set_property(target.c_str(),body);
     } else if((method=="GET"||method=="POST"||method=="PUT")&&(target.compare(0,13,"/getProperty?")==0||target.compare(0,13,"/setProperty?")==0)) {
         const auto key=target.substr(13);
         if((method=="GET"||method=="POST")&&target.compare(0,13,"/getProperty?")==0&&(key=="playbackPosition"||key=="duration"||key=="rate")) {
@@ -167,8 +239,12 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         double rate=0;
         if(target.compare(0,12,"/rate?value=")!=0||!number(target.substr(12),rate)||(rate!=0&&rate!=1))return reply;
         command.kind=rate==0?DirectCommandKind::Pause:DirectCommandKind::Resume;
-    } else if(method=="POST"&&target.compare(0,16,"/scrub?position=")==0) {
-        if(!number(target.substr(16),command.position))return reply;command.kind=DirectCommandKind::Seek;
+    } else if(method=="POST"&&uxair_control_path(target.c_str(),"/scrub")) {
+        if(target.compare(0,16,"/scrub?position=")!=0 || !number(target.substr(16),command.position)) {
+            reply.reason="invalid-seek-position";
+            return reply;
+        }
+        command.kind=DirectCommandKind::Seek;
     } else if(method=="GET"&&(target=="/scrub"||target=="/playback-info")) {
         if(snapshot_.state==DirectState::Error){reply.status=503;reply.type="text/x-apple-plist+xml";
             reply.body="<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>"+diagnostic_plist(snapshot_)+"</dict></plist>";return reply;}
@@ -179,7 +255,9 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         if(target=="/playback-info"){const auto end=reply.body.rfind("</dict></plist>");if(end!=std::string::npos)reply.body.insert(end,diagnostic_plist(snapshot_));}
         reply.status=200;return reply;
     } else {reply.status=501;return reply;}
-    if(command.kind!=DirectCommandKind::Play&&command.kind!=DirectCommandKind::Stop&&(snapshot_.state==DirectState::Idle||snapshot_.state==DirectState::Error||snapshot_.state==DirectState::Ended)){reply.status=409;return reply;}
+    if(command.kind!=DirectCommandKind::Play&&command.kind!=DirectCommandKind::Stop&&(snapshot_.state==DirectState::Idle||snapshot_.state==DirectState::Error||snapshot_.state==DirectState::Ended)){
+        reply.status=409;reply.reason="no-video-session";return reply;
+    }
     if(commands_.size()>=8){reply.status=503;return reply;}
     commands_.push_back(command);reply.status=200;reply.queued=command.kind==DirectCommandKind::Play;return reply;
 }

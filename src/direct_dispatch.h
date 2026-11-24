@@ -1,6 +1,7 @@
 /* Included by the pinned, generated raop.c after its native handlers. */
 #include "direct_config.h"
 #include "direct_bridge.h"
+#include "direct_controls.h"
 #include "direct_wire.h"
 #include <strings.h>
 #include <openssl/err.h>
@@ -33,6 +34,8 @@ static http_response_t *uxair_response(const char *protocol, const char *cseq, i
 static void uxair_video_pairing_clear(raop_conn_t *conn) {
     pairing_session_destroy(conn->video_verify);
     conn->video_verify = NULL;
+    fairplay_destroy(conn->video_fairplay);
+    conn->video_fairplay = NULL;
     conn->video_verified = false;
 }
 
@@ -160,6 +163,55 @@ static int uxair_dispatch_video_pairing(raop_conn_t *conn, http_request_t *reque
     return 1;
 }
 
+/* A video setup exchange uses an isolated copy of the legacy transport
+ * handshake. Its state is never used to decrypt video or set up RAOP. */
+static int uxair_video_fairplay(raop_conn_t *conn, http_request_t *request,
+                                unsigned char output[142], int *size, const char **reason) {
+    if (strcmp(http_request_get_method(request), "POST")) {
+        *reason = "invalid-method";
+        return 405;
+    }
+    if (!conn->video_verified || !conn->video_pair_owner[0]) {
+        *reason = "video-proof-required";
+        return 470;
+    }
+    int length = 0;
+    const unsigned char *data = (const unsigned char *)http_request_get_data(request, &length);
+    if (!data || length < 12 || memcmp(data, "FPLY", 4)) {
+        *reason = "invalid-fairplay-frame";
+        return 400;
+    }
+    if (data[4] != 3 || data[5] != 1) {
+        *reason = "unsupported-fairplay-variant";
+        return 501;
+    }
+    const bool first = length == 16 && data[6] == 1;
+    const bool second = length == 164 && data[6] == 3;
+    if ((!first && !second) || data[7] || data[8] || data[9] || data[10] ||
+        data[11] != length - 12 || (first && data[14] > 3)) {
+        *reason = "invalid-fairplay-frame";
+        return 400;
+    }
+    if (second && !conn->video_fairplay) {
+        *reason = "fairplay-setup-required";
+        return 409;
+    }
+    if (!conn->video_fairplay) conn->video_fairplay = fairplay_init(conn->raop->logger);
+    if (!conn->video_fairplay) {
+        *reason = "fairplay-unavailable";
+        return 503;
+    }
+    const int result = first ? fairplay_setup(conn->video_fairplay, data, output) :
+        fairplay_handshake(conn->video_fairplay, data, output);
+    if (result) {
+        *reason = "fairplay-rejected";
+        return 400;
+    }
+    *reason = first ? "fairplay-v3-setup" : "fairplay-v3-handshake";
+    *size = first ? 142 : 32;
+    return 200;
+}
+
 static int uxair_info_qualifiers(http_request_t *request) {
     int flags = uxair_info_query(http_request_get_url(request));
     int length = 0;
@@ -262,6 +314,25 @@ static int uxair_dispatch_direct(raop_conn_t *conn, http_request_t *request,
         if (*result) http_response_finish(*result, NULL, 0);
         return 1;
     }
+    if (selected == UX_VIDEO_FAIRPLAY) {
+        unsigned char output[142];
+        int size = 0;
+        const int status = uxair_video_fairplay(conn, request, output, &size, reason);
+        *result = uxair_response(protocol, cseq, status);
+        if (*result) {
+            if (size) http_response_add_header(*result, "Content-Type", "application/octet-stream");
+            http_response_finish(*result, (const char *)output, size);
+        }
+        return 1;
+    }
+    if (!conn->video_verified && !strcmp(method, "PUT") &&
+        uxair_control_path(http_request_get_url(request), "/setProperty")) {
+        *reason = "video-proof-required";
+        *result = uxair_response(protocol, cseq, 470);
+        if (*result) http_response_finish(*result, NULL, 0);
+        return 1;
+    }
+    if (!owner && conn->video_verified) owner = conn->video_pair_owner;
     if (!strcmp(http_request_get_url(request), "/fp-setup2")) {
         *reason = "protected-video-unsupported";
         *result = uxair_response(protocol, cseq, 501);
@@ -293,7 +364,7 @@ static int uxair_dispatch_direct(raop_conn_t *conn, http_request_t *request,
     const char *type = "text/parameters";
     const char *data = http_request_get_data(request, &length);
     status = uxair_direct_request(raop->callbacks.cls, owner, method, http_request_get_url(request),
-        http_request_get_header(request, "Content-Type"), data, length, &output, &output_length, &type);
+        http_request_get_header(request, "Content-Type"), data, length, &output, &output_length, &type, reason);
     *result = uxair_response(protocol, cseq, status);
     if (*result) {
         http_response_add_header(*result, "Content-Type", type);

@@ -106,9 +106,10 @@ def instrument_raop(source, direct_enabled=True):
         '#include "direct_wire.h"\n\nstruct raop_s {\n    uxair_wire_stats_t wire;')
     source = replace_once(source, 'struct raop_conn_s {',
         'struct raop_conn_s {\n'
-        '    unsigned wire_id;\n'
+        '    unsigned wire_id, wire_request;\n'
         '    char video_pair_owner[129];\n'
         '    pairing_session_t *video_verify;\n'
+        '    fairplay_t *video_fairplay;\n'
         '    bool video_verified;')
     source = replace_once(source, '#include "http_handlers.h"\n',
                           '#include "http_handlers.h"\n#include "direct_dispatch.h"\n')
@@ -178,7 +179,7 @@ def instrument_raop(source, direct_enabled=True):
         '    conn_request_routed(ptr, request, response, &route, &reason);\n'
         '    const char *auth = conn->video_verified ? "video-verified" : conn->video_verify ? "proof-pending" :\n'
         '        conn->authenticated ? "digest-verified" : "unobserved";\n'
-        '    uxair_trace_exchange(wire, conn->wire_id, conn->raop->port, request, *response, route, reason, auth);\n'
+        '    uxair_trace_exchange(wire, conn->wire_id, conn->raop->port, ++conn->wire_request, request, *response, route, reason, auth);\n'
         '}\n\n')
     source = replace_once(source, '        raop_stop_httpd(raop);\n',
         '        raop_stop_httpd(raop);\n'

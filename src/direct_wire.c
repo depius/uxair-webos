@@ -1,5 +1,5 @@
 #include "direct_wire.h"
-#include <plist/plist.h>
+#include "direct_controls.h"
 #include <limits.h>
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
@@ -8,13 +8,8 @@
 #include <string.h>
 #include <strings.h>
 
-static int path_is(const char *path, const char *name) {
-    size_t n = strlen(name);
-    return path && !strncmp(path, name, n) && (path[n] == '\0' || path[n] == '?');
-}
-
 int uxair_info_query(const char *path) {
-    if (!path_is(path, "/info")) return -1;
+    if (!uxair_control_path(path, "/info")) return -1;
     if (!strcmp(path, "/info")) return 0;
     const char *query = path + 6;
     if (!strcmp(query, "txtAirPlay")) return UX_TXT_AIRPLAY;
@@ -34,10 +29,11 @@ uxair_video_route_t uxair_video_route(http_request_t *request) {
     if (!strcmp(method, "GET") && uxair_info_query(path) >= 0) return UX_VIDEO_INFO;
     if (!strcmp(method, "GET") && !strcmp(path, "/server-info")) return UX_VIDEO_SERVER_INFO;
     if (!strcmp(path, "/reverse")) return UX_VIDEO_REVERSE;
+    if (!strcmp(protocol, "HTTP/1.1") && !strcmp(path, "/fp-setup")) return UX_VIDEO_FAIRPLAY;
     const char *controls[] = {"/play", "/stop", "/playback-info", "/scrub", "/rate",
         "/action", "/getProperty", "/setProperty", "/fp-setup2"};
     for (size_t i = 0; i < sizeof(controls)/sizeof(*controls); ++i)
-        if (path_is(path, controls[i])) return UX_VIDEO_CONTROL;
+        if (uxair_control_path(path, controls[i])) return UX_VIDEO_CONTROL;
     return UX_VIDEO_NONE;
 }
 
@@ -48,7 +44,7 @@ static const char *known_path(const char *path) {
         "/pair-add", "/pair-remove", "/pair-list", "/fp-setup", "/fp-setup2", "/photo",
         "/slideshows", "/configure", "/auth-setup"};
     for (size_t i = 0; i < sizeof(names)/sizeof(*names); ++i)
-        if (path_is(path, names[i])) return names[i];
+        if (uxair_control_path(path, names[i])) return names[i];
     if (path && !strcmp(path, "*")) return "*";
     return "redacted";
 }
@@ -160,7 +156,7 @@ void uxair_trace_summary(const uxair_wire_stats_t *stats, unsigned port, const c
             stats->connections, stats->video, stats->audio, stats->pair_failures, stats->unknown, stats->admitted);
 }
 
-void uxair_trace_exchange(uxair_wire_stats_t *stats, unsigned connection, unsigned port,
+void uxair_trace_exchange(uxair_wire_stats_t *stats, unsigned connection, unsigned port, unsigned sequence,
                           http_request_t *request, http_response_t *response,
                           uxair_route_t route, const char *reason, const char *auth) {
     const char *raw_path = http_request_get_url(request);
@@ -238,13 +234,33 @@ void uxair_trace_exchange(uxair_wire_stats_t *stats, unsigned connection, unsign
         else if (status >= 400) reason = "handler-rejected";
         else reason = "handled";
     }
+    const char *query_part = raw_path ? strchr(raw_path, '?') : NULL;
+    const char *control = "none", *control_shape = "none";
+    int property = !strcmp(path, "/setProperty") || !strcmp(path, "/getProperty");
+    int scrub = !strcmp(path, "/scrub");
+    if (property || scrub) {
+        plist_t root = uxair_control_plist(body, (size_t)bytes);
+        if (property) {
+            const char *name = query_part ? uxair_known_property(query_part + 1) : NULL;
+            control = name ? name : query_part ? "unknown-property" : "missing-property";
+            if (PLIST_IS_DICT(root)) control_shape = uxair_property_value_shape(plist_dict_get_item(root, "value"));
+            else if (bytes) control_shape = "not-binary-dict";
+        } else {
+            control = !query_part ? "no-position-query" :
+                !strncmp(query_part, "?position=", 10) ? "position-query" : "other-query";
+            if (PLIST_IS_DICT(root)) control_shape = PLIST_IS_STRING(plist_dict_get_item(root, "uuid")) ?
+                "dict-with-uuid" : "dict";
+            else if (bytes) control_shape = "not-binary-dict";
+        }
+        plist_free(root);
+    }
     int query = uxair_info_query(raw_path);
     fprintf(stderr, "[airplay-wire] method=%s path=%s protocol=%s route=%s status=%d category=%s "
             "conn=%u port=%u reason=%s auth=%s cseq=%s session=%d rtsp_sid=%s "
-            "session_header=%d sid=%s query=%s txt=%d content=%s bytes=%d detail=%s stream_mask=0x%x queued=%d\n",
+            "session_header=%d sid=%s query=%s txt=%d content=%s bytes=%d detail=%s stream_mask=0x%x queued=%d seq=%u control=%s control_body=%s\n",
             method, path, protocol, routes[route], status, category, connection, port, reason, auth,
             !cseq ? "absent" : uxair_parse_cseq(cseq) < 0 ? "invalid" : "decimal",
             session != NULL, rtsp_alias, apple_session != NULL, alias,
             raw_path && strchr(raw_path, '?') ? "present" : "none", query < 0 ? 0 : query,
-            format, bytes, detail, streams, admitted);
+            format, bytes, detail, streams, admitted, sequence, control, control_shape);
 }

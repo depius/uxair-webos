@@ -152,6 +152,113 @@ std::string client_proof(const Response& challenge, x25519_key_t *ephemeral, ed2
     return std::string(4,'\0')+std::string(reinterpret_cast<const char*>(output),sizeof(output));
 }
 
+
+std::string fairplay_frame(size_t length, unsigned char phase) {
+    std::string frame(length,'\0');
+    frame.replace(0,4,"FPLY");
+    frame[4]=3;
+    frame[5]=1;
+    frame[6]=char(phase);
+    frame[11]=char(length-12);
+    return frame;
+}
+
+std::string time_property(uint64_t flags) {
+    plist_t root=plist_new_dict();
+    plist_t time=plist_new_dict();
+    plist_dict_set_item(time,"value",plist_new_uint(0));
+    plist_dict_set_item(time,"timescale",plist_new_uint(0));
+    plist_dict_set_item(time,"epoch",plist_new_uint(0));
+    plist_dict_set_item(time,"flags",plist_new_uint(flags));
+    plist_dict_set_item(root,"value",time);
+    return encode(root);
+}
+
+void video_handshake(Receiver& receiver, int fd, unsigned short port, const std::string& session) {
+    const std::string setup="POST /fp-setup HTTP/1.1", bytes="Content-Type: application/octet-stream\r\n";
+    const std::string plist="Content-Type: application/x-apple-binary-plist\r\n";
+    auto first=fairplay_frame(16,1);
+    first[14]=2;
+    auto second=fairplay_frame(164,3);
+    const std::string suffix="WIRE-FP-PRIVATE-DATA";
+    assert(suffix.size()==20);
+    second.replace(144,20,suffix);
+    exchange(port,setup,session+bytes,first).expect("HTTP/1.1",470);
+    exchange(port,"PUT /setProperty?forwardEndTime HTTP/1.1",session+plist,time_property(0)).expect("HTTP/1.1",470);
+    send_request(fd,setup,session+bytes,second).expect("HTTP/1.1",409);
+    send_request(fd,setup,"X-Apple-Session-ID: WIRE-DIFFERENT-OWNER\r\n"+bytes,first)
+        .expect("HTTP/1.1",409);
+    auto unsupported=first;
+    unsupported[4]=2;
+    send_request(fd,setup,session+bytes,unsupported).expect("HTTP/1.1",501);
+    auto invalid=first;
+    invalid[14]=4;
+    send_request(fd,setup,session+bytes,invalid).expect("HTTP/1.1",400);
+    invalid=first;
+    invalid[11]=3;
+    send_request(fd,setup,session+bytes,invalid).expect("HTTP/1.1",400);
+
+    send_request(fd,"GET /server-info HTTP/1.1",session).expect("HTTP/1.1",200);
+    const auto challenge=send_request(fd,setup,session+bytes,first,17);
+    challenge.expect("HTTP/1.1",200);
+    assert(challenge.headers.find("Content-Type: application/octet-stream")!=std::string::npos);
+    assert(challenge.headers.find("CSeq:")==std::string::npos);
+    assert(challenge.body.size()==142 && challenge.body.compare(0,7,"FPLY\x03\x01\x02")==0);
+    exchange(port,setup,session+bytes,second).expect("HTTP/1.1",470);
+    // A verified socket can finish its exchange when the sender omits the session header.
+    const auto complete=send_request(fd,setup,bytes,second);
+    complete.expect("HTTP/1.1",200);
+    assert(complete.body.size()==32 && complete.body.compare(0,7,"FPLY\x03\x01\x04")==0);
+    assert(complete.body.substr(12)==suffix);
+    send_request(fd,"POST /fp-setup2 HTTP/1.1",session+bytes,first).expect("HTTP/1.1",501);
+    DirectCommand command;
+    assert(!receiver.direct.take(command));
+
+    for(const char* property: {"forwardEndTime","reverseEndTime"}) {
+        const std::string request=std::string("PUT /setProperty?")+property+" HTTP/1.1";
+        const auto reset=send_request(fd,request,session+plist,time_property(0));
+        reset.expect("HTTP/1.1",200);
+        assert(reset.headers.find(plist.substr(0,plist.size()-2))!=std::string::npos);
+        auto result=decode(reset);
+        uint64_t code=1;
+        plist_get_uint_val(plist_dict_get_item(result,"errorCode"),&code);
+        assert(!code);
+        plist_free(result);
+        send_request(fd,request,session+plist,time_property(1)).expect("HTTP/1.1",501);
+    }
+    auto envelope=plist_new_dict();
+    plist_dict_set_item(envelope,"value",plist_new_uint(0));
+    send_request(fd,"PUT /setProperty?actionAtItemEnd HTTP/1.1",plist,encode(envelope)).expect("HTTP/1.1",200);
+    envelope=plist_new_dict();
+    plist_dict_set_item(envelope,"value",plist_new_bool(0));
+    send_request(fd,"PUT /setProperty?isInterestedInDateRange HTTP/1.1",plist,encode(envelope)).expect("HTTP/1.1",200);
+    envelope=plist_new_dict();
+    plist_dict_set_item(envelope,"value",plist_new_string("WIRE-PLIST-PRIVATE"));
+    send_request(fd,"PUT /setProperty?WIRE-QUERY-PRIVATE HTTP/1.1",session+plist,encode(envelope)).expect("HTTP/1.1",501);
+    send_request(fd,"PUT /setProperty?forwardEndTime HTTP/1.1",session+plist,"bplist00bad").expect("HTTP/1.1",400);
+    send_request(fd,"PUT /setProperty HTTP/1.1",session+plist,time_property(0)).expect("HTTP/1.1",400);
+
+    auto location=plist_new_dict();
+    plist_dict_set_item(location,"uuid",plist_new_string("WIRE-SCRUB-PRIVATE"));
+    const auto seek_body=encode(location);
+    const std::string scrub="POST /scrub?position=24 HTTP/1.1";
+    send_request(fd,scrub,session+plist,seek_body).expect("HTTP/1.1",409);
+    send_request(fd,"POST /scrub HTTP/1.1",session+plist,seek_body).expect("HTTP/1.1",400);
+    assert(!receiver.direct.take(command));
+
+    send_request(fd,"POST /play HTTP/1.1",session+"Content-Type: text/parameters\r\n",
+                 "Content-Location: "+uri+"\r\n").expect("HTTP/1.1",200);
+    assert(receiver.direct.take(command) && command.kind==DirectCommandKind::Play && command.uri==uri);
+    assert(receiver.direct.snapshot().state==DirectState::Loading);
+    auto playback=decode(send_request(fd,"GET /playback-info HTTP/1.1",session));
+    uint8_t ready=1;
+    plist_get_bool_val(plist_dict_get_item(playback,"readyToPlay"),&ready);
+    assert(!ready);
+    plist_free(playback);
+    send_request(fd,scrub,session+plist,seek_body).expect("HTTP/1.1",200);
+    assert(receiver.direct.take(command) && command.kind==DirectCommandKind::Seek && command.position==24);
+    receiver.direct.reset();
+}
 void pairing_routes(Receiver& receiver, unsigned short port) {
     const std::string session="x-apple-session-id: "+std::string(owner)+"\r\nSession: WIRE-RTSP-PRIVATE\r\n";
     const std::string setup="POST /pair-setup RTSP/1.0", verify="POST /pair-verify RTSP/1.0";
@@ -192,15 +299,15 @@ void pairing_routes(Receiver& receiver, unsigned short port) {
     exchange(port,verify,session+type,invalid_key).expect("RTSP/1.0",400);
 
     int fd=connect_to(port);
-    const auto challenge=send_request(fd,verify,session+type,verify_start);
-    challenge.expect("RTSP/1.0",200);
+    const std::string http_verify="POST /pair-verify HTTP/1.1";
+    const auto challenge=send_request(fd,http_verify,session+type,verify_start);
+    challenge.expect("HTTP/1.1",200);
     const auto proof=client_proof(challenge,ephemeral,identity);
-    exchange(port,verify,session+type,proof).expect("RTSP/1.0",470); // same session ID, different socket
-    send_request(fd,verify,std::string("X-Apple-Session-ID: WIRE-DIFFERENT-OWNER\r\n")+type,
-                 proof).expect("RTSP/1.0",409);
-    send_request(fd,verify,session+type,proof).expect("RTSP/1.0",200);
-    const auto play=send_request(fd,"GET /playback-info HTTP/1.1",session);
-    play.expect("HTTP/1.1",200);
+    exchange(port,http_verify,session+type,proof).expect("HTTP/1.1",470); // same session ID, different socket
+    send_request(fd,http_verify,std::string("X-Apple-Session-ID: WIRE-DIFFERENT-OWNER\r\n")+type,
+                 proof).expect("HTTP/1.1",409);
+    send_request(fd,http_verify,session+type,proof).expect("HTTP/1.1",200);
+    video_handshake(receiver,fd,port,session);
     close(fd);
 
     fd=connect_to(port);

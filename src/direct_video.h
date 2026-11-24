@@ -31,6 +31,7 @@ struct DirectReply {
     int status=400;
     std::string body,type="text/parameters";
     const char *descriptor="none";
+    const char *reason=nullptr;
     bool queued=false;
 };
 bool direct_uri_valid(const std::string& uri);
