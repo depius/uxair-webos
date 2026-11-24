@@ -2,6 +2,7 @@
 #include "capabilities.h"
 extern "C" {
 #include "http_request.h"
+#include "pairing.h"
 #include <plist/plist.h>
 }
 #include <arpa/inet.h>
@@ -45,8 +46,7 @@ struct Response {
     }
 };
 
-Response exchange(unsigned short port, const std::string& line, const std::string& headers="",
-                  const std::string& body="", size_t split=0) {
+int connect_to(unsigned short port) {
     const int fd=socket(AF_INET,SOCK_STREAM,0);
     assert(fd>=0);
     const timeval timeout={3,0};
@@ -56,6 +56,11 @@ Response exchange(unsigned short port, const std::string& line, const std::strin
     address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
     address.sin_port=htons(port);
     assert(!connect(fd,reinterpret_cast<sockaddr*>(&address),sizeof(address)));
+    return fd;
+}
+
+Response send_request(int fd, const std::string& line, const std::string& headers="",
+                      const std::string& body="", size_t split=0) {
     std::string request=line+"\r\nHost: localhost\r\n"+headers+
         "Content-Length: "+std::to_string(body.size())+"\r\n\r\n"+body;
     auto send_part=[&](size_t start,size_t length) {
@@ -84,8 +89,15 @@ Response exchange(unsigned short port, const std::string& line, const std::strin
         const auto header=buffer.find("Content-Length:");
         if(header<end)length=size_t(std::strtoul(buffer.c_str()+header+15,nullptr,10));
     } while(end==std::string::npos || buffer.size()<end+4+length);
-    close(fd);
     return {buffer.substr(0,end),buffer.substr(end+4,length)};
+}
+
+Response exchange(unsigned short port, const std::string& line, const std::string& headers="",
+                  const std::string& body="", size_t split=0) {
+    const int fd=connect_to(port);
+    const auto result=send_request(fd,line,headers,body,split);
+    close(fd);
+    return result;
 }
 
 plist_t decode(const Response& response) {
@@ -103,6 +115,102 @@ uint64_t feature_mask(const Response& response) {
     plist_get_uint_val(plist_dict_get_item(root,"features"),&mask);
     plist_free(root);
     return mask;
+}
+
+// Legacy pair-verify signs the client's ephemeral public key followed by the
+// receiver's. Its AES-CTR stream starts after the encrypted receiver proof.
+std::string client_proof(const Response& challenge, x25519_key_t *ephemeral, ed25519_key_t *identity) {
+    assert(challenge.body.size()==X25519_KEY_SIZE+PAIRING_SIG_SIZE);
+    const auto *server_key=reinterpret_cast<const unsigned char*>(challenge.body.data());
+    unsigned char transcript[PAIRING_SIG_SIZE];
+    x25519_key_get_raw(transcript,ephemeral);
+    memcpy(transcript+X25519_KEY_SIZE,server_key,X25519_KEY_SIZE);
+    unsigned char signed_message[PAIRING_SIG_SIZE];
+    ed25519_sign(signed_message,sizeof(signed_message),transcript,sizeof(transcript),identity);
+
+    auto *peer=x25519_key_from_raw(server_key);
+    unsigned char shared[X25519_KEY_SIZE];
+    x25519_derive_secret(shared,ephemeral,peer);
+    x25519_key_destroy(peer);
+    auto derive=[&](const char *label, unsigned char *output) {
+        unsigned char digest[64];
+        auto *hash=sha_init();
+        sha_update(hash,reinterpret_cast<const unsigned char*>(label),strlen(label));
+        sha_update(hash,shared,sizeof(shared));
+        sha_final(hash,digest,nullptr);
+        sha_destroy(hash);
+        memcpy(output,digest,AES_128_BLOCK_SIZE);
+    };
+    unsigned char key[AES_128_BLOCK_SIZE], iv[AES_128_BLOCK_SIZE], output[PAIRING_SIG_SIZE];
+    derive("Pair-Verify-AES-Key",key);
+    derive("Pair-Verify-AES-IV",iv);
+    auto *cipher=aes_ctr_init(key,iv);
+    aes_ctr_encrypt(cipher,server_key+X25519_KEY_SIZE,output,sizeof(output));
+    aes_ctr_encrypt(cipher,signed_message,output,sizeof(output));
+    aes_ctr_destroy(cipher);
+    return std::string(4,'\0')+std::string(reinterpret_cast<const char*>(output),sizeof(output));
+}
+
+void pairing_routes(Receiver& receiver, unsigned short port) {
+    const std::string session="x-apple-session-id: "+std::string(owner)+"\r\nSession: WIRE-RTSP-PRIVATE\r\n";
+    const std::string setup="POST /pair-setup RTSP/1.0", verify="POST /pair-verify RTSP/1.0";
+    const std::string type="Content-Type: application/octet-stream\r\n";
+    const std::string setup_body(ED25519_KEY_SIZE, 's');
+    const std::string verify_malformed("\x06\x01\x01",3);
+    const std::string verify_finish(4+PAIRING_SIG_SIZE,'\0');
+
+    exchange(port,setup,"Session: WIRE-RTSP-PRIVATE\r\n"+type,setup_body).expect("RTSP/1.0",501);
+    exchange(port,setup,session+"cseq: no\r\n"+type,setup_body).expect("RTSP/1.0",400);
+    exchange(port,setup,session+"CSeq: 0 \t\r\n"+type,setup_body).expect("RTSP/1.0",200);
+    usleep(50000);
+    const auto no_cseq=exchange(port,setup,session+type,setup_body,15);
+    no_cseq.expect("RTSP/1.0",200);
+    assert(no_cseq.body.size()==ED25519_KEY_SIZE && no_cseq.headers.find("CSeq:")==std::string::npos);
+    exchange(port,"POST /pair-setup HTTP/1.1",session+type,setup_body).expect("HTTP/1.1",200);
+    exchange(port,"POST /pair-setup HTTP/1.0",session+type,setup_body).expect("HTTP/1.0",505);
+    exchange(port,verify,session+type,verify_malformed).expect("RTSP/1.0",400);
+
+    auto *ephemeral=x25519_key_generate();
+    int error=0;
+    auto *identity=ed25519_key_generate("uxair-wire-test","",&error);
+    assert(identity && !error);
+    std::string verify_start(4+X25519_KEY_SIZE+ED25519_KEY_SIZE,'\0');
+    verify_start[0]=1;
+    auto *keys=reinterpret_cast<unsigned char*>(&verify_start[4]);
+    x25519_key_get_raw(keys,ephemeral);
+    ed25519_key_get_raw(keys+X25519_KEY_SIZE,identity);
+    exchange(port,verify,session+type,verify_start).expect("RTSP/1.0",470);
+    char *registered=nullptr;
+    ed25519_pk_to_base64(keys+X25519_KEY_SIZE,&registered);
+    assert(registered);
+    {
+        std::lock_guard<std::mutex> lock(receiver.mutex);
+        receiver.keys.insert(registered);
+    }
+    free(registered);
+    std::string invalid_key=verify_start;
+    memset(&invalid_key[4],0,X25519_KEY_SIZE);
+    exchange(port,verify,session+type,invalid_key).expect("RTSP/1.0",400);
+
+    int fd=connect_to(port);
+    const auto challenge=send_request(fd,verify,session+type,verify_start);
+    challenge.expect("RTSP/1.0",200);
+    const auto proof=client_proof(challenge,ephemeral,identity);
+    exchange(port,verify,session+type,proof).expect("RTSP/1.0",470); // same session ID, different socket
+    send_request(fd,verify,std::string("X-Apple-Session-ID: WIRE-DIFFERENT-OWNER\r\n")+type,
+                 proof).expect("RTSP/1.0",409);
+    send_request(fd,verify,session+type,proof).expect("RTSP/1.0",200);
+    const auto play=send_request(fd,"GET /playback-info HTTP/1.1",session);
+    play.expect("HTTP/1.1",200);
+    close(fd);
+
+    fd=connect_to(port);
+    send_request(fd,verify,session+type,verify_start).expect("RTSP/1.0",200);
+    send_request(fd,verify,session+type,verify_finish).expect("RTSP/1.0",470);
+    send_request(fd,verify,session+type,proof).expect("RTSP/1.0",470);
+    close(fd);
+    ed25519_key_destroy(identity);
+    x25519_key_destroy(ephemeral);
 }
 
 void split_request_line() {
@@ -130,6 +238,7 @@ int main() {
     assert(receiver.start(path,settings));
     const auto port=raop_get_port(receiver.raop);
     assert(port);
+    pairing_routes(receiver,port);
     const uint64_t expected=UXPLAY_PINNED_FEATURES | 17;
     assert(dnssd_get_airplay_features(receiver.dnssd)==expected);
     assert(feature_mask(exchange(port,"GET /info HTTP/1.1"))==expected);
@@ -145,6 +254,10 @@ int main() {
     uint64_t bytes=0;
     plist_get_data_val(txt_airplay,&data,&bytes);
     assert(data && std::string(data,size_t(bytes)).find("features=0x5A7FFEF7,0x0")!=std::string::npos);
+    free(data);
+    data=nullptr;
+    plist_get_data_val(plist_dict_get_item(txt,"txtRAOP"),&data,&bytes);
+    assert(data && std::string(data,size_t(bytes)).find("ft=0x5A7FFEF7,0x0")!=std::string::npos);
     free(data);
     plist_free(txt);
 

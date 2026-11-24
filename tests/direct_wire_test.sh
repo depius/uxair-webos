@@ -50,7 +50,22 @@ grep -F 'path=/play protocol=RTSP/1.0 route=direct status=200 category=direct-vi
 grep -F 'play status=409 admission=audio-only' wire.log
 grep -F 'play status=409 admission=mirroring' wire.log
 grep -F 'descriptor=https-hls queued=1' wire.log
-if grep -F -e 'wire-session-private' -e 'WIRE-PRIVATE' -e 'media.example' wire.log; then
+grep -E 'path=/pair-setup protocol=RTSP/1.0 route=video-pairing status=200 .*reason=public-key-only .*cseq=absent session=1 rtsp_sid=[0-9a-f]{16} session_header=1 sid=[0-9a-f]{16}' wire.log
+grep -E 'path=/pair-verify protocol=RTSP/1.0 route=video-pairing status=200 .*reason=proof-verified auth=video-verified' wire.log
+grep -E 'path=/pair-verify protocol=RTSP/1.0 route=video-pairing status=470 .*reason=proof-rejected' wire.log
+grep -E 'point=listener-stop .*video=[1-9][0-9]* .*pairing_failures=[1-9][0-9]* unknown=[1-9][0-9]* admitted=2' wire.log
+python3 - <<'PYTHON'
+import re
+from pathlib import Path
+
+lines = Path("wire.log").read_text().splitlines()
+details = [line for line in lines if "reason=public-key-only" in line or "reason=proof-verified" in line
+           or "path=/play protocol=RTSP/1.0 route=direct status=200" in line]
+correlated = [re.search(r" conn=(\d+).* sid=([0-9a-f]{16})", line).groups() for line in details]
+assert len(set(conn for conn, _ in correlated)) >= 3
+assert len(set(sid for _, sid in correlated)) == 1
+PYTHON
+if grep -F -e 'wire-session-private' -e 'WIRE-PRIVATE' -e 'media.example' -e 'WIRE-RTSP-PRIVATE' -e 'WIRE-DIFFERENT-OWNER' wire.log; then
     echo 'AirPlay trace leaked a request value' >&2
     exit 1
 fi

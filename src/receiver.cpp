@@ -173,13 +173,6 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
     if(!dnssd || err) { show("AirPlay discovery failed");return false; }
     dnssd_set_airplay_features(dnssd,0,int(capabilities.direct_video));dnssd_set_airplay_features(dnssd,4,int(capabilities.hls));
     dnssd_set_airplay_features(dnssd,42,int(capabilities.hevc));dnssd_set_airplay_features(dnssd,27,int(capabilities.legacy_pairing));
-#ifdef UXAIR_DIRECT_BUILD
-    fprintf(stderr,"[direct-protocol] discovery mask=%016llx video=%d hls=%d backend=%s\n",
-            static_cast<unsigned long long>(dnssd_get_airplay_features(dnssd)),
-            int(capabilities.direct_video),int(capabilities.hls),
-            direct_strategy()==DirectStrategy::Auto?"auto":
-            direct_strategy()==DirectStrategy::NativeUri?"native":"bufferstream");
-#endif
     raop_callbacks_t cb={};cb.cls=this;
     cb.conn_feedback=[](void *p){self(p).activity=now_ns();};
     cb.conn_reset=[](void *p,int reason){self(p).request_reset(ResetOrigin::TransportCallback,reason);};
@@ -295,6 +288,13 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
     if(raop_start_httpd(raop,&port)<0)return false;
     raop_set_port(raop,port);
     if(dnssd_register_raop(dnssd,port)||dnssd_register_airplay(dnssd,port))return false;
+#ifdef UXAIR_DIRECT_BUILD
+    fprintf(stderr,"[direct-protocol] discovery service=airplay+raop port=%u mask=%016llx video=%d hls=%d hevc=%d backend=%s\n",
+            unsigned(port),static_cast<unsigned long long>(dnssd_get_airplay_features(dnssd)),
+            int(capabilities.direct_video),int(capabilities.hls),int(capabilities.hevc),
+            direct_strategy()==DirectStrategy::Auto?"auto":
+            direct_strategy()==DirectStrategy::NativeUri?"native":"bufferstream");
+#endif
     fprintf(stderr,"[receiver] UxAir ready port=%u, paired=%zu\n",port,keys.size());
     return true;
 }

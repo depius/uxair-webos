@@ -3,6 +3,8 @@
 #include "direct_bridge.h"
 #include "direct_wire.h"
 #include <strings.h>
+#include <openssl/err.h>
+#include <openssl/evp.h>
 
 static http_response_t *uxair_response(const char *protocol, const char *cseq, int status) {
     http_response_t *response = http_response_create();
@@ -15,13 +17,148 @@ static http_response_t *uxair_response(const char *protocol, const char *cseq, i
     case 405: reason = "Method Not Allowed"; break;
     case 409: reason = "Conflict"; break;
     case 413: reason = "Payload Too Large"; break;
+    case 470: reason = "Client Authentication Failure"; break;
     case 501: reason = "Not Implemented"; break;
     case 503: reason = "Service Unavailable"; break;
+    case 505: reason = "Protocol Version Not Supported"; break;
     }
     http_response_init(response, protocol, status, reason);
     http_response_add_header(response, "Server", "AirTunes/" GLOBAL_VERSION);
     if (cseq) http_response_add_header(response, "CSeq", cseq);
     return response;
+}
+
+/* The legacy video handshake gets its own connection-local pairing state.
+ * The X-Apple-Session-ID binds its messages, but is never a credential. */
+static void uxair_video_pairing_clear(raop_conn_t *conn) {
+    pairing_session_destroy(conn->video_verify);
+    conn->video_verify = NULL;
+    conn->video_verified = false;
+}
+
+static bool uxair_video_pairing_path(const char *method, const char *path) {
+    return !strcmp(method, "POST") && (!strcmp(path, "/pair-setup") || !strcmp(path, "/pair-verify"));
+}
+
+/* The pinned handshake treats an invalid X25519 peer as fatal. Reject peers
+ * that OpenSSL cannot derive with before passing them into that implementation.
+ * This probe key is public and is independent of the actual pairing keys. */
+static bool uxair_video_peer_valid(const unsigned char *raw) {
+    const unsigned char probe[X25519_KEY_SIZE] = {1};
+    unsigned char shared[X25519_KEY_SIZE] = {0};
+    size_t length = sizeof(shared);
+    EVP_PKEY *ours = EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, NULL, probe, sizeof(probe));
+    EVP_PKEY *peer = EVP_PKEY_new_raw_public_key(EVP_PKEY_X25519, NULL, raw, X25519_KEY_SIZE);
+    EVP_PKEY_CTX *ctx = ours ? EVP_PKEY_CTX_new(ours, NULL) : NULL;
+    bool valid = ctx && peer && EVP_PKEY_derive_init(ctx) == 1 &&
+        EVP_PKEY_derive_set_peer(ctx, peer) == 1 && EVP_PKEY_derive(ctx, shared, &length) == 1;
+    OPENSSL_cleanse(shared, sizeof(shared));
+    EVP_PKEY_CTX_free(ctx);
+    EVP_PKEY_free(peer);
+    EVP_PKEY_free(ours);
+    ERR_clear_error();
+    return valid;
+}
+
+static int uxair_video_verify(raop_conn_t *conn, const unsigned char *body, int length,
+                              unsigned char *output, int *size, const char **reason) {
+    if (!body || length < 4 || body[1] || body[2] || body[3] ||
+        !((body[0] == 1 && length == 4 + X25519_KEY_SIZE + ED25519_KEY_SIZE) ||
+          (body[0] == 0 && length == 4 + PAIRING_SIG_SIZE))) {
+        *reason = "unsupported-pairing-format";
+        return 400;
+    }
+    if (body[0] == 0) {
+        if (!conn->video_verify) {
+            *reason = "no-pending-proof";
+            return 470;
+        }
+        const int result = pairing_session_finish(conn->video_verify, body + 4);
+        uxair_video_pairing_clear(conn);
+        if (result) {
+            *reason = "proof-rejected";
+            return 470;
+        }
+        conn->video_verified = true;
+        *reason = "proof-verified";
+        return 200;
+    }
+
+    uxair_video_pairing_clear(conn);
+    const unsigned char *key = body + 4 + X25519_KEY_SIZE;
+    char *encoded = NULL;
+    ed25519_pk_to_base64(key, &encoded);
+    const raop_callbacks_t *callbacks = &conn->raop->callbacks;
+    bool registered = encoded && callbacks->check_register &&
+        callbacks->check_register(callbacks->cls, encoded);
+    free(encoded);
+    if (!registered) {
+        *reason = "pin-registration-required";
+        return 470;
+    }
+    if (!uxair_video_peer_valid(body + 4)) {
+        *reason = "invalid-peer-key";
+        return 400;
+    }
+    conn->video_verify = pairing_session_init(conn->raop->pairing);
+    if (!conn->video_verify) return 503;
+    pairing_session_set_setup_status(conn->video_verify);
+    if (pairing_session_handshake(conn->video_verify, body + 4, key) ||
+        pairing_session_get_public_key(conn->video_verify, output) ||
+        pairing_session_get_signature(conn->video_verify, output + X25519_KEY_SIZE)) {
+        uxair_video_pairing_clear(conn);
+        return 503;
+    }
+    *size = X25519_KEY_SIZE + PAIRING_SIG_SIZE;
+    *reason = "proof-required";
+    return 200;
+}
+
+static int uxair_dispatch_video_pairing(raop_conn_t *conn, http_request_t *request,
+                                         http_response_t **result, const char *cseq,
+                                         uxair_route_t *route, const char **reason) {
+    const char *protocol = http_request_get_protocol(request);
+    const char *path = http_request_get_url(request);
+    const char *owner = http_request_get_header(request, "X-Apple-Session-ID");
+    if (cseq || !owner || !*owner || !uxair_video_pairing_path(http_request_get_method(request), path)) return 0;
+
+    *route = UX_ROUTE_VIDEO_PAIRING;
+    unsigned char output[X25519_KEY_SIZE + PAIRING_SIG_SIZE] = {0};
+    int size = 0, length = 0;
+    const unsigned char *body = (const unsigned char *)http_request_get_data(request, &length);
+    int status = 400;
+    size_t owner_length = strlen(owner);
+    if (owner_length >= sizeof(conn->video_pair_owner)) {
+        *reason = "invalid-session";
+    } else if (conn->video_pair_owner[0] && strcmp(conn->video_pair_owner, owner)) {
+        *reason = "session-conflict";
+        status = 409;
+    } else {
+        if (!strcmp(path, "/pair-setup")) {
+            if (length == ED25519_KEY_SIZE) {
+                uxair_video_pairing_clear(conn);
+                pairing_get_public_key(conn->raop->pairing, output);
+                size = ED25519_KEY_SIZE;
+                *reason = "public-key-only";
+                status = 200;
+            } else {
+                *reason = "unsupported-pairing-format";
+            }
+        } else {
+            *reason = "pairing-unavailable";
+            status = uxair_video_verify(conn, body, length, output, &size, reason);
+        }
+        if (status == 200) memcpy(conn->video_pair_owner, owner, owner_length + 1);
+    }
+
+    *result = uxair_response(protocol, NULL, status);
+    if (*result) {
+        if (status == 200) http_response_add_header(*result, "Content-Type", "application/octet-stream");
+        http_response_finish(*result, (const char *)output, size);
+    } else {
+        uxair_video_pairing_clear(conn);
+    }
+    return 1;
 }
 
 static int uxair_info_qualifiers(http_request_t *request) {
@@ -103,8 +240,10 @@ static void uxair_info_response(raop_conn_t *conn, http_request_t *request,
 }
 
 static int uxair_dispatch_direct(raop_conn_t *conn, http_request_t *request,
-                                http_response_t **result, const char *cseq, uxair_route_t *route) {
+                                http_response_t **result, const char *cseq, uxair_route_t *route,
+                                const char **reason) {
     if (!uxair_direct_enabled()) return 0;
+    if (uxair_dispatch_video_pairing(conn, request, result, cseq, route, reason)) return 1;
     const uxair_video_route_t selected = uxair_video_route(request);
     if (selected == UX_VIDEO_NONE) return 0;
     if (selected == UX_VIDEO_INFO || selected == UX_VIDEO_SERVER_INFO) {
@@ -118,6 +257,12 @@ static int uxair_dispatch_direct(raop_conn_t *conn, http_request_t *request,
     const char *method = http_request_get_method(request);
     const char *protocol = http_request_get_protocol(request);
     const char *owner = http_request_get_header(request, "X-Apple-Session-ID");
+    if (owner && conn->video_pair_owner[0] && strcmp(owner, conn->video_pair_owner)) {
+        *reason = "session-conflict";
+        *result = uxair_response(protocol, cseq, 409);
+        if (*result) http_response_finish(*result, NULL, 0);
+        return 1;
+    }
     int status = 400;
     if (selected == UX_VIDEO_REVERSE) {
         const char *upgrade = http_request_get_header(request, "Upgrade");

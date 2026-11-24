@@ -102,27 +102,51 @@ def instrument_raop(source, direct_enabled=True):
     if not direct_enabled:
         return source.replace(INCLUDE, INCLUDE + '#include "direct_request_diag.h"\n', 1).replace(GATE, GATE + PROBE, 1)
     source = source.replace(INCLUDE, INCLUDE + '#include "direct_request_diag.h"\n', 1)
+    source = replace_once(source, 'struct raop_s {',
+        '#include "direct_wire.h"\n\nstruct raop_s {\n    uxair_wire_stats_t wire;')
+    source = replace_once(source, 'struct raop_conn_s {',
+        'struct raop_conn_s {\n'
+        '    unsigned wire_id;\n'
+        '    char video_pair_owner[129];\n'
+        '    pairing_session_t *video_verify;\n'
+        '    bool video_verified;')
     source = replace_once(source, '#include "http_handlers.h"\n',
                           '#include "http_handlers.h"\n#include "direct_dispatch.h"\n')
     source = replace_once(source,
         'conn_request(void *ptr, http_request_t *request, http_response_t **response) {',
-        'conn_request_routed(void *ptr, http_request_t *request, http_response_t **response, uxair_route_t *route) {')
+        'conn_request_routed(void *ptr, http_request_t *request, http_response_t **response, uxair_route_t *route, const char **reason) {')
     for name in ('logger_debug', 'logger_debug_data'):
         suffix = '_DATA' if name.endswith('_data') else ''
         source = replace_once(source, f'    bool {name} = (logger_get_level(raop->logger) >= LOGGER_DEBUG{suffix});\n', '')
     source = replace_once(source, '        http_response_init(*response, protocol, 431, "Request Header Fields Too Large");\n',
         '        *route = UX_ROUTE_REJECTED;\n'
+        '        *reason = "header-limit";\n'
         '        if (*response) {\n'
         '            http_response_init(*response, protocol, 431, "Request Header Fields Too Large");\n'
         '            http_response_finish(*response, NULL, 0);\n'
         '        }\n')
+    source = replace_once(source, '        int cseq_val = parse_int(cseq_req);\n',
+        '        int cseq_val = uxair_direct_enabled() ? uxair_parse_cseq(cseq_req) : parse_int(cseq_req);\n')
     source = replace_once(source,
         '            logger_log(raop->logger, LOGGER_ERR, "rejecting request with invalid CSeq value %s", cseq_req);\n',
-        '            *route = UX_ROUTE_REJECTED;\n')
-    source = replace_once(source, GATE, r"""    if (uxair_dispatch_direct(conn, request, response, cseq, route)) return;
+        '            *route = UX_ROUTE_REJECTED;\n'
+        '            *reason = "invalid-cseq";\n'
+        '            if (uxair_direct_enabled()) {\n'
+        '                *response = uxair_response(protocol, NULL, 400);\n'
+        '                if (*response) http_response_finish(*response, NULL, 0);\n'
+        '            }\n')
+    source = replace_once(source, GATE, r"""    if (uxair_direct_enabled() && strcmp(protocol, "HTTP/1.1") && strcmp(protocol, "RTSP/1.0")) {
+        *route = UX_ROUTE_REJECTED;
+        *reason = "unsupported-protocol";
+        *response = uxair_response(protocol, cseq, 505);
+        if (*response) http_response_finish(*response, NULL, 0);
+        return;
+    }
+    if (uxair_dispatch_direct(conn, request, response, cseq, route, reason)) return;
 
 """ + GATE + r"""        *route = UX_ROUTE_REJECTED;
-        if (uxair_direct_enabled() && (!strcmp(protocol, "HTTP/1.1") || !strcmp(protocol, "RTSP/1.0"))) {
+        *reason = "no-cseq-route";
+        if (uxair_direct_enabled()) {
             *response = uxair_response(protocol, cseq, 501);
             if (*response) http_response_finish(*response, NULL, 0);
             return;
@@ -132,6 +156,7 @@ def instrument_raop(source, direct_enabled=True):
         '    raop_handler_t handler = NULL;\n',
         '    if (client_session_id && conn->client_session_id && strcmp(client_session_id, conn->client_session_id)) {\n'
         '        *route = UX_ROUTE_REJECTED;\n'
+        '        *reason = "session-conflict";\n'
         '        http_response_init(*response, protocol, 409, "Conflicting Session");\n'
         '        goto finish;\n'
         '    }\n')
@@ -145,11 +170,21 @@ def instrument_raop(source, direct_enabled=True):
         'static void\nconn_destroy(void *ptr) {',
         '    free(response_data);\n}\n\n'
         'static void\nconn_request(void *ptr, http_request_t *request, http_response_t **response) {\n'
+        '    raop_conn_t *conn = ptr;\n'
+        '    uxair_wire_stats_t *wire = &conn->raop->wire;\n'
+        '    if (!conn->wire_id) conn->wire_id = ++wire->connections;\n'
         '    uxair_route_t route = UX_ROUTE_UNHANDLED;\n'
-        '    conn_request_routed(ptr, request, response, &route);\n'
-        '    uxair_trace_exchange(request, *response, route);\n'
+        '    const char *reason = NULL;\n'
+        '    conn_request_routed(ptr, request, response, &route, &reason);\n'
+        '    const char *auth = conn->video_verified ? "video-verified" : conn->video_verify ? "proof-pending" :\n'
+        '        conn->authenticated ? "digest-verified" : "unobserved";\n'
+        '    uxair_trace_exchange(wire, conn->wire_id, conn->raop->port, request, *response, route, reason, auth);\n'
         '}\n\n')
+    source = replace_once(source, '        raop_stop_httpd(raop);\n',
+        '        raop_stop_httpd(raop);\n'
+        '        uxair_trace_summary(&raop->wire, raop->port, "listener-stop");\n')
     return replace_once(source, '    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");',
+        '    uxair_video_pairing_clear(conn);\n'
         '    uxair_direct_lost(raop->callbacks.cls,(unsigned long)conn);\n'
         '    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");')
 
