@@ -42,11 +42,12 @@ struct ReceiverDiagnostics {
 struct Receiver {
 #ifdef UXAIR_DIRECT_BUILD
     DirectSession direct;
-    bool reserve_direct();
+    bool reserve_direct(bool embedded_audio=false);
     void release_direct(bool released);
-    const char *direct_block_reason();
-    const char *direct_block_reason_locked() const;
+    const char *direct_block_reason(bool embedded_audio=false);
+    const char *direct_block_reason_locked(bool embedded_audio=false) const;
     bool direct_active = false, direct_cleanup_failed = false; // protected by mutex
+    std::atomic<bool> direct_embedded_audio{false};
 #endif
     ~Receiver();
     bool start(const std::string& directory, const Settings& settings);

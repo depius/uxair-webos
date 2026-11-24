@@ -22,6 +22,7 @@ typedef struct {
     unsigned connections, video, audio, pair_failures, unknown, admitted;
     unsigned crypto_attempts, crypto_upgrades, crypto_envelope_failures, crypto_tag_failures;
     unsigned crypto_records, crypto_requests, admission_attempts;
+    unsigned reverse_upgrades, reverse_failures, reverse_events, crypto_closed;
 } uxair_wire_stats_t;
 
 int uxair_info_query(const char *path);

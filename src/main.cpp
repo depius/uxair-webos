@@ -596,6 +596,7 @@ int main(int argc,char **argv) {
         }
         receiver.direct.publish(status);
         receiver.release_direct(released);
+        bus.block_screen_saver(false);
         receiver.show(status.state==DirectState::Error?"Direct Video failed":"Direct Video stopped");
         direct_active=false;
         ui_visible=true;
@@ -615,7 +616,7 @@ int main(int argc,char **argv) {
             bool stop=false;
             if(receiver.direct.take(command)) {
                 if(command.kind==DirectCommandKind::Play && !direct_active) {
-                    if(opened || !receiver.reserve_direct()) {
+                    if(opened || !receiver.reserve_direct(command.encrypted)) {
                         DirectSnapshot busy;
                         busy.state=DirectState::Error;
                         busy.stage=DirectStage::Dequeued;

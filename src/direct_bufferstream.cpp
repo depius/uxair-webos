@@ -33,9 +33,9 @@ bool DirectBufferstream::open(const DirectCommand& play, int64_t now, DirectSess
     status_.state = DirectState::Loading;
     status_.stage = DirectStage::Fetch;
     opened_at_ = now;
-    if (!network_.begin()) return fail(DirectError::RelayStart);
+    if (!network_.begin(!play.encrypted)) return fail(DirectError::RelayStart);
     session_ = session;
-    if (session && fcup_enabled()) {
+    if (session && !play.encrypted && fcup_enabled()) {
         network_.sender_manifest = [session](const std::string& url) { return session->sender_manifest(url); };
     }
     play_ = play;
@@ -159,6 +159,10 @@ bool DirectBufferstream::control(const DirectCommand& command, int64_t now) {
 }
 
 void DirectBufferstream::update_snapshot() {
+    status_.seekable=presented_&&duration_ns_>0;
+    status_.backend_loaded=opened_&&media_.ready;
+    status_.frame_observed=opened_&&media_.frames>0;
+    status_.audio_fed=opened_&&media_.feed_audio_accepted>0;
     status_.upstream_fetches = network_.requests;
     status_.downloaded_bytes = network_.bytes;
     status_.relay_failures = network_.failures;

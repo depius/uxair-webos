@@ -20,9 +20,9 @@ public:
     std::function<std::string(const std::string&)> sender_manifest;
     std::atomic<uint64_t> bytes{0},requests{0},failures{0},incoming_requests{0},media_gets{0};
     ~HlsRelay(){stop();}
-    bool begin();
+    bool begin(bool allow_configured_lan=true);
     void cancel() { running_=false; }
-    std::string start(const std::string&);
+    std::string start(const std::string&,bool allow_configured_lan=true);
     void stop();
     HlsFetch fetch(const std::string&,size_t limit,bool manifest=false);
     std::string rewrite(const std::string&,const std::string& base);

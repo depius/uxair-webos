@@ -19,6 +19,7 @@ static http_response_t *uxair_response(const char *protocol, const char *cseq, i
     case 405: reason = "Method Not Allowed"; break;
     case 409: reason = "Conflict"; break;
     case 413: reason = "Payload Too Large"; break;
+    case 415: reason = "Unsupported Media Type"; break;
     case 470: reason = "Client Authentication Failure"; break;
     case 501: reason = "Not Implemented"; break;
     case 503: reason = "Service Unavailable"; break;
@@ -40,6 +41,7 @@ static void uxair_video_pairing_clear(raop_conn_t *conn) {
     conn->video_verified = false;
     conn->video_pair_bound = false;
     OPENSSL_cleanse(conn->video_secret, sizeof(conn->video_secret));
+    OPENSSL_cleanse(conn->video_controller, sizeof(conn->video_controller));
     uxair_crypto_clear(&conn->video_crypto);
 }
 
@@ -124,6 +126,7 @@ static int uxair_video_verify(raop_conn_t *conn, const unsigned char *body, int 
         return 503;
     }
     *size = X25519_KEY_SIZE + PAIRING_SIG_SIZE;
+    memcpy(conn->video_controller,key,ED25519_KEY_SIZE);
     conn->video_pair_bound = pair_bound;
     if (pair_bound) conn->video_crypto.deadline_ms = uxair_crypto_now_ms() + 30000;
     *reason = "proof-required";
@@ -440,6 +443,13 @@ static int uxair_dispatch_direct(raop_conn_t *conn, http_request_t *request,
         }
         return 1;
     }
+    if (selected==UX_VIDEO_REVERSE || (!conn->video_verified&&!strcmp(method,"POST")&&
+            (!strcmp(http_request_get_url(request),"/play")||!strcmp(http_request_get_url(request),"/action")))) {
+        *reason="video-proof-required";
+        *result=uxair_response(protocol,cseq,470);
+        if (*result) http_response_finish(*result,NULL,0);
+        return 1;
+    }
     if (!conn->video_verified && !strcmp(method, "PUT") &&
         uxair_control_path(http_request_get_url(request), "/setProperty")) {
         *reason = "video-proof-required";
@@ -449,31 +459,12 @@ static int uxair_dispatch_direct(raop_conn_t *conn, http_request_t *request,
     }
     if (!owner && conn->video_verified) owner = conn->video_pair_owner;
     int status = 400;
-    if (selected == UX_VIDEO_REVERSE) {
-        const char *upgrade = http_request_get_header(request, "Upgrade");
-        if (strcmp(method, "POST")) status = 405;
-        else if (upgrade && !strcasecmp(upgrade, "PTTH/1.0") && owner && *owner)
-            status = uxair_direct_reverse(raop->callbacks.cls, owner,
-                httpd_get_connection_socket(raop->httpd, conn), (unsigned long)conn) ? 101 : 409;
-        *result = uxair_response(protocol, cseq, status);
-        if (status == 101) {
-            if (*result) {
-                httpd_set_connection_type(raop->httpd, conn, CONNECTION_TYPE_PTTH);
-                conn->connection_type = CONNECTION_TYPE_PTTH;
-                http_response_add_header(*result, "Connection", "Upgrade");
-                http_response_add_header(*result, "Upgrade", "PTTH/1.0");
-            } else uxair_direct_lost(raop->callbacks.cls, (unsigned long)conn);
-        }
-        if (*result) http_response_finish(*result, NULL, 0);
-        return 1;
-    }
-
     int length = 0, output_length = 0;
     char *output = NULL;
     const char *type = "text/parameters";
     const char *data = http_request_get_data(request, &length);
     status = uxair_direct_request(raop->callbacks.cls, owner, method, http_request_get_url(request),
-        http_request_get_header(request, "Content-Type"), data, length, &output, &output_length, &type, reason);
+        http_request_get_header(request, "Content-Type"), data, length, &output, &output_length, &type, reason, NULL, 0);
     *result = uxair_response(protocol, cseq, status);
     if (*result) {
         http_response_add_header(*result, "Content-Type", type);

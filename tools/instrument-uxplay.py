@@ -95,7 +95,7 @@ on_header_field(""")
     source = replace_once(source, '        if (!strcmp(request->headers[i], name)) {',
                           '        if (!strcasecmp(request->headers[i], name)) {')
     source = replace_once(source, '    int complete;\n',
-        '    int complete, consumed;\n    bool encrypted;\n    size_t header_bytes;\n')
+        '    int complete, consumed;\n    bool encrypted, encrypted_reply;\n    size_t header_bytes;\n')
     for field in ('on_url', 'on_header_field', 'on_header_value'):
         start = f'{field}(llhttp_t *parser, const char *at, size_t length)\n{{\n    http_request_t *request = parser->data;\n'
         source = replace_once(source, start, start +
@@ -106,6 +106,12 @@ on_headers_complete(llhttp_t *parser)
     http_request_t *request = parser->data;
     bool fp2 = request->url && !strcmp(request->url, "/fp-setup2");
     if (!request->encrypted && !fp2) return 0;
+    if (request->encrypted_reply) {
+        if (strcmp(request->protocol, "HTTP") || llhttp_get_http_major(parser)!=1 ||
+            llhttp_get_http_minor(parser)!=1 || llhttp_get_status_code(parser)!=200 ||
+            parser->content_length || parser->upgrade || (parser->flags & (F_CHUNKED | F_TRANSFER_ENCODING))) return -1;
+        return 1;
+    }
     if (parser->flags & (F_CHUNKED | F_TRANSFER_ENCODING) ||
         parser->content_length > (fp2 ? 120U : 16384U) ||
         (request->encrypted && (strcmp(request->protocol, "HTTP") ||
@@ -135,6 +141,11 @@ on_message_complete""")
         '    }\n')
     source = replace_once(source, 'int\nhttp_request_is_complete', r"""int uxair_request_consumed(const http_request_t *request) { return request->consumed; }
 void uxair_request_encrypted(http_request_t *request) { request->encrypted = true; }
+void uxair_request_encrypted_reply(http_request_t *request) {
+    request->encrypted = request->encrypted_reply = true;
+    llhttp_init(&request->parser, HTTP_RESPONSE, &request->parser_settings);
+    request->parser.data = request;
+}
 
 int
 http_request_is_complete""")
@@ -165,7 +176,7 @@ def instrument_raop(source, direct_enabled=True):
         '    pairing_session_t *video_verify;\n'
         '    fairplay_t *video_fairplay;\n'
         '    bool video_verified, video_pair_bound;\n'
-        '    unsigned char video_secret[32];\n'
+        '    unsigned char video_secret[32], video_controller[ED25519_KEY_SIZE];\n'
         '    uxair_crypto_t video_crypto;')
     source = replace_once(source, '#include "http_handlers.h"\n',
                           '#include "http_handlers.h"\n#include "direct_dispatch.h"\n#include "direct_encrypted_dispatch.h"\n')
@@ -326,7 +337,8 @@ def instrument_encrypted_httpd(source):
         '#include "httpd.h"\n#include "direct_crypto.h"\n')
     source = replace_once(source, '            if (httpd->connections[i].pending_remove) {\n',
         '            if (httpd->connections[i].pending_remove ||\n'
-        '                uxair_video_cipher_expired(httpd->connections[i].user_data)) {\n')
+        '                uxair_video_cipher_expired(httpd->connections[i].user_data) ||\n'
+        '                uxair_video_cipher_service(httpd->connections[i].user_data, httpd->connections[i].socket_fd)) {\n')
     source = replace_once(source, '            if (!connection->request) {\n',
         '            if (!connection->request && !uxair_video_cipher_active(connection->user_data)) {\n')
     source = replace_once(source, '            recv_datalen = read_result;\n',

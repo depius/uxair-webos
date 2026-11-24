@@ -34,8 +34,13 @@ void uxair_video_cipher_abort(void *opaque, const char *reason) {
 int uxair_video_cipher_expired(void *opaque) {
     raop_conn_t *conn = opaque;
     uxair_crypto_t *crypto = &conn->video_crypto;
-    if (!crypto->deadline_ms && !crypto->record_deadline_ms && !crypto->http_deadline_ms) return 0;
+    if (!crypto->deadline_ms && !crypto->record_deadline_ms && !crypto->http_deadline_ms && !crypto->reverse_ack_ms) return 0;
     const uint64_t now = uxair_crypto_now_ms();
+    if (crypto->reverse_ack_ms && now>=crypto->reverse_ack_ms) {
+        ++conn->raop->wire.reverse_failures;
+        crypto->close_reason="reverse-ack-timeout";
+        return 1;
+    }
     if ((crypto->deadline_ms && now >= crypto->deadline_ms) ||
         (crypto->record_deadline_ms && now >= crypto->record_deadline_ms) ||
         (crypto->http_deadline_ms && now >= crypto->http_deadline_ms)) {
@@ -45,13 +50,32 @@ int uxair_video_cipher_expired(void *opaque) {
     return 0;
 }
 
+static bool uxair_connection_upgrade(const char *value) {
+    if (!value) return false;
+    while (*value) {
+        const char *end=strchr(value, ',');
+        const char *next=end?end+1:value+strlen(value);
+        if (!end) end=next;
+        while (value<end && (*value==' ' || *value=='\t')) ++value;
+        while (end>value && (end[-1]==' ' || end[-1]=='\t')) --end;
+        if (end-value==7 && !strncasecmp(value,"Upgrade",7)) return true;
+        value=next;
+    }
+    return false;
+}
+
 static http_response_t *uxair_encrypted_route(raop_conn_t *conn, http_request_t *request, const char **route) {
     const char *method = http_request_get_method(request);
     const char *path = http_request_get_url(request);
     const char *owner = http_request_get_header(request, "X-Apple-Session-ID");
     http_response_t *response = NULL;
-    int n = 0;
-    http_request_get_data(request, &n);
+    int n = 0, output_length = 0;
+    const char *body=http_request_get_data(request, &n);
+    char *output=NULL;
+    const char *content_type=NULL;
+    const bool play=!strcmp(method,"POST")&&!strcmp(path,"/play");
+    const bool reverse=!strcmp(method,"POST")&&!strcmp(path,"/reverse");
+    if (play) ++conn->raop->wire.admission_attempts;
     int status = 501;
     *route = "unsupported";
     if (!conn->video_verified || !conn->video_pair_owner[0]) {
@@ -60,25 +84,47 @@ static http_response_t *uxair_encrypted_route(raop_conn_t *conn, http_request_t 
     } else if (owner && strcmp(owner, conn->video_pair_owner)) {
         status = 409;
         *route = "session-conflict";
-    } else if (!strcmp(method, "POST") && !strcmp(path, "/play")) {
-        ++conn->raop->wire.admission_attempts;
-        *route = "play-deferred";
+    } else if (reverse) {
+        const char *upgrade=http_request_get_header(request,"Upgrade");
+        *route="reverse";
+        if (n || !upgrade || strcasecmp(upgrade,"PTTH/1.0") ||
+            !uxair_connection_upgrade(http_request_get_header(request,"Connection"))) status=400;
+        else if (!uxair_direct_encrypted_reverse(conn->raop->callbacks.cls,conn->video_pair_owner,
+                 conn->video_controller,(unsigned long)conn)) status=409;
+        else {
+            status=101;
+            conn->video_crypto.reverse=1;
+        }
     } else if (!n && !strcmp(method, "GET") && !strcmp(path, "/server-info")) {
         *route = "discovery";
         uxair_info_response(conn, request, &response, NULL, 1);
-    } else if ((!n && !strcmp(method, "GET") && !strcmp(path, "/playback-info")) ||
-               (!strcmp(method, "PUT") && uxair_control_path(path, "/setProperty"))) {
+    } else if (play || (!n && !strcmp(method,"GET") &&
+               (!strcmp(path,"/playback-info") || !strcmp(path,"/scrub"))) ||
+               (!strcmp(method,"PUT") && uxair_control_path(path,"/setProperty")) ||
+               (!strcmp(method,"POST") && ((!n && !strcmp(path,"/stop")) ||
+                   uxair_control_path(path,"/rate") || uxair_control_path(path,"/scrub")))) {
         const char *reason = NULL;
-        uxair_route_t native_route = UX_ROUTE_DIRECT;
-        *route = "direct";
-        uxair_dispatch_direct(conn, request, &response, NULL, &native_route, &reason);
+        *route = play?"play":"direct";
+        status=uxair_direct_request(conn->raop->callbacks.cls,conn->video_pair_owner,method,path,
+            http_request_get_header(request,"Content-Type"),body,n,&output,&output_length,&content_type,
+            &reason,conn->video_controller,(unsigned long)conn);
+        if (play && status==200) ++conn->raop->wire.admitted;
+        if (play && status!=200 && !conn->video_crypto.admission_logged)
+            fprintf(stderr,"[direct-session] conn=%u admission=rejected status=%d reason=%s\n",
+                    conn->wire_id,status,reason?reason:"handler");
     }
     if (response) return response;
     response = uxair_response("HTTP/1.1", NULL, status);
     if (response) {
-        http_response_add_header(response, "Content-Length", "0");
-        http_response_finish(response, NULL, 0);
+        if (status==101) {
+            http_response_add_header(response,"Connection","Upgrade");
+            http_response_add_header(response,"Upgrade","PTTH/1.0");
+        }
+        if (output_length && content_type) http_response_add_header(response,"Content-Type",content_type);
+        if (!output_length) http_response_add_header(response,"Content-Length","0");
+        http_response_finish(response,output,output_length);
     }
+    free(output);
     return response;
 }
 
@@ -87,14 +133,11 @@ typedef struct {
     int fd;
 } uxair_encrypted_dispatch_t;
 
-static int uxair_encrypted_response(raop_conn_t *conn, int fd, http_response_t *response) {
-    if (!response) return -5;
-    int n;
-    const unsigned char *data = (const unsigned char *)http_response_get_data(response, &n);
+static int uxair_encrypted_send(raop_conn_t *conn,int fd,const char *data,int n) {
     if (n <= 0 || n > UX_CRYPTO_RECORD_MAX) return -5;
     unsigned char *output = malloc((size_t)n + UX_CRYPTO_OVERHEAD);
     if (!output) return -5;
-    const int sealed = uxair_crypto_seal(&conn->video_crypto, data, n, output);
+    const int sealed = uxair_crypto_seal(&conn->video_crypto, (const unsigned char*)data, n, output);
     int sent = 0;
     while (sent < sealed) {
         const ssize_t wrote = send(fd, output + sent, (size_t)(sealed - sent), MSG_NOSIGNAL);
@@ -107,6 +150,31 @@ static int uxair_encrypted_response(raop_conn_t *conn, int fd, http_response_t *
     return 0;
 }
 
+int uxair_video_cipher_service(void *opaque,int fd) {
+    raop_conn_t *conn=opaque;
+    uxair_crypto_t *crypto=&conn->video_crypto;
+    if(!crypto->reverse||crypto->reverse_ack_ms) return 0;
+    char event[8192];
+    const int n=uxair_direct_next_event(conn->raop->callbacks.cls,(unsigned long)conn,event,sizeof(event));
+    if(n<=0) {
+        if(n<0) crypto->close_reason="reverse-session-ended";
+        return n;
+    }
+    char wire[8640];
+    const int header=snprintf(wire,sizeof(wire),"POST /event HTTP/1.1\r\nX-Apple-Session-ID: %s\r\n"
+            "Content-Type: text/x-apple-plist+xml\r\nContent-Length: %d\r\n\r\n",conn->video_pair_owner,n);
+    if(header<=0 || (size_t)(header+n)>sizeof(wire)) return -1;
+    memcpy(wire+header,event,(size_t)n);
+    if(uxair_encrypted_send(conn,fd,wire,header+n)) {
+        ++conn->raop->wire.reverse_failures;
+        crypto->close_reason="reverse-event-write";
+        return -1;
+    }
+    ++conn->raop->wire.reverse_events;
+    crypto->reverse_ack_ms=uxair_crypto_now_ms()+5000;
+    return 0;
+}
+
 static int uxair_encrypted_http(void *opaque, const unsigned char *data, size_t n) {
     uxair_encrypted_dispatch_t *dispatch = opaque;
     raop_conn_t *conn = dispatch->conn;
@@ -114,32 +182,50 @@ static int uxair_encrypted_http(void *opaque, const unsigned char *data, size_t 
     if (crypto->received == 1)
         fprintf(stderr, "[video-crypto] conn=%u encrypted_records_rx=1\n", conn->wire_id);
     while (n) {
+        if (crypto->reverse && !crypto->reverse_ack_ms) return -4;
         if (!crypto->request) {
             crypto->request = http_request_init();
             if (!crypto->request) return -3;
-            uxair_request_encrypted(crypto->request);
+            if (crypto->reverse) uxair_request_encrypted_reply(crypto->request);
+            else uxair_request_encrypted(crypto->request);
             crypto->http_deadline_ms = uxair_crypto_now_ms() + 10000;
         }
         http_request_t *request = crypto->request;
-        size_t chunk = UX_CRYPTO_HTTP_MAX - crypto->http_bytes;
+        const size_t limit=crypto->reverse?8192:UX_CRYPTO_HTTP_MAX;
+        size_t chunk = limit - crypto->http_bytes;
         if (chunk > n) chunk = n;
         http_request_add_data(request, (const char *)data, (int)chunk);
         if (http_request_has_error(request)) return -4;
         if (!http_request_is_complete(request)) {
             crypto->http_bytes += chunk;
-            return crypto->http_bytes >= UX_CRYPTO_HTTP_MAX ? -4 : 0;
+            return crypto->http_bytes >= limit ? -4 : 0;
         }
         const int consumed = uxair_request_consumed(request);
         if (consumed <= 0 || (size_t)consumed > chunk) return -4;
+        if (crypto->reverse) {
+            crypto->reverse_ack_ms=0;
+            http_request_destroy(crypto->request);
+            crypto->request=NULL;
+            crypto->http_bytes=0;
+            crypto->http_deadline_ms=0;
+            return (size_t)consumed==n?0:-4;
+        }
         uxair_wire_stats_t *stats = &conn->raop->wire;
         ++stats->crypto_requests;
         const char *route;
         http_response_t *response = uxair_encrypted_route(conn, request, &route);
         const bool first = !crypto->sent;
         const int status = uxair_wire_status(response);
-        const int result = uxair_encrypted_response(conn, dispatch->fd, response);
-        const bool admission = !strcmp(route, "play-deferred") && !crypto->admission_logged;
+        int length=0;
+        const char *wire=response?http_response_get_data(response,&length):NULL;
+        const int result = uxair_encrypted_send(conn,dispatch->fd,wire,length);
+        const bool admission = !strcmp(route, "play") && (status==200 || !crypto->admission_logged);
         if (admission) crypto->admission_logged = 1;
+        if (!strcmp(route,"reverse")) {
+            if (status==101&&!result) ++stats->reverse_upgrades;
+            else ++stats->reverse_failures;
+            fprintf(stderr,"[reverse-channel] conn=%u upgrade_status=%d sent=%d\n",conn->wire_id,status,!result);
+        }
         if (first || crypto->sent <= 8 || admission)
             fprintf(stderr, "[video-control] conn=%u method=%s path=%s authenticated=1 first=%d route=%s status=%d sent=%d\n",
                     conn->wire_id, uxair_wire_method(http_request_get_method(request)),
@@ -171,7 +257,10 @@ int uxair_video_cipher_input(void *opaque, int fd, const char *data, size_t n) {
         break;
     case -2: crypto->close_reason = "record-size"; break;
     case -3: crypto->close_reason = "allocation"; break;
-    case -4: crypto->close_reason = "encrypted-http-framing"; break;
+    case -4:
+        if(crypto->reverse) ++conn->raop->wire.reverse_failures;
+        crypto->close_reason = crypto->reverse?"reverse-ack-framing":"encrypted-http-framing";
+        break;
     default: crypto->close_reason = "encrypted-write"; break;
     }
     return -1;
@@ -179,6 +268,7 @@ int uxair_video_cipher_input(void *opaque, int fd, const char *data, size_t n) {
 
 static void uxair_video_cipher_log_close(const raop_conn_t *conn) {
     const uxair_crypto_t *crypto = &conn->video_crypto;
+    if (crypto->phase==UX_CRYPTO_ENCRYPTED) ++conn->raop->wire.crypto_closed;
     if (crypto->phase || crypto->close_reason || conn->video_pair_bound) {
         const char *reason = crypto->close_reason;
         if (!reason) reason = crypto->buffered ? "truncated-record" : crypto->request ? "truncated-http" : "peer-or-listener-stop";

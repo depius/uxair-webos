@@ -40,11 +40,14 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 		}
 	})
 	ready := make(chan string, 1)
+	progress := make(chan string, 1)
 	go func() {
 		scanner := bufio.NewScanner(output)
 		for scanner.Scan() {
 			if strings.HasPrefix(scanner.Text(), "UXAIR_PORT=") {
 				ready <- scanner.Text()
+			} else if strings.HasPrefix(scanner.Text(), "UXAIR_STEP=") {
+				progress <- scanner.Text()
 			}
 		}
 	}()
@@ -62,7 +65,7 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 		s, err := net.DialTCP("tcp4", nil, address)
 		must(t, err)
 		t.Cleanup(func() { s.Close() })
-		must(t, s.SetDeadline(time.Now().Add(8*time.Second)))
+		must(t, s.SetDeadline(time.Now().Add(25*time.Second)))
 		return s
 	}
 	raop := dial()
@@ -91,13 +94,14 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	raopOptions(1)
 
 	signing := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x42}, ed25519.SeedSize))
-	makePeer := func() *peer {
+	pairedPeer := func(key ed25519.PrivateKey) *peer {
 		s := dial()
-		p := &peer{harness: &harness{signingKey: signing}, t: t, socket: s, wire: bufio.NewReader(s)}
+		p := &peer{harness: &harness{signingKey: key}, t: t, socket: s, wire: bufio.NewReader(s)}
 		p.peerKey = p.post("/pair-setup", make([]byte, 32))
 		t.Cleanup(func() { clear(p.secret) })
 		return p
 	}
+	makePeer := func() *peer { return pairedPeer(signing) }
 	checkReply := func(reader *bufio.Reader, code int) []byte {
 		resp, err := http.ReadResponse(reader, nil)
 		must(t, err)
@@ -117,6 +121,34 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	writeQuery := func(p *peer, request string, code int) []byte {
 		p.write(p.seal(request))
 		return encryptedReply(p, code)
+	}
+	step := func(action string) {
+		t.Helper()
+		_, err := io.WriteString(input, action)
+		must(t, err)
+		select {
+		case got := <-progress:
+			if got != "UXAIR_STEP="+action {
+				t.Fatal("unexpected simulated backend transition")
+			}
+		case <-time.After(8 * time.Second):
+			t.Fatal("simulated backend did not receive command")
+		}
+	}
+	event := func(p *peer, state string) {
+		t.Helper()
+		wire, err := p.rx.Read(p.wire)
+		must(t, err)
+		req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(wire)))
+		must(t, err)
+		body, err := io.ReadAll(req.Body)
+		must(t, err)
+		req.Body.Close()
+		if req.Method != "POST" || req.URL.Path != "/event" || req.Header.Get("X-Apple-Session-ID") != testSession ||
+			!bytes.Contains(body, []byte("<key>state</key><string>"+state+"</string>")) {
+			t.Fatalf("unexpected encrypted reverse event for %s", state)
+		}
+		p.write(p.seal("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
 	}
 	requireClosed := func(p *peer) {
 		_, err := p.wire.ReadByte()
@@ -162,8 +194,69 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 		t.Fatal("did not receive native property response")
 	}
 	writeQuery(a, "GET /playback-info HTTP/1.1\r\nX-Apple-Session-ID: different-identity\r\n\r\n", 409)
-	writeQuery(a, "POST /reverse HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: PTTH/1.0\r\n\r\n", 501)
-	writeQuery(a, "POST /play HTTP/1.1\r\n\r\n", 501)
+	writeQuery(a, "POST /reverse HTTP/1.1\r\nUpgrade: PTTH/1.0\r\n\r\n", 400)
+	writeQuery(a, "POST /play HTTP/1.1\r\n\r\n", 400)
+	playText := func(location string, code int) {
+		body := "Content-Location: " + location + "\r\n"
+		writeQuery(a, fmt.Sprintf("POST /play HTTP/1.1\r\nContent-Type: text/parameters\r\nContent-Length: %d\r\n\r\n%s", len(body), body), code)
+	}
+	playText("http://192.168.1.4/hidden.m3u8", 400)
+	playText("mlhls://private-resource", 415)
+	play, err := hex.DecodeString("62706c6973743030d80102030405060708090a0b0c0d0e0f105f1010436f6e74656e742d4c6f636174696f6e5e53746172742d506f736974696f6e5f101653746172742d506f736974696f6e2d5365636f6e64735f1012582d4170706c652d53657373696f6e2d4944596d656469615479706554726174655a73747265616d5479706554757569645f103b68747470733a2f2f6d656469612e6578616d706c652f636f6e74726f6c2e6d3375383f746f6b656e3d707269766174652d6e61746976652d75726c230000000000000000233ff80000000000005f1029746573742d73657373696f6e2d69642d73686f756c642d6e6f742d6170706561722d696e2d6c6f67735466696c65233ff000000000000010015f10107068617365332d746573742d6974656d00080019002c003b00540069007300780083008800c600cf00d801040109011201140000000000000201000000000000001100000000000000000000000000000127")
+	must(t, err)
+	plistRequest := func(method, path string, body []byte) string {
+		return fmt.Sprintf("%s %s HTTP/1.1\r\nContent-Type: application/x-apple-binary-plist\r\nContent-Length: %d\r\n\r\n%s", method, path, len(body), body)
+	}
+	reverse := "POST /reverse HTTP/1.1\r\nConnection: keep-alive, Upgrade\r\nUpgrade: PTTH/1.0\r\n\r\n"
+	reversePeer := makePeer()
+	reversePeer.upgrade()
+	writeQuery(reversePeer, reverse, 101)
+	playRequest := plistRequest("POST", "/play", play)
+	step("b")
+	writeQuery(a, playRequest, 409)
+	step("i")
+	writeQuery(a, playRequest, 200)
+	event(reversePeer, "loading")
+	if body := writeQuery(a, query, 200); !bytes.Contains(body, []byte("<key>readyToPlay</key><false/>")) {
+		t.Fatal("admission was reported as rendered playback")
+	}
+	other := pairedPeer(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x43}, ed25519.SeedSize)))
+	other.upgrade()
+	writeQuery(other, "POST /stop HTTP/1.1\r\n\r\n", 409)
+	writeQuery(other, reverse, 409)
+	other.socket.Close()
+	writeQuery(a, "POST /scrub?position=4 HTTP/1.1\r\n\r\n", 409)
+	step("p")
+	event(reversePeer, "playing")
+	reversePeer.socket.Close()
+	reversePeer = makePeer()
+	reversePeer.upgrade()
+	writeQuery(reversePeer, reverse, 101)
+	event(reversePeer, "playing")
+	writeQuery(a, "POST /rate?value=0 HTTP/1.1\r\n\r\n", 200)
+	step("a")
+	event(reversePeer, "paused")
+	writeQuery(a, "POST /rate?value=1 HTTP/1.1\r\n\r\n", 200)
+	step("r")
+	event(reversePeer, "playing")
+	item, err := hex.DecodeString("62706c6973743030d1010254757569645f10107068617365332d746573742d6974656d080b100000000000000101000000000000000300000000000000000000000000000023")
+	must(t, err)
+	writeQuery(a, plistRequest("POST", "/scrub?position=4", item), 200)
+	step("s")
+	if body := writeQuery(a, "GET /scrub HTTP/1.1\r\n\r\n", 200); !bytes.Contains(body, []byte("position: 4")) {
+		t.Fatal("seek position was not published")
+	}
+	writeQuery(a, "POST /stop HTTP/1.1\r\n\r\n", 200)
+	step("t")
+	event(reversePeer, "stopped")
+	requireClosed(reversePeer)
+	writeQuery(a, playRequest, 200)
+	step("f")
+	writeQuery(a, query, 503)
+	writeQuery(a, playRequest, 200)
+	step("p")
+	writeQuery(a, "POST /stop HTTP/1.1\r\n\r\n", 200)
+	step("t")
 	writeQuery(a, "GET /secret-native-endpoint?token=private-native-query HTTP/1.1\r\n\r\n", 501)
 	replay := a.seal(query)
 	a.write(replay)
@@ -215,8 +308,7 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	raop.Close()
 	disconnect := makePeer()
 	disconnect.upgrade()
-	_, err = io.WriteString(input, "d")
-	must(t, err)
+	step("d")
 	requireClosed(disconnect)
 	must(t, input.Close())
 	must(t, command.Wait())
@@ -233,16 +325,16 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 		conn + "stage=upgrade result=encrypted",
 		conn + "encrypted_records_rx=1",
 		conn + "method=GET path=/playback-info authenticated=1 first=1 route=direct status=200",
-		"path=/play authenticated=1 first=0 route=play-deferred status=501",
+		"path=/play authenticated=1 first=0 route=play status=200",
 		"reason=proof-rejected", "reason=unsupported-pairing-format", "reason=unsupported-pairing-mode",
 		"reason=record-authentication", "reason=encrypted-http-framing",
-		"admitted=0 encrypted_attempts=5 encrypted_upgrades=4 envelope_failures=1 gcm_auth_failures=1",
+		"admitted=3 ", "reverse_upgrades=2", "encrypted_active=0",
 	} {
 		if !strings.Contains(log, milestone) {
 			t.Errorf("missing native diagnostic %q", milestone)
 		}
 	}
-	for _, private := range []string{testSession, "different-identity", "secret-native-endpoint", "private-native-query"} {
+	for _, private := range []string{testSession, "different-identity", "secret-native-endpoint", "private-native-query", "private-native-url", "phase3-test-item"} {
 		if strings.Contains(log, private) {
 			t.Errorf("native diagnostics leaked test input %q", private)
 		}

@@ -44,6 +44,9 @@ extern "C" void uxair_rtp_reset(void *p,int video,int reason,unsigned epoch) {
 extern "C" void uxair_rtp_packet(void *p,int video,unsigned codec,uint64_t timestamp,
                                 const uint8_t *data,int size,unsigned epoch) {
     Receiver& receiver=self(p);
+#ifdef UXAIR_DIRECT_BUILD
+    if (!video && receiver.direct_embedded_audio) return;
+#endif
     if(video && codec==2 && receiver.active_profile.codec!=MirrorCodec::ExperimentalHevc)return;
     receiver.enqueue(video!=0,codec,timestamp,data,size,epoch);
 }
@@ -328,45 +331,63 @@ void Receiver::stop() {
     if(raop) {raop_destroy(raop);raop=nullptr;}
     if(dnssd) {dnssd_destroy(dnssd);dnssd=nullptr;}
 #ifdef UXAIR_DIRECT_BUILD
+    direct.summarize();
     direct.reset();
 #endif
 }
 Receiver::~Receiver() {stop();}
 
 #ifdef UXAIR_DIRECT_BUILD
-const char *Receiver::direct_block_reason_locked() const {
+const char *Receiver::direct_block_reason_locked(bool embedded_audio) const {
     if(direct_cleanup_failed)return "cleanup-failed";
     if(direct_active)return "direct-active";
     if(ingress.closing)return "teardown";
     if(pairing.visible())return "pairing";
     if(mirror)return "mirroring";
+    // A Safari parent can negotiate RAOP without sending any audio. Preserve
+    // actively delivering RAOP and use only the admitted HLS audio timeline.
+    if(embedded_audio && has_audio && !audio_using_screen && !last_audio_arrival.load()) return nullptr;
     if(has_audio)return audio_using_screen?"mirroring-audio":"audio-only";
     return client.empty()?nullptr:"transport-reserved";
 }
-const char *Receiver::direct_block_reason() {
+const char *Receiver::direct_block_reason(bool embedded_audio) {
     std::lock_guard<std::mutex> lock(mutex);
-    return direct_block_reason_locked();
+    return direct_block_reason_locked(embedded_audio);
 }
-bool Receiver::reserve_direct() {
+bool Receiver::reserve_direct(bool embedded_audio) {
     std::lock_guard<std::mutex> lock(mutex);
-    if(direct_block_reason_locked()) return false;
+    if(direct_block_reason_locked(embedded_audio)) return false;
     direct_active=true;
+    direct_embedded_audio=embedded_audio;
+    if(embedded_audio) fprintf(stderr,"[direct-audio] source=embedded-hls dormant-raop=%d\n",int(has_audio.load()));
     ++stream_requests;
     return true;
 }
 void Receiver::release_direct(bool released) {
     std::lock_guard<std::mutex> lock(mutex);
     direct_active=false;
+    direct_embedded_audio=false;
     direct_cleanup_failed=!released;
 }
-extern "C" int uxair_direct_reverse(void *context,const char *owner,int fd,unsigned long token){return self(context).direct.bind_reverse(owner?owner:"",fd,uintptr_t(token))?1:0;}
 extern "C" void uxair_direct_lost(void *context,unsigned long token){self(context).direct.connection_lost(uintptr_t(token));}
-extern "C" int uxair_direct_request(void *context,const char *owner,const char *method,const char *target,const char *type,const char *body,int length,char **output,int *size,const char **mime,const char **reason) {
+extern "C" int uxair_direct_encrypted_reverse(void *context,const char *owner,const unsigned char *key,unsigned long token) {
+    return self(context).direct.bind_encrypted_reverse(owner,std::string(reinterpret_cast<const char*>(key),32),uintptr_t(token));
+}
+extern "C" int uxair_direct_next_event(void *context,unsigned long token,char *output,int capacity) {
+    std::string event;
+    const int result=self(context).direct.take_encrypted_event(uintptr_t(token),event);
+    if(result<=0) return result;
+    if(event.size()>size_t(capacity)) return -1;
+    memcpy(output,event.data(),event.size());
+    return int(event.size());
+}
+extern "C" int uxair_direct_request(void *context,const char *owner,const char *method,const char *target,const char *type,const char *body,int length,char **output,int *size,const char **mime,const char **reason,const unsigned char *key,unsigned long token) {
     Receiver& r=self(context);
     if(length<0||length>524288||(!body&&length))return 413;
     const bool play=target && !strcmp(target,"/play") && method && !strcmp(method,"POST");
-    const char *blocked=play?r.direct_block_reason():nullptr;
-    auto response=r.direct.request(owner?owner:"",method?method:"",target?target:"",type?type:"",body?std::string(body,size_t(length)):"",blocked!=nullptr);
+    const char *blocked=play?r.direct_block_reason(key!=nullptr):nullptr;
+    auto response=r.direct.request(owner?owner:"",method?method:"",target?target:"",type?type:"",body?std::string(body,size_t(length)):"",
+        blocked!=nullptr,key?std::string(reinterpret_cast<const char*>(key),32):std::string(),uintptr_t(token));
     *reason=response.reason;
     *size=int(response.body.size());*output=nullptr;
     if(*size){*output=static_cast<char*>(malloc(size_t(*size)));if(!*output){*size=0;return 500;}memcpy(*output,response.body.data(),size_t(*size));}
@@ -375,8 +396,9 @@ extern "C" int uxair_direct_request(void *context,const char *owner,const char *
     if(play) {
         static std::atomic<unsigned> starts{0};
         if(starts.load()<64 && starts.fetch_add(1)<64)
-            fprintf(stderr,"[direct-protocol] play status=%d admission=%s descriptor=%s queued=%d\n",
-                response.status,blocked?blocked:response.status==409?"session-conflict":"idle",response.descriptor,int(response.queued));
+            fprintf(stderr,"[direct-protocol] play status=%d admission=%s descriptor=%s queued=%d reason=%s\n",
+                response.status,blocked?blocked:response.status==409?"session-conflict":"idle",response.descriptor,int(response.queued),
+                response.reason?response.reason:"none");
     }
     return response.status;
 }

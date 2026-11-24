@@ -8,7 +8,12 @@
 #include <condition_variable>
 #include <atomic>
 enum class DirectCommandKind { Play, Pause, Resume, Seek, Stop };
-struct DirectCommand { DirectCommandKind kind; std::string uri; double position=0; bool position_seconds=false; };
+struct DirectCommand {
+    DirectCommandKind kind;
+    std::string uri;
+    double position=0;
+    bool position_seconds=false, encrypted=false, start_paused=false;
+};
 enum class DirectState { Idle, Loading, Playing, Paused, Ended, Error, Buffering };
 enum class DirectBackend { None, NativeUri, Bufferstream };
 const char *direct_backend_name(DirectBackend);
@@ -22,6 +27,7 @@ struct DirectSnapshot {
     DirectStage stage=DirectStage::Idle;DirectError error=DirectError::None;int64_t native_result=0;
     DirectBackend backend=DirectBackend::None;
     DirectError fallback_reason=DirectError::None;
+    bool seekable=false, backend_loaded=false, frame_observed=false, audio_fed=false;
     uint64_t media_gets=0,buffer_bytes=0;
     uint64_t callbacks=0,relay_requests=0,upstream_fetches=0,downloaded_bytes=0,relay_failures=0;
     int last_callback=-1;int64_t last_callback_value=0;
@@ -35,6 +41,7 @@ struct DirectReply {
     bool queued=false;
 };
 bool direct_uri_valid(const std::string& uri);
+bool direct_public_ipv4(uint32_t host_order);
 std::string direct_load_payload(const std::string& uri,const std::string& app,bool internal=false,DirectLoadContract contract=DirectLoadContract::ArgsHls);
 class DirectSession {
     std::thread reverse_thread_;std::atomic<bool> reverse_running_{false};int reverse_fd_=-1;uintptr_t reverse_token_=0;
@@ -42,18 +49,26 @@ class DirectSession {
     int64_t last_request_ms_=0;
     unsigned request_id_=0,pending_id_=0;std::string pending_url_,pending_data_;bool pending_done_=false;
     void reverse_loop();void close_reverse();
-    std::mutex mutex_;std::deque<DirectCommand> commands_;DirectSnapshot snapshot_;std::string owner_;
+    std::mutex mutex_;std::deque<DirectCommand> commands_;DirectSnapshot snapshot_;std::string owner_,controller_,media_uuid_;
+    uintptr_t encrypted_reverse_=0, play_connection_=0;
+    unsigned backend_attempts_=0, backend_loads_=0, backend_failures_=0, video_starts_=0, audio_starts_=0;
+    bool backend_reported_=false, frame_reported_=false, audio_reported_=false;
+    void event_locked(DirectState state);
 public:
     ~DirectSession();
     bool bind_reverse(const std::string&,int fd,uintptr_t token);
+    bool bind_encrypted_reverse(const std::string& owner,const std::string& controller,uintptr_t token);
+    int take_encrypted_event(uintptr_t token,std::string& body);
     void cancel_fetch();
     bool check_timeout(int64_t now_ms);
     void connection_lost(uintptr_t token);
     std::string sender_manifest(const std::string& uri);
     DirectReply request(const std::string& owner,const std::string& method,const std::string& target,
-                        const std::string& type,const std::string& body,bool busy=false);
+                        const std::string& type,const std::string& body,bool busy=false,
+                        const std::string& controller={},uintptr_t token=0);
     bool take(DirectCommand& command);
     void publish(DirectSnapshot snapshot);
+    void summarize();
     DirectSnapshot snapshot();
     void reset(bool keep_reverse=false);
 };

@@ -56,7 +56,7 @@ void DirectPlayer::event(int type,int64_t value,const char* message,void *user){
     default:break;}
 }
 DirectPlayer::~DirectPlayer(){close();}
-bool DirectPlayer::open(const std::string& uri,double position,int64_t now,DirectSession *session,bool seconds,DirectLoadContract contract,bool fixture_direct){
+bool DirectPlayer::open(const std::string& uri,double position,int64_t now,DirectSession *session,bool seconds,DirectLoadContract contract,bool fixture_direct,bool encrypted){
     close();state_=int(DirectState::Loading);session_=session;
     released_=true;fixture_direct_=fixture_direct;progress_samples_=0;frame_ready_=false;
     if(!direct_current_playtime || !direct_seek) {
@@ -67,8 +67,8 @@ bool DirectPlayer::open(const std::string& uri,double position,int64_t now,Direc
         return false;
     }
     const char *fcup=getenv("UXAIR_DIRECT_FCUP");
-    relay_.sender_manifest=session&&fcup&&!strcmp(fcup,"1")?[session](const std::string& url){return session->sender_manifest(url);}:std::function<std::string(const std::string&)>();
-    begin(DirectStage::Relay);auto began=clock_ms();const auto local=relay_.start(uri);result(DirectStage::Relay,!local.empty(),began);
+    relay_.sender_manifest=session&&!encrypted&&fcup&&!strcmp(fcup,"1")?[session](const std::string& url){return session->sender_manifest(url);}:std::function<std::string(const std::string&)>();
+    begin(DirectStage::Relay);auto began=clock_ms();const auto local=relay_.start(uri,!encrypted);result(DirectStage::Relay,!local.empty(),began);
     if(local.empty()){fail(DirectError::RelayStart);cleanup();return false;}
     const char *lan=getenv("UXAIR_DIRECT_LAN");
     if(fixture_direct&&!direct_fixture_uri_valid(uri,lan?lan:"")){fail(DirectError::Payload);cleanup();return false;}
@@ -125,6 +125,9 @@ DirectSnapshot DirectPlayer::snapshot() const {
     DirectSnapshot s;s.state=DirectState(state_.load());s.stage=DirectStage(stage_.load());s.error=DirectError(error_.load());s.native_result=native_result_;
     s.duration=duration_ms_.load()/1000.0;s.width=width_;s.height=height_;s.callbacks=callbacks_;s.last_callback=last_callback_;s.last_callback_value=last_callback_value_;
     s.backend=DirectBackend::NativeUri;s.media_gets=relay_.media_gets;
+    s.seekable=loaded_&&direct_seek&&s.duration>0;
+    s.backend_loaded=loaded_;
+    s.frame_observed=frame_ready_;
     s.relay_requests=relay_.incoming_requests;s.upstream_fetches=relay_.requests;s.downloaded_bytes=relay_.bytes;s.relay_failures=relay_.failures;return s;
 }
 DirectSnapshot DirectPlayer::tick(int64_t now){

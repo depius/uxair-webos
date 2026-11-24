@@ -14,6 +14,7 @@ bool DirectPlayback::open(const DirectCommand& play, int64_t now, DirectSession&
     prior_native_ = DirectSnapshot();
     fallback_reason_ = DirectError::None;
     native_proved_ = pause_requested_ = pending_seek_ = false;
+    pause_requested_=play.start_paused;
     opened_at_ = now;
     strategy_ = direct_strategy();
     std::fprintf(stderr, "[direct-player] accepted-session strategy=%s\n",
@@ -24,7 +25,7 @@ bool DirectPlayback::open(const DirectCommand& play, int64_t now, DirectSession&
     } else {
         backend_ = DirectBackend::NativeUri;
         const bool accepted = native_.open(play.uri, play.position, now, &session,
-                                           play.position_seconds, direct_configured_contract());
+                                           play.position_seconds, direct_configured_contract(),false,play.encrypted);
         status_ = native_.snapshot();
         if (!accepted && strategy_ == DirectStrategy::Auto) fallback(status_, status_.error, now);
     }

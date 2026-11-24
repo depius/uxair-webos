@@ -272,7 +272,7 @@ void video_handshake(Receiver& receiver, int fd, unsigned short port, const std:
     control_envelope[35]=64;
     send_request(fd,"POST /fp-setup2 HTTP/1.1",session+bytes,control_envelope).expect("HTTP/1.1",470);
 }
-void pairing_routes(Receiver& receiver, unsigned short port) {
+int pairing_routes(Receiver& receiver, unsigned short port) {
     const std::string session="x-apple-session-id: "+std::string(owner)+"\r\nSession: WIRE-RTSP-PRIVATE\r\n";
     const std::string setup="POST /pair-setup RTSP/1.0", verify="POST /pair-verify RTSP/1.0";
     const std::string type="Content-Type: application/octet-stream\r\n";
@@ -340,8 +340,14 @@ void pairing_routes(Receiver& receiver, unsigned short port) {
     raop_verified.expect("RTSP/1.0",200);
     assert(raop_verified.headers.find("CSeq: 3")!=std::string::npos && raop_verified.body.empty());
     close(fd);
+
+    fd=connect_to(port);
+    const auto later=send_request(fd,http_verify,session+type,verify_start);
+    later.expect("HTTP/1.1",200);
+    send_request(fd,http_verify,session+type,client_proof(later,ephemeral,identity)).expect("HTTP/1.1",200);
     ed25519_key_destroy(identity);
     x25519_key_destroy(ephemeral);
+    return fd;
 }
 
 void split_request_line() {
@@ -370,27 +376,72 @@ int main(int argc, char **argv) {
     const auto port=raop_get_port(receiver.raop);
     assert(port);
     if (argc == 2 && !strcmp(argv[1], "--encrypted-fixture")) {
-        unsigned char seed[32], key[32], encoded[45];
-        memset(seed, 0x42, sizeof(seed));
-        EVP_PKEY *identity = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr, seed, sizeof(seed));
-        size_t length = sizeof(key);
-        assert(identity && EVP_PKEY_get_raw_public_key(identity, key, &length) == 1 && length == sizeof(key));
-        EVP_PKEY_free(identity);
-        assert(EVP_EncodeBlock(encoded, key, sizeof(key)) == 44);
-        {
+        for(int value: {0x42,0x43}) {
+            unsigned char seed[32], key[32], encoded[45];
+            memset(seed,value,sizeof(seed));
+            EVP_PKEY *identity=EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519,nullptr,seed,sizeof(seed));
+            size_t length=sizeof(key);
+            assert(identity && EVP_PKEY_get_raw_public_key(identity,key,&length)==1 && length==sizeof(key));
+            EVP_PKEY_free(identity);
+            assert(EVP_EncodeBlock(encoded,key,sizeof(key))==44);
             std::lock_guard<std::mutex> lock(receiver.mutex);
             receiver.keys.insert(reinterpret_cast<const char *>(encoded));
         }
         printf("UXAIR_PORT=%u\n", port);
         fflush(stdout);
-        while (getchar() == 'd') receiver.disconnect();
+        for(int step; (step=getchar())!=EOF;) {
+            DirectCommand action;
+            auto snapshot=receiver.direct.snapshot();
+            if(step=='d') receiver.disconnect();
+            else if(step=='b'||step=='i') {
+                receiver.has_audio=true;
+                receiver.last_audio_arrival=step=='b'?1:0;
+            }
+            else {
+                assert(receiver.direct.take(action));
+                if(step=='p'||step=='f') {
+                    assert(action.kind==DirectCommandKind::Play && action.encrypted && receiver.reserve_direct(true));
+                    assert(action.uri=="https://media.example/control.m3u8?token=private-native-url");
+                    assert(action.position_seconds && action.position==1.5);
+                    snapshot.backend=DirectBackend::Bufferstream;
+                    if(step=='p') {
+                        snapshot.state=DirectState::Playing;
+                        snapshot.stage=DirectStage::Playing;
+                        snapshot.position=1.5;
+                        snapshot.duration=12;
+                        snapshot.backend_loaded=true;
+                        snapshot.seekable=snapshot.frame_observed=snapshot.audio_fed=true;
+                    } else {
+                        snapshot.state=DirectState::Error;
+                        snapshot.error=DirectError::FetchFailed;
+                        receiver.release_direct(true);
+                    }
+                } else if(step=='a') {
+                    assert(action.kind==DirectCommandKind::Pause);
+                    snapshot.state=DirectState::Paused;
+                } else if(step=='r') {
+                    assert(action.kind==DirectCommandKind::Resume);
+                    snapshot.state=DirectState::Playing;
+                } else if(step=='s') {
+                    assert(action.kind==DirectCommandKind::Seek && action.position==4);
+                    snapshot.position=action.position;
+                } else {
+                    assert(step=='t' && action.kind==DirectCommandKind::Stop);
+                    snapshot.state=DirectState::Ended;
+                    receiver.release_direct(true);
+                }
+                receiver.direct.publish(snapshot);
+            }
+            printf("UXAIR_STEP=%c\n",step);
+            fflush(stdout);
+        }
         receiver.stop();
         assert(!unlink((std::string(path)+"/server.key").c_str()));
         assert(!unlink((std::string(path)+"/device.id").c_str()));
         assert(!rmdir(path));
         return 0;
     }
-    pairing_routes(receiver,port);
+    const int paired=pairing_routes(receiver,port);
     exchange(port,"POST /fp-setup2 HTTP/1.1","X-Apple-Session-ID: "+std::string(owner)+"\r\n").expect("HTTP/1.1",470);
     const uint64_t expected=(UXPLAY_PINNED_FEATURES | 17) & ~(1ULL << 2);
     assert(dnssd_get_airplay_features(receiver.dnssd)==expected);
@@ -432,17 +483,18 @@ int main(int argc, char **argv) {
     const auto descriptor=encode(play);
     const std::string type="content-type: application/octet-stream\r\n";
     const std::string session="x-apple-session-id: "+std::string(owner)+"\r\n";
-    exchange(port,"POST /play HTTP/1.1",type,descriptor).expect("HTTP/1.1",400);
-    exchange(port,"POST /play HTTP/1.1",session+type,"bplist00bad").expect("HTTP/1.1",400);
+    exchange(port,"POST /play HTTP/1.1",session+type,descriptor).expect("HTTP/1.1",470);
+    exchange(port,"POST /reverse HTTP/1.1",session+"Connection: Upgrade\r\nUpgrade: PTTH/1.0\r\n").expect("HTTP/1.1",470);
+    send_request(paired,"POST /play HTTP/1.1",session+type,"bplist00bad").expect("HTTP/1.1",400);
     receiver.has_audio=true;
-    exchange(port,"POST /play HTTP/1.1",session+type,descriptor).expect("HTTP/1.1",409);
+    send_request(paired,"POST /play HTTP/1.1",session+type,descriptor).expect("HTTP/1.1",409);
     assert(!receiver.direct.take(pending));
     receiver.has_audio=false;
     receiver.mirror=true;
-    exchange(port,"POST /play HTTP/1.1",session+type,descriptor).expect("HTTP/1.1",409);
+    send_request(paired,"POST /play HTTP/1.1",session+type,descriptor).expect("HTTP/1.1",409);
     receiver.mirror=false;
     unsetenv("UXAIR_DIRECT_VIDEO");
-    const auto accepted=exchange(port,"POST /play RTSP/1.0",cseq+type,descriptor,11);
+    const auto accepted=send_request(paired,"POST /play RTSP/1.0",cseq+type,descriptor,11);
     accepted.expect("RTSP/1.0",200);
     assert(accepted.headers.find("CSeq: 21")!=std::string::npos);
     auto feedback=decode(exchange(port,"GET /playback-info HTTP/1.1",session));
@@ -460,11 +512,12 @@ int main(int argc, char **argv) {
     receiver.release_direct(true);
     exchange(port,"GET /playback-info RTSP/1.0",cseq).expect("RTSP/1.0",503);
 
-    exchange(port,"POST /play HTTP/1.1",session+"Content-Type: text/parameters\r\n",
+    send_request(paired,"POST /play HTTP/1.1",session+"Content-Type: text/parameters\r\n",
              "Content-Location: "+uri+"\r\n").expect("HTTP/1.1",200);
     exchange(port,"POST /stop RTSP/1.0",cseq).expect("RTSP/1.0",200);
     assert(receiver.direct.take(pending) && pending.kind==DirectCommandKind::Stop);
     receiver.direct.reset();
+    close(paired);
     exchange(port,"POST /pair-pin-start RTSP/1.0","CSeq: 22\r\n").expect("RTSP/1.0",200);
     assert(!receiver.pin().empty() && !receiver.direct.take(pending));
 

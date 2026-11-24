@@ -24,7 +24,7 @@ class DirectPlayer {
     static void event(int,int64_t,const char*,void*);
 public:
     ~DirectPlayer();
-    bool open(const std::string& uri,double start_position,int64_t now,DirectSession *session=nullptr,bool seconds=false,DirectLoadContract contract=DirectLoadContract::ArgsHls,bool fixture_direct=false);
+    bool open(const std::string& uri,double start_position,int64_t now,DirectSession *session=nullptr,bool seconds=false,DirectLoadContract contract=DirectLoadContract::ArgsHls,bool fixture_direct=false,bool encrypted=false);
     bool control(const DirectCommand& command);
     DirectSnapshot tick(int64_t now);
     DirectSnapshot snapshot() const;

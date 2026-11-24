@@ -154,10 +154,13 @@ void uxair_trace_summary(const uxair_wire_stats_t *stats, unsigned port, const c
     fprintf(stderr, "[airplay-wire-summary] point=%s service=airplay+raop port=%u connections=%u video=%u "
             "audio_setup=%u pairing_failures=%u unknown=%u admitted=%u encrypted_attempts=%u "
             "encrypted_upgrades=%u envelope_failures=%u gcm_auth_failures=%u encrypted_records=%u "
-            "encrypted_requests=%u admission_attempts=%u\n", point, port,
+            "encrypted_requests=%u admission_attempts=%u reverse_upgrades=%u reverse_failures=%u "
+            "reverse_events=%u encrypted_active=%u\n", point, port,
             stats->connections, stats->video, stats->audio, stats->pair_failures, stats->unknown, stats->admitted,
             stats->crypto_attempts, stats->crypto_upgrades, stats->crypto_envelope_failures,
-            stats->crypto_tag_failures, stats->crypto_records, stats->crypto_requests, stats->admission_attempts);
+            stats->crypto_tag_failures, stats->crypto_records, stats->crypto_requests, stats->admission_attempts,
+            stats->reverse_upgrades, stats->reverse_failures, stats->reverse_events,
+            stats->crypto_upgrades-stats->crypto_closed);
 }
 
 void uxair_trace_exchange(uxair_wire_stats_t *stats, unsigned connection, unsigned port, unsigned sequence,

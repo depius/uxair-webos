@@ -30,12 +30,8 @@ struct WriteBuffer {std::string data;size_t limit;};
 static size_t write_data(char *data,size_t size,size_t n,void *ptr){auto& b=*static_cast<WriteBuffer*>(ptr);if(n&&size>SIZE_MAX/n)return 0;const size_t count=size*n;if(count>b.limit-b.data.size())return 0;b.data.append(data,count);return count;}
 bool HlsRelay::address_allowed(uint32_t address) const {
     uint32_t ip=ntohl(address);unsigned a=ip>>24,b=(ip>>16)&255;
-    if(!a||a==127||a>=224||(a==169&&b==254)||(a==198&&(b==18||b==19)))return false;
-    const unsigned prefix=ip>>8;
-    if(prefix==0xc00000||prefix==0xc00002||prefix==0xc05863||prefix==0xc63364||prefix==0xcb0071)return false;
-    const bool private_ip=a==10||(a==172&&b>=16&&b<=31)||(a==192&&b==168);
-    if(a==100&&b>=64&&b<=127)return false;
-    if(!private_ip)return true;
+    if(direct_public_ipv4(ip))return true;
+    if(!(a==10||(a==172&&b>=16&&b<=31)||(a==192&&b==168)))return false;
     in_addr allowed={};return !allowed_lan_.empty()&&inet_pton(AF_INET,allowed_lan_.c_str(),&allowed)==1&&allowed.s_addr==address;
 }
 static curl_socket_t open_socket(void *ctx,curlsocktype purpose,struct curl_sockaddr *address){
@@ -193,7 +189,7 @@ void HlsRelay::serve(){
         {std::lock_guard<std::mutex> lock(clients_mutex_);clients_.erase(std::remove(clients_.begin(),clients_.end(),fd),clients_.end());close(fd);}
     }
 }
-bool HlsRelay::begin() {
+bool HlsRelay::begin(bool allow_configured_lan) {
     stop();
     diagnostic_records_=0;
     bytes=requests=failures=incoming_requests=media_gets=0;
@@ -201,14 +197,14 @@ bool HlsRelay::begin() {
     static CURLcode initialized=CURLE_FAILED_INIT;
     std::call_once(init,[]{initialized=curl_global_init(CURL_GLOBAL_DEFAULT);});
     if(initialized!=CURLE_OK){trace("curl-initialize",int(initialized));return false;}
-    const char *lan=getenv("UXAIR_DIRECT_LAN");
+    const char *lan=allow_configured_lan?getenv("UXAIR_DIRECT_LAN"):nullptr;
     allowed_lan_=lan?lan:"";
     trace("start-lan-exception",allowed_lan_.empty()?0:1);
     running_=true;
     return true;
 }
-std::string HlsRelay::start(const std::string& uri){
-    if(!direct_uri_valid(uri)||!begin())return {};
+std::string HlsRelay::start(const std::string& uri,bool allow_configured_lan){
+    if(!direct_uri_valid(uri)||!begin(allow_configured_lan))return {};
     unsigned char secret[16];const int random=RAND_bytes(secret,sizeof(secret));
     if(random!=1){trace("random",random);return {};}
     token_.clear();const char hex[]="0123456789abcdef";for(auto c:secret){token_+=hex[c>>4];token_+=hex[c&15];}
