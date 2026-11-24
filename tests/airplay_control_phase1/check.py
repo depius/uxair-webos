@@ -71,7 +71,7 @@ def main():
             if os.environ.get("GOARCH") == "arm":
                 env.update(GOOS="linux", GOARCH="arm", GOARM="7,softfloat")
             subprocess.run(
-                [args.go, "build", "-buildmode=c-shared", "-trimpath", "-ldflags=-s -w",
+                [args.go, "build", "-buildmode=c-shared", "-tags=netgo", "-trimpath", "-ldflags=-s -w",
                  "-o", str(args.shared_output.resolve()), "./cmd/shared"],
                 cwd=project, env=env, check=True,
             )
