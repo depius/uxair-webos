@@ -24,7 +24,7 @@ The prior B7 jail ran as UID 5999 and GID 5000. UID 1001 is the reported install
 
    ```powershell
    $tvIp = '192.168.1.27'
-   ssh "root@$tvIp" 'id=com.github.depius.uxair.dev; for base in "/var/palm/jail/$id" ""; do for r in /media/developer/apps/usr/palm/applications /media/cryptofs/apps/usr/palm/applications /media/developer/apps/var/lib; do p=$base$r/$id/state/uxair.log; if [ -f "$p" ]; then grep -E "^\[(startup|airplay-wire|airplay-wire-summary|direct-player|direct-bufferstream|direct-protocol|hls-relay)\]" "$p" | tail -230; fi; done; done'
+   ssh "root@$tvIp" 'id=com.github.depius.uxair.dev; for base in "/var/palm/jail/$id" ""; do for r in /media/developer/apps/usr/palm/applications /media/cryptofs/apps/usr/palm/applications /media/developer/apps/var/lib; do p=$base$r/$id/state/uxair.log; if [ -f "$p" ]; then grep -E "^\[(startup|airplay-wire|airplay-wire-summary|video-crypto|video-control|reverse-channel|direct-player|direct-bufferstream|direct-protocol|hls-relay|media-init|media-state)\]" "$p" | tail -230; fi; done; done'
    ```
 
 The development build defaults to Direct Video on and BUFFERSTREAM. Explicit `UXAIR_DIRECT_BACKEND=native` runs the URI experiment, and explicit `UXAIR_DIRECT_BACKEND=auto` attempts it before BUFFERSTREAM. The isolated six-case probe is available through the scripts in tools. Use the TV launcher for the retest so the app runs with its native credentials.

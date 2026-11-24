@@ -4,6 +4,7 @@
 #include <StarfishMediaAPIs.h>
 #include <plist/plist.h>
 #include <cassert>
+#include <cstdio>
 #include <cstdlib>
 
 void (*StarfishMediaAPIs::callback)(int,int64_t,const char*,void*) = nullptr;
@@ -60,16 +61,17 @@ int main() {
     const auto stream = plist_dict_get_item(option, "externalStreamingInfo");
     const auto contents = plist_dict_get_item(stream, "contents");
     const auto codec = plist_dict_get_item(contents, "codec");
-    const auto pcm = plist_dict_get_item(stream, "pcmInfo");
+    const auto pcm = plist_dict_get_item(contents, "pcmInfo");
     assert(string_field(arg, "mediaTransportType") == "BUFFERSTREAM");
     assert(string_field(option, "appId") == UXAIR_DEV_APP_ID);
     assert(string_field(codec, "video") == "H264" && string_field(codec, "audio") == "PCM");
-    assert(string_field(stream, "format") == "RAW" && string_field(stream, "provider") == "Chrome");
+    assert(string_field(contents, "format") == "RAW" && string_field(contents, "provider") == "Chrome");
     assert(string_field(pcm, "format") == "S16LE");
+    assert(plist_get_node_type(plist_dict_get_item(pcm, "sampleRate")) == PLIST_REAL);
     assert(plist_get_node_type(plist_dict_get_item(contents, "esInfo")) == PLIST_DICT);
     assert(plist_get_node_type(plist_dict_get_item(stream, "bufferingCtrInfo")) == PLIST_DICT);
     assert(!plist_dict_get_item(root, "uri") && !plist_dict_get_item(arg, "uri"));
-    for (auto node : {root, arg, option, stream}) assert(!plist_dict_get_item(node, "plugins"));
+    for (auto node : {root, arg, option, stream, contents}) assert(!plist_dict_get_item(node, "plugins"));
     plist_free(root);
 
     StarfishMediaAPIs::unload_exception = "unload failed for https://SECRET.invalid/?token=PRIVATE";

@@ -20,7 +20,7 @@ for expected in ('foreground begin available=1', 'foreground end result=1', 'for
     assert expected in log, expected
 for expected in ('contract=BUFFERSTREAM acb-role=MSE source=demuxed-hls video=H264 audio=PCM uri=absent request-plugins=absent',
                  'externalStreamingInfo.contents.codec.video:string',
-                 'externalStreamingInfo.pcmInfo.sampleRate:real',
+                 'externalStreamingInfo.contents.pcmInfo.sampleRate:real',
                  'backend=bufferstream stage=load exception=missing-plugins',
                  'backend=bufferstream stage=unload exception=std-exception'):
     assert expected in bufferstream_log, expected
