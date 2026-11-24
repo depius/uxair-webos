@@ -52,7 +52,14 @@ std::string attribute(const std::string& line, const char* key) {
 
 double variant_bandwidth(const std::string& tag) {
     const auto codecs = attribute(tag, "CODECS");
-    if (!codecs.empty() && !(starts(codecs, "avc1.") && codecs.find(",mp4a.40.2") != std::string::npos)) return 0;
+    if (!codecs.empty()) {
+        const auto comma = codecs.find(',');
+        if (comma == std::string::npos || codecs.find(',', comma + 1) != std::string::npos) return 0;
+        const auto first_codec = codecs.substr(0, comma);
+        const auto second_codec = codecs.substr(comma + 1);
+        if (!((starts(first_codec, "avc1.") && second_codec == "mp4a.40.2") ||
+              (first_codec == "mp4a.40.2" && starts(second_codec, "avc1.")))) return 0;
+    }
     if (!attribute(tag, "AUDIO").empty() || !attribute(tag, "VIDEO").empty()) return 0;
     const auto resolution = attribute(tag, "RESOLUTION");
     if (!resolution.empty()) {

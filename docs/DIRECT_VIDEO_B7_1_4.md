@@ -19,7 +19,7 @@ The prior B7 jail ran as UID 5999 and GID 5000. UID 1001 is the reported install
    ```
 
 2. Confirm the complete UxAir UI and Magic Remote navigation. Pick **UxAir Dev** from the iPhone and confirm that the PIN is visible on the TV. Pair, close, and relaunch to check that the development app reuses the same pairing and settings.
-3. Start with the receiver idle. In Safari, use the AirPlay control on an unprotected H.264/AAC HLS video and select **UxAir Dev**. No fixture or SSH setup is needed for this test. Auto tries Native URI first and can switch once to BUFFERSTREAM. Check moving picture, audio sync, pause, seek and stop, and then try H.264/HEVC mirroring and AirPlay audio. The TV test is what establishes playback. BUFFERSTREAM supports muxed MPEG-TS VOD and seeks to the preceding independently decodable segment.
+3. Start with the receiver idle. In Safari, use the AirPlay control on an unprotected H.264/AAC HLS video and select **UxAir Dev**. No fixture or SSH setup is needed for this test. Auto tries Native URI first and can switch once to BUFFERSTREAM. Check moving picture, audio sync, pause, seek and stop, and then try H.264/HEVC mirroring and AirPlay audio. The TV test is what establishes playback. BUFFERSTREAM supports muxed MPEG-TS VOD and seeks to the preceding independently decodable segment. [Public 720p H.264/AAC test playlist](https://test-streams.mux.dev/x36xhzz/url_0/193039199_mp4_h264_aac_hd_7.m3u8)
 4. If the startup Diagnostics page appears, report its effective UID and filesystem error. If the UI appears and playback fails, use the filter below before switching to mirroring or audio. Include the picture/audio result and the filtered lines.
 
    ```powershell
