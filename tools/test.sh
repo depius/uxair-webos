@@ -35,6 +35,8 @@ python3 tests/media_failure_path_test.py
 if [[ "${1:-}" == "--diagnostics-only" ]]; then
   exit 0
 fi
+
+bash tests/direct_wire_test.sh
 c++ -std=c++11 -g -fsanitize=address,undefined -Isrc \
   tests/state_test.cpp src/settings.cpp src/usage_stats.cpp -o build/tests/state-test
 c++ -std=c++11 -g -fsanitize=address,undefined -Isrc tests/usage_stats_test.cpp src/usage_stats.cpp -o build/tests/usage-stats-test
@@ -166,5 +168,3 @@ c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc \
   $(pkg-config --libs libplist-2.0 libcurl libavformat libavcodec libavutil libswresample) -lcrypto \
   -o build/tests/direct-bufferstream-test
 timeout 110s python3 tests/direct_bufferstream_network_test.py
-
-bash tests/direct_wire_test.sh
