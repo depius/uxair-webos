@@ -22,7 +22,7 @@ int64_t last_video_pts = -1, last_audio_pts = -1;
 // Mock the unavailable television URI player. The fallback uses real HLS,
 // MPEG-TS demux and AAC decode, with the captured Feed calls below.
 DirectPlayer::~DirectPlayer() { close(); }
-bool DirectPlayer::open(const std::string&,double,int64_t,DirectSession*,bool,DirectLoadContract,bool) {
+bool DirectPlayer::open(const std::string&,double,int64_t,DirectSession*,bool,DirectLoadContract,bool,bool) {
     assert(!native_open && !decoder_open);
     ++native_attempts;
     native_open=true;

@@ -145,7 +145,8 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 		must(t, err)
 		req.Body.Close()
 		if req.Method != "POST" || req.URL.Path != "/event" || req.Header.Get("X-Apple-Session-ID") != testSession ||
-			!bytes.Contains(body, []byte("<key>state</key><string>"+state+"</string>")) {
+			!bytes.Contains(body, []byte("<key>state</key><string>"+state+"</string>")) ||
+			!bytes.Contains(body, []byte("<key>sessionID</key><integer>1</integer>")) {
 			t.Fatalf("unexpected encrypted reverse event for %s", state)
 		}
 		p.write(p.seal("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))

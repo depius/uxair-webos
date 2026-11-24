@@ -658,7 +658,8 @@ int main(int argc,char **argv) {
                 }
                 direct_tick=now;
                 const bool abort=stop || action==Action::Back || action==Action::Exit || action==Action::Quit;
-                const auto status=abort?direct_player.snapshot():direct_player.tick(now);
+                auto status=abort?direct_player.snapshot():direct_player.tick(now);
+                status.natural_end=!abort&&status.state==DirectState::Ended;
                 if(abort ||
                    status.state==DirectState::Ended || status.state==DirectState::Error) {
                     finish_direct(status);

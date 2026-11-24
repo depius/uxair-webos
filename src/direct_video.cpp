@@ -351,10 +351,13 @@ bool DirectSession::take(DirectCommand& command){std::lock_guard<std::mutex> l(m
 const char *direct_state_name(DirectState s){switch(s){case DirectState::Loading:case DirectState::Buffering:return "loading";case DirectState::Playing:return "playing";case DirectState::Paused:return "paused";case DirectState::Ended:case DirectState::Idle:return "stopped";default:return "stopped";}}
 void DirectSession::event_locked(DirectState state) {
     if (!reverse_running_ && !encrypted_reverse_) return;
-    std::string event="<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>category</key><string>video</string><key>state</key><string>";
+    std::string event="<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>category</key><string>video</string>";
+    if(encrypted_reverse_) event+="<key>sessionID</key><integer>1</integer>";
+    event+="<key>state</key><string>";
     event+=direct_state_name(state);
     event+="</string>";
     if(state==DirectState::Error) event+="<key>reason</key><string>error</string>"+diagnostic_plist(snapshot_);
+    else if(state==DirectState::Ended&&snapshot_.natural_end) event+="<key>reason</key><string>ended</string>";
     event+="</dict></plist>";
     if(events_.size()>=16) events_.pop_front();
     events_.push_back(std::move(event));

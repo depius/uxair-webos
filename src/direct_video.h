@@ -27,7 +27,7 @@ struct DirectSnapshot {
     DirectStage stage=DirectStage::Idle;DirectError error=DirectError::None;int64_t native_result=0;
     DirectBackend backend=DirectBackend::None;
     DirectError fallback_reason=DirectError::None;
-    bool seekable=false, backend_loaded=false, frame_observed=false, audio_fed=false;
+    bool seekable=false, backend_loaded=false, frame_observed=false, audio_fed=false, natural_end=false;
     uint64_t media_gets=0,buffer_bytes=0;
     uint64_t callbacks=0,relay_requests=0,upstream_fetches=0,downloaded_bytes=0,relay_failures=0;
     int last_callback=-1;int64_t last_callback_value=0;
