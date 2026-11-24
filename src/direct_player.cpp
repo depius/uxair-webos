@@ -1,4 +1,5 @@
 #include "direct_player.h"
+#include "direct_starfish_error.h"
 #include "identity.h"
 #include <StarfishMediaAPIs.h>
 #include <AcbAPI.h>
@@ -57,7 +58,8 @@ void DirectPlayer::event(int type,int64_t value,const char* message,void *user){
 }
 DirectPlayer::~DirectPlayer(){close();}
 bool DirectPlayer::open(const std::string& uri,double position,int64_t now,DirectSession *session,bool seconds,DirectLoadContract contract,bool fixture_direct,bool encrypted){
-    close();state_=int(DirectState::Loading);session_=session;
+    if (!close()) { fail(DirectError::CleanupFailed); return false; }
+    state_=int(DirectState::Loading);session_=session;
     released_=true;fixture_direct_=fixture_direct;progress_samples_=0;frame_ready_=false;
     if(!direct_current_playtime || !direct_seek) {
         fprintf(stderr,"[direct-player] uri-abi playtime=%d seek=%d\n",
@@ -95,9 +97,25 @@ bool DirectPlayer::open(const std::string& uri,double position,int64_t now,Direc
     began=clock_ms();fprintf(stderr,"[direct-player] foreground begin available=%d\n",int(direct_notify_foreground!=nullptr));
     const int foreground=direct_notify_foreground?int(direct_notify_foreground(api_)):-1;
     fprintf(stderr,"[direct-player] foreground end result=%d ms=%lld\n",foreground,(long long)(clock_ms()-began));
-    fprintf(stderr,"[direct-player] load-schema contract=%s source=%s uri=string scheme=http suffix=%s app-id=dev media-id=separate-binding fields=%s\n",
+    fprintf(stderr,"[direct-player] load-schema api=StarfishMediaAPIs::Load contract=%s validation=experimental acb-role=VIDEO source=%s uri=string scheme=http suffix=%s app-id=dev media-id=separate-binding request-plugins=absent fields=%s\n",
         direct_contract_name(contract),fixture_direct?"fixture-lan":"loopback-relay",fixture_direct&&uri.find("probe.mp4")!=std::string::npos?"mp4":"m3u8",direct_native_json_summary(payload.c_str()).c_str());
-    begin(DirectStage::Load);began=clock_ms();const bool accepted=api_->Load(payload.c_str(),event,reinterpret_cast<void*>(context_id_));result(DirectStage::Load,accepted,began);
+    begin(DirectStage::Load);began=clock_ms();
+    bool accepted;
+    try {
+        accepted = api_->Load(payload.c_str(), event, reinterpret_cast<void*>(context_id_));
+    } catch (const std::bad_alloc&) {
+        throw;
+    } catch (const std::exception& error) {
+        direct_starfish_exception("native-uri", "load", error);
+        native_load_uncertain_ = true;
+        result(DirectStage::Load, -1, began);
+        // A synchronous vendor callback may have changed the reported stage.
+        stage_ = int(DirectStage::Load);
+        fail(DirectError::NativeError, -1);
+        cleanup();
+        return false;
+    }
+    result(DirectStage::Load,accepted,began);
     fprintf(stderr,"[direct-player] load-return=%d readiness=await-callback network=unproven\n",int(accepted));
     native_load_accepted_=accepted;
     if(!accepted&&state_!=int(DirectState::Error))fail(DirectError::LoadRejected);
@@ -173,10 +191,29 @@ DirectSnapshot DirectPlayer::tick(int64_t now){
 bool DirectPlayer::cleanup(){
     {std::lock_guard<std::mutex> lock(context_mutex);contexts.erase(context_id_);context_id_=0;}
     if(session_)session_->cancel_fetch();relay_.stop();session_=nullptr;
-    if(api_){auto began=clock_ms();fprintf(stderr,"[direct-player] unload begin\n");const bool value=api_->Unload();if(native_load_accepted_&&!value)released_=false;fprintf(stderr,"[direct-player] unload end result=%d ms=%lld\n",int(value),(long long)(clock_ms()-began));fprintf(stderr,"[direct-player] destroy begin\n");began=clock_ms();delete api_;api_=nullptr;fprintf(stderr,"[direct-player] destroy end ms=%lld\n",(long long)(clock_ms()-began));}
+    if (api_) {
+        auto began = clock_ms();
+        fprintf(stderr, "[direct-player] unload begin\n");
+        bool unloaded = false;
+        try {
+            unloaded = api_->Unload();
+        } catch (const std::bad_alloc&) {
+            throw;
+        } catch (const std::exception& error) {
+            direct_starfish_exception("native-uri", "unload", error);
+            released_ = false;
+        }
+        if (!unloaded && (native_load_accepted_ || native_load_uncertain_)) released_ = false;
+        fprintf(stderr, "[direct-player] unload end result=%d ms=%lld\n", int(unloaded), (long long)(clock_ms()-began));
+        fprintf(stderr, "[direct-player] destroy begin\n");
+        began = clock_ms();
+        delete api_;
+        api_ = nullptr;
+        fprintf(stderr, "[direct-player] destroy end ms=%lld\n", (long long)(clock_ms()-began));
+    }
     if(acb_){auto began=clock_ms();fprintf(stderr,"[direct-player] acb-unloaded begin\n");const auto unloaded=AcbAPI_setState(acb_,APPSTATE_FOREGROUND,PLAYSTATE_UNLOADED,&task_);fprintf(stderr,"[direct-player] acb-unloaded end result=%d ms=%lld\n",unloaded,(long long)(clock_ms()-began));began=clock_ms();fprintf(stderr,"[direct-player] acb-finalize begin\n");const auto value=AcbAPI_finalize(acb_);fprintf(stderr,"[direct-player] acb-finalize end result=%d ms=%lld\n",value,(long long)(clock_ms()-began));AcbAPI_destroy(acb_);acb_=0;}
     {std::lock_guard<std::mutex> lock(info_mutex_);video_info_.clear();info_pending_=false;}
-    loaded_=false;started_=acb_playing_=sink_attached_=native_load_accepted_=false;
+    loaded_=false;started_=acb_playing_=sink_attached_=native_load_accepted_=native_load_uncertain_=false;
     return released_;
 }
 bool DirectPlayer::close(){

@@ -16,7 +16,7 @@ public:
     bool open(const DirectCommand& play, int64_t now, DirectSession* session);
     bool control(const DirectCommand& command, int64_t now);
     DirectSnapshot tick(int64_t now);
-    void close();
+    bool close();
 
 private:
     // One segment being fed and one being prepared. The worker waits before

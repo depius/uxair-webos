@@ -37,7 +37,7 @@ static const char *node_type(plist_t n){
     case PLIST_STRING:return "string";case PLIST_UINT:return "integer";case PLIST_REAL:return "real";case PLIST_BOOLEAN:return "boolean";default:return "other";}
 }
 static void describe(plist_t n,const std::string& prefix,std::ostringstream& out,unsigned depth,unsigned& count){
-    if(!n||depth>4||count++>=48)return;
+    if(!n||depth>8||count++>=64)return;
     out<<prefix<<":"<<node_type(n);
     if(plist_get_node_type(n)==PLIST_DICT)out<<"("<<plist_dict_get_size(n)<<")";
     if(plist_get_node_type(n)==PLIST_ARRAY)out<<"("<<plist_array_get_size(n)<<")";
@@ -48,7 +48,17 @@ static void describe(plist_t n,const std::string& prefix,std::ostringstream& out
     }
     out<<" ";
     if(plist_get_node_type(n)==PLIST_DICT){
-        static const char *keys[]={"args","uri","type","payload","mediaTransportType","option","appId","mediaId","windowId","mediaFormat","queryPosition","adaptiveStreaming","maxWidth","maxHeight","errorCode","errorText","error","code","message","state","buffering","bufferRange","buffered","position","duration","sourceInfo","videoInfo","audioInfo","streamingInfo","totalSize","downloadedSize","bufferSize","start","end"};
+        static const char *keys[]={
+            "args","uri","type","payload","mediaTransportType","option","appId","mediaId","windowId",
+            "mediaFormat","queryPosition","adaptiveStreaming","audioOnly","maxWidth","maxHeight","maxFrameRate",
+            "externalStreamingInfo","contents","codec","video","audio","esInfo","pauseAtDecodeTime","ptsToDecode",
+            "seperatedPTS","videoFpsValue","videoFpsScale","format","provider","pcmInfo","channelMode",
+            "sampleRate","bitsPerSample","layout","restartStreaming","streamQualityInfo",
+            "streamQualityInfoNonFlushable","totalStreamSize","bufferingCtrInfo","preBufferByte","bufferMinLevel",
+            "bufferMaxLevel","qBufferLevelAudio","qBufferLevelVideo","srcBufferLevelAudio","srcBufferLevelVideo",
+            "minimum","maximum","errorCode","errorText","error","code","message","state","buffering",
+            "bufferRange","buffered","position","duration","sourceInfo","videoInfo","audioInfo","streamingInfo",
+            "totalSize","downloadedSize","bufferSize","start","end"};
         for(const char *key:keys){auto child=plist_dict_get_item(n,key);if(child)describe(child,prefix+"."+key,out,depth+1,count);}
     }else if(plist_get_node_type(n)==PLIST_ARRAY&&plist_array_get_size(n)>0)describe(plist_array_get_item(n,0),prefix+"[0]",out,depth+1,count);
 }

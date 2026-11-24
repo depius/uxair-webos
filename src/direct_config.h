@@ -19,7 +19,8 @@ enum class DirectStrategy { Auto, NativeUri, Bufferstream };
 inline DirectStrategy direct_strategy() {
     const char *setting = getenv("UXAIR_DIRECT_BACKEND");
     if (setting && strcmp(setting, "native") == 0) return DirectStrategy::NativeUri;
-    if (setting && strcmp(setting, "bufferstream") == 0) return DirectStrategy::Bufferstream;
-    return DirectStrategy::Auto;
+    if (setting && strcmp(setting, "auto") == 0) return DirectStrategy::Auto;
+    // webOS 3–4 has a verified BUFFERSTREAM Load contract. URI probing is opt-in.
+    return DirectStrategy::Bufferstream;
 }
 #endif

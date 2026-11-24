@@ -168,6 +168,19 @@ int main(int argc, char** argv) {
     DirectPlayback automatic;
     assert(!unsetenv("UXAIR_DIRECT_BACKEND"));
     assert(automatic.open(play,now,session));
+    for (unsigned i=0; i<450; ++i) {
+        const auto selected = automatic.tick(now+=20000000);
+        assert(selected.backend==DirectBackend::Bufferstream && selected.fallback_reason==DirectError::None);
+        assert(!native_attempts && selected.state!=DirectState::Error);
+        if (selected.state==DirectState::Playing) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    }
+    assert(automatic.snapshot().state==DirectState::Playing);
+    assert(automatic.close() && opens==closes);
+    puts("PASS: launcher default starts BUFFERSTREAM without calling experimental native URI Load");
+
+    assert(!setenv("UXAIR_DIRECT_BACKEND","auto",1));
+    assert(automatic.open(play,now,session));
     DirectSnapshot routed;
     for(unsigned i=0;i<450;++i) {
         routed=automatic.tick(now+=20000000);

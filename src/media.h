@@ -29,6 +29,7 @@ public:
     void close();
 #ifdef UXAIR_DIRECT_BUILD
     void guard_direct_callbacks() { guard_callbacks_ = true; }
+    bool direct_released() const { return direct_released_; }
 #endif
     MediaOpenFailure open_failure() const { return open_failure_; }
     std::atomic<bool> ready{false}, playing{false}, ended{false}, failed{false};
@@ -54,6 +55,7 @@ private:
 #ifdef UXAIR_DIRECT_BUILD
     static void direct_event(int type, int64_t value, const char *message, void *generation);
     bool guard_callbacks_ = false;
+    bool direct_load_uncertain_ = false, direct_released_ = true;
     uintptr_t callback_generation_ = 0;
 #endif
     bool loaded_ = false, sink_attached_ = false, play_requested_ = false, acb_playing_ = false;

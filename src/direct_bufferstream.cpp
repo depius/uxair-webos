@@ -27,12 +27,13 @@ bool fcup_enabled() {
 DirectBufferstream::~DirectBufferstream() { close(); }
 
 bool DirectBufferstream::open(const DirectCommand& play, int64_t now, DirectSession* session) {
-    close();
+    const bool released = close();
     status_ = DirectSnapshot();
     status_.backend = DirectBackend::Bufferstream;
     status_.state = DirectState::Loading;
     status_.stage = DirectStage::Fetch;
     opened_at_ = now;
+    if (!released) return fail(DirectError::CleanupFailed);
     if (!network_.begin(!play.encrypted)) return fail(DirectError::RelayStart);
     session_ = session;
     if (session && !play.encrypted && fcup_enabled()) {
@@ -273,7 +274,7 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
     return status_;
 }
 
-void DirectBufferstream::close() {
+bool DirectBufferstream::close() {
     cancelled_ = true;
     network_.cancel();
     if (session_) session_->cancel_fetch();
@@ -288,4 +289,9 @@ void DirectBufferstream::close() {
     opened_ = presented_ = paused_ = buffering_ = eos_ = false;
     packet_index_ = 0;
     clock_at_ = clock_ns_ = position_ns_ = accepted_until_ns_ = last_feed_at_ = started_at_ = eos_at_ = 0;
+#ifdef UXAIR_DIRECT_BUILD
+    return media_.direct_released();
+#else
+    return true;
+#endif
 }

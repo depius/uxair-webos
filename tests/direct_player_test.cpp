@@ -20,6 +20,7 @@ extern "C" bool test_seek(StarfishMediaAPIs*, const char*) __asm__("_ZN17Starfis
 extern "C" bool test_seek(StarfishMediaAPIs*, const char* value) { StarfishMediaAPIs::last_seek=value; return true; }
 #endif
 bool StarfishMediaAPIs::load_success=true,StarfishMediaAPIs::play_success=true,StarfishMediaAPIs::synchronous_load=false;
+const char *StarfishMediaAPIs::load_exception=nullptr,*StarfishMediaAPIs::unload_exception=nullptr;
 bool acb_initialize_success=true,acb_sink_success=true;int acb_player_type=-1,acb_sink_calls=0;
 extern "C" int AcbAPI_setMediaVideoData(long,const char*,long*){return 1;}
 int main(){
@@ -92,6 +93,24 @@ int main(){
  assert(p.open("https://media.example/vod.m3u8",0,1));acb_sink_success=false;cb(0x16,0,nullptr,StarfishMediaAPIs::context);assert(p.tick(2).error==DirectError::Sink);p.close();acb_sink_success=true;
  assert(p.open("https://media.example/vod.m3u8",0,1));StarfishMediaAPIs::play_success=false;cb(0x16,0,nullptr,StarfishMediaAPIs::context);assert(p.tick(2).error==DirectError::PlayRejected);p.close();StarfishMediaAPIs::play_success=true;
  assert(!p.open("file:///etc/passwd",0,1));
+ const char *uri="https://media.example/vod.m3u8";
+ StarfishMediaAPIs::load_exception="No such node (plugins)";
+ auto unloads=StarfishMediaAPIs::unloads;
+ assert(!p.open(uri,0,1) && StarfishMediaAPIs::unloads==unloads+1);
+ assert(p.snapshot().state==DirectState::Error && p.snapshot().stage==DirectStage::Load &&
+        p.snapshot().error==DirectError::NativeError);
+ auto failed_context=StarfishMediaAPIs::context;
+ StarfishMediaAPIs::load_exception=nullptr;
+ assert(p.open(uri,0,1));
+ StarfishMediaAPIs::callback(0x1c,0,nullptr,failed_context);
+ assert(p.tick(2).state==DirectState::Loading && p.snapshot().callbacks==0);
+ assert(p.close());
+ StarfishMediaAPIs::load_exception="load failed for https://SECRET.invalid/?token=PRIVATE";
+ StarfishMediaAPIs::unload_exception="unload failed for https://SECRET.invalid/?token=PRIVATE";
+ assert(!p.open(uri,0,1) && !p.close());
+ StarfishMediaAPIs::load_exception=StarfishMediaAPIs::unload_exception=nullptr;
+ const auto attempts=load_calls;
+ assert(!p.open(uri,0,1) && p.snapshot().error==DirectError::CleanupFailed && load_calls==attempts);
  puts("PASS: native adapter load/play/pause/resume/seek/EOS/timeout with simulated firmware");
 #endif
 }

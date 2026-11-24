@@ -18,7 +18,7 @@ class DirectPlayer {
     void result(DirectStage,int64_t,int64_t);
     void fail(DirectError,int64_t=0);
     bool cleanup();
-    bool native_load_accepted_=false, released_=true, fixture_direct_=false;
+    bool native_load_accepted_=false, native_load_uncertain_=false, released_=true, fixture_direct_=false;
     unsigned progress_samples_=0;
     std::atomic<bool> frame_ready_{false};
     static void event(int,int64_t,const char*,void*);

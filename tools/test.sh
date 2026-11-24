@@ -135,7 +135,14 @@ if ! timeout 30s build/tests/direct-player-test 2>build/tests/direct-player.log;
   cat build/tests/direct-player.log
   exit 1
 fi
-python3 tests/direct_player_log_test.py build/tests/direct-player.log
+c++ -std=c++11 -g -fsanitize=address,undefined -pthread -DUXAIR_DIRECT_BUILD -Isrc -Itests/direct_stubs \
+  $(pkg-config --cflags libplist-2.0) tests/direct_starfish_load_test.cpp src/media_starfish.cpp \
+  src/settings.cpp src/direct_native_diag.cpp src/direct_video.cpp $(pkg-config --libs libplist-2.0) -o build/tests/direct-starfish-load-test
+if ! timeout 30s build/tests/direct-starfish-load-test 2>build/tests/direct-starfish-load.log; then
+  cat build/tests/direct-starfish-load.log
+  exit 1
+fi
+python3 tests/direct_player_log_test.py build/tests/direct-player.log build/tests/direct-starfish-load.log
 c++ -std=c++11 -g -fsanitize=address,undefined -pthread -DUXAIR_TEST_NO_NATIVE_URI_API -Isrc -Itests/direct_stubs \
   $(pkg-config --cflags libplist-2.0) tests/direct_player_test.cpp src/direct_player.cpp src/direct_native_diag.cpp \
   src/direct_video.cpp src/hls_relay.cpp $(pkg-config --libs libplist-2.0 libcurl) -lcrypto -o build/tests/direct-no-native-api-test

@@ -120,7 +120,7 @@ DirectSnapshot DirectPlayback::tick(int64_t now) {
 
 bool DirectPlayback::close() {
     if (backend_ == DirectBackend::NativeUri) released_ = native_.close();
-    if (backend_ == DirectBackend::Bufferstream) bufferstream_.close();
+    if (backend_ == DirectBackend::Bufferstream) released_ = bufferstream_.close();
     backend_ = DirectBackend::None;
     session_ = nullptr;
     return released_;

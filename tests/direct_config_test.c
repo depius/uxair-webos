@@ -14,10 +14,11 @@ int main(void) {
     assert(setenv("UXAIR_DIRECT_VIDEO", "1", 1) == 0 && uxair_direct_enabled() == enabled);
     assert(setenv("UXAIR_DIRECT_VIDEO", "", 1) == 0 && !uxair_direct_enabled());
 #ifdef __cplusplus
-    assert(unsetenv("UXAIR_DIRECT_BACKEND") == 0 && direct_strategy() == DirectStrategy::Auto);
+    assert(unsetenv("UXAIR_DIRECT_BACKEND") == 0 && direct_strategy() == DirectStrategy::Bufferstream);
     assert(setenv("UXAIR_DIRECT_BACKEND", "native", 1) == 0 && direct_strategy() == DirectStrategy::NativeUri);
     assert(setenv("UXAIR_DIRECT_BACKEND", "bufferstream", 1) == 0 && direct_strategy() == DirectStrategy::Bufferstream);
     assert(setenv("UXAIR_DIRECT_BACKEND", "auto", 1) == 0 && direct_strategy() == DirectStrategy::Auto);
+    assert(setenv("UXAIR_DIRECT_BACKEND", "unknown", 1) == 0 && direct_strategy() == DirectStrategy::Bufferstream);
 #endif
     puts("PASS: compiled Direct Video scope, defaults, and explicit overrides");
 }

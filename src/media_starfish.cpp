@@ -9,6 +9,8 @@
 #include <mutex>
 #include <time.h>
 #ifdef UXAIR_DIRECT_BUILD
+#include "direct_native_diag.h"
+#include "direct_starfish_error.h"
 #include <cstring>
 #include <map>
 
@@ -51,7 +53,12 @@ void Media::event(int type, int64_t value, const char *message, void *user) {
     Media *m = static_cast<Media *>(user);
     if (type == PF_EVENT_TYPE_FRAMEREADY) { ++m->frames; m->last_frame_event_ns=monotonic_ns(); return; }
     if (type == PF_EVENT_TYPE_INT_NEED_DATA || type == PF_EVENT_TYPE_INT_ENOUGH_DATA || type == PF_EVENT_TYPE_INT_BUFFERLOW || type == 0x2a) return;
-    fprintf(stderr, "[smp] event=0x%x value=%lld %s\n", type, (long long)value, message ? message : "");
+#ifdef UXAIR_DIRECT_BUILD
+    if (m->guard_callbacks_)
+        fprintf(stderr, "[smp] event=0x%x value=%lld\n", type, (long long)value);
+    else
+#endif
+        fprintf(stderr, "[smp] event=0x%x value=%lld %s\n", type, (long long)value, message ? message : "");
     if (type == PF_EVENT_TYPE_STR_RESOURCE_INFO)
         fprintf(stderr,"[media-state] resource-info event=0x%x load-completed=0\n",type);
     switch (type) {
@@ -102,6 +109,12 @@ bool Media::open(const char *app_id, int width, int height, bool audio, int rate
         }
     }
     close();
+#ifdef UXAIR_DIRECT_BUILD
+    if (guard_callbacks_ && !direct_released_) {
+        open_failure_ = MediaOpenFailure::StarfishLoad;
+        return false;
+    }
+#endif
     ready = playing = ended = failed = false;
     frames = 0;
     video_info_width=video_info_height=0;
@@ -143,20 +156,32 @@ bool Media::open(const char *app_id, int width, int height, bool audio, int rate
     const std::string payload=starfish_load_payload(app_id,codec==MirrorCodec::ExperimentalHevc?"H265":"H264",
         width,height,audio,rate,video_source_buffer_bytes,frame_rate,audio_only);
     fprintf(stderr,"[media-identity] acb-app-id=%s starfish-app-id=%s source=shared-runtime-id\n",app_id,app_id);
-    fprintf(stderr, "[media] Load mode=%s max_fps=%d %s\n", audio_only?"audio-only":"mirroring",max_fps,payload.c_str());
-    phase=monotonic_ns();
 #ifdef UXAIR_DIRECT_BUILD
     if (guard_callbacks_) {
+        fprintf(stderr, "[direct-player] load-schema api=StarfishMediaAPIs::Load contract=BUFFERSTREAM acb-role=MSE source=demuxed-hls video=H264 audio=PCM uri=absent request-plugins=absent fields=%s\n",
+                direct_native_json_summary(payload.c_str()).c_str());
         {
             std::lock_guard<std::mutex> lock(direct_callback_mutex);
             if (++next_direct_generation == 0) ++next_direct_generation;
             callback_generation_ = next_direct_generation;
             direct_callbacks.emplace(callback_generation_, this);
         }
-        loaded_ = api_->Load(payload.c_str(), direct_event, reinterpret_cast<void*>(callback_generation_));
+        phase = monotonic_ns();
+        try {
+            loaded_ = api_->Load(payload.c_str(), direct_event, reinterpret_cast<void*>(callback_generation_));
+        } catch (const std::bad_alloc&) {
+            throw;
+        } catch (const std::exception& error) {
+            direct_starfish_exception("bufferstream", "load", error);
+            direct_load_uncertain_ = true;
+        }
     } else
 #endif
-    loaded_ = api_->Load(payload.c_str(), event, this);
+    {
+        fprintf(stderr, "[media] Load mode=%s max_fps=%d %s\n", audio_only?"audio-only":"mirroring",max_fps,payload.c_str());
+        phase=monotonic_ns();
+        loaded_ = api_->Load(payload.c_str(), event, this);
+    }
     fprintf(stderr,"[media-init] Starfish Load end ms=%.2f success=%d\n",(monotonic_ns()-phase)/1e6,int(loaded_));
     if (!loaded_) { open_failure_=MediaOpenFailure::StarfishLoad;close(); return false; }
     phase=monotonic_ns();
@@ -241,8 +266,29 @@ void Media::close() {
         callback_generation_ = 0;
     }
 #endif
-    if(acb_ && loaded_) AcbAPI_setState(acb_,APPSTATE_FOREGROUND,PLAYSTATE_UNLOADED,&task_);
+    bool unload_state = loaded_;
+#ifdef UXAIR_DIRECT_BUILD
+    unload_state = unload_state || direct_load_uncertain_;
+#endif
+    if(acb_ && unload_state) AcbAPI_setState(acb_,APPSTATE_FOREGROUND,PLAYSTATE_UNLOADED,&task_);
     if (api_) {
+#ifdef UXAIR_DIRECT_BUILD
+        if (guard_callbacks_) {
+            if (loaded_ || direct_load_uncertain_) {
+                bool unloaded = false;
+                try {
+                    unloaded = api_->Unload();
+                } catch (const std::bad_alloc&) {
+                    throw;
+                } catch (const std::exception& error) {
+                    direct_starfish_exception("bufferstream", "unload", error);
+                }
+                direct_released_ = unloaded;
+                fprintf(stderr, "[direct-player] backend=bufferstream stage=unload result=%d\n", int(unloaded));
+            }
+            direct_load_uncertain_ = false;
+        } else
+#endif
         if (loaded_) { api_->Unload(); fprintf(stderr, "[media] unloaded\n"); }
         delete api_; api_ = nullptr;
     }
@@ -251,6 +297,9 @@ void Media::close() {
         fprintf(stderr, "[media] ACB released\n");
     }
     loaded_ = sink_attached_ = play_requested_ = acb_playing_ = false;
+#ifdef UXAIR_DIRECT_BUILD
+    if (guard_callbacks_) ready = playing = ended = false;
+#endif
     play_attempts_=0;
     video_info_pending_ = false;
 }
