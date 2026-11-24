@@ -16,6 +16,9 @@ bool DirectPlayback::open(const DirectCommand& play, int64_t now, DirectSession&
     native_proved_ = pause_requested_ = pending_seek_ = false;
     opened_at_ = now;
     strategy_ = direct_strategy();
+    std::fprintf(stderr, "[direct-player] accepted-session strategy=%s\n",
+                 strategy_ == DirectStrategy::Auto ? "auto" :
+                 strategy_ == DirectStrategy::NativeUri ? "native" : "bufferstream");
     if (strategy_ == DirectStrategy::Bufferstream) {
         start_bufferstream(now);
     } else {

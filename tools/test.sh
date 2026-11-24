@@ -161,8 +161,10 @@ timeout 15s python3 tests/native_timeout_test.py
 
 c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc \
   $(pkg-config --cflags libplist-2.0 libcurl libavformat libavcodec libavutil libswresample) \
-  tests/direct_bufferstream_test.cpp src/direct_bufferstream.cpp src/direct_hls.cpp \
+  tests/direct_bufferstream_test.cpp src/direct_playback.cpp src/direct_native_diag.cpp src/direct_bufferstream.cpp src/direct_hls.cpp \
   src/direct_video.cpp src/hls_relay.cpp src/audio.cpp src/h264.cpp \
   $(pkg-config --libs libplist-2.0 libcurl libavformat libavcodec libavutil libswresample) -lcrypto \
   -o build/tests/direct-bufferstream-test
 timeout 110s python3 tests/direct_bufferstream_network_test.py
+
+bash tests/direct_wire_test.sh

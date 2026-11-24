@@ -1,4 +1,4 @@
-#include "direct_bufferstream.h"
+#include "direct_playback.h"
 #include "audio.h"
 #include "h264.h"
 
@@ -13,15 +13,37 @@ namespace {
 int64_t now = 1000000000;
 unsigned opens = 0, closes = 0, retries = 0, pauses = 0, ends = 0;
 bool decoder_open = false;
+bool native_open = false, native_releases = true;
+unsigned native_attempts = 0;
 bool inject_retry = true;
 int64_t last_video_pts = -1, last_audio_pts = -1;
 }
+
+// Mock the unavailable television URI player. The fallback uses real HLS,
+// MPEG-TS demux and AAC decode, with the captured Feed calls below.
+DirectPlayer::~DirectPlayer() { close(); }
+bool DirectPlayer::open(const std::string&,double,int64_t,DirectSession*,bool,DirectLoadContract,bool) {
+    assert(!native_open && !decoder_open);
+    ++native_attempts;
+    native_open=true;
+    return false;
+}
+DirectSnapshot DirectPlayer::snapshot() const {
+    DirectSnapshot value;
+    value.state=DirectState::Error;
+    value.backend=DirectBackend::NativeUri;
+    value.error=DirectError::LoadRejected;
+    return value;
+}
+DirectSnapshot DirectPlayer::tick(int64_t) { return snapshot(); }
+bool DirectPlayer::control(const DirectCommand&) { return false; }
+bool DirectPlayer::close() { native_open=false; return native_releases; }
 
 Media::Media() : impl_(nullptr) {}
 Media::~Media() { close(); }
 
 bool Media::open(const char*, int width, int height, bool audio, int rate, int, int, int, MirrorCodec codec, int, bool) {
-    assert(!decoder_open && width == 1280 && height == 720 && audio && rate == 44100 && codec == MirrorCodec::H264);
+    assert(!native_open && !decoder_open && width == 1280 && height == 720 && audio && rate == 44100 && codec == MirrorCodec::H264);
     decoder_open = true;
     ++opens;
     last_video_pts = last_audio_pts = -1;
@@ -140,5 +162,24 @@ int main(int argc, char** argv) {
     poll_for(DirectState::Playing, .1);
     player.close();
     assert(opens == closes);
+    DirectSession session;
+    DirectPlayback automatic;
+    assert(!unsetenv("UXAIR_DIRECT_BACKEND"));
+    assert(automatic.open(play,now,session));
+    DirectSnapshot routed;
+    for(unsigned i=0;i<450;++i) {
+        routed=automatic.tick(now+=20000000);
+        assert(routed.backend==DirectBackend::Bufferstream && routed.fallback_reason==DirectError::LoadRejected);
+        assert(routed.state!=DirectState::Error);
+        if(routed.state==DirectState::Playing)break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    }
+    assert(routed.state==DirectState::Playing && native_attempts==1 && !native_open);
+    assert(automatic.close() && opens==closes);
+
+    native_releases=false;
+    assert(!automatic.open(play,now,session));
+    assert(automatic.tick(now).error==DirectError::CleanupFailed && opens==closes);
+    puts("PASS: auto fallback after native teardown, no decoder overlap or retry after cleanup failure");
     puts("PASS: real H.264/AAC MPEG-TS demux and PCM feed, bounded buffering, retry, seek, EOS, cancellation and recovery");
 }

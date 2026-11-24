@@ -48,40 +48,6 @@ PROBE = '''        int probe_body_length = -1;
                                 probe_body_length, probe_session);
 '''
 
-DIRECT_GATE = r'''    if (!cseq && uxair_direct_enabled() &&
-        (!strcmp(url,"/info") || !strcmp(url,"/info?txtAirPlay") || !strcmp(url,"/info?txtRAOP") || !strcmp(url,"/fp-setup2") || !strcmp(url,"/play") || !strncmp(url,"/scrub",6) || !strncmp(url,"/rate",5) ||
-         !strcmp(url,"/stop") || !strcmp(url,"/server-info") || !strcmp(url,"/playback-info") || !strcmp(url,"/reverse") || !strcmp(url,"/action") || !strncmp(url,"/getProperty?",13) || !strncmp(url,"/setProperty?",13))) {
-        if ((!strcmp(url,"/info") || !strcmp(url,"/info?txtAirPlay") || !strcmp(url,"/info?txtRAOP")) && !strcmp(method,"GET")) {
-            char *data=NULL;int length=0;*response=http_response_create();http_response_init(*response,"HTTP/1.1",200,"OK");
-            raop_handler_info(conn,request,*response,&data,&length);http_response_finish(*response,data,length);free(data);return;
-        }
-        if (!strcmp(url,"/server-info") && !strcmp(method,"GET")) {
-            char *data=NULL;int length=0;*response=http_response_create();http_response_init(*response,"HTTP/1.1",200,"OK");
-            http_handler_server_info(conn,request,*response,&data,&length);
-            plist_t root=NULL;plist_from_xml(data,(uint32_t)length,&root);free(data);data=NULL;
-            if(root){plist_dict_set_item(root,"features",plist_new_uint(dnssd_get_airplay_features(raop->dnssd)));uint32_t size=0;plist_to_xml(root,&data,&size);length=(int)size;plist_free(root);}
-            http_response_finish(*response,data,length);free(data);return;
-        }
-        if (!strcmp(url,"/reverse")) {
-            const char *upgrade=http_request_get_header(request,"Upgrade");
-            const char *owner=http_request_get_header(request,"X-Apple-Session-ID");
-            int accepted=!strcmp(method,"POST") && upgrade && !strcmp(upgrade,"PTTH/1.0") &&
-                uxair_direct_reverse(raop->callbacks.cls,owner,httpd_get_connection_socket(raop->httpd,conn),(unsigned long)conn);
-            *response=http_response_create();http_response_init(*response,"HTTP/1.1",accepted?101:409,accepted?"Switching Protocols":"Conflict");
-            if(accepted){httpd_set_connection_type(raop->httpd,conn,CONNECTION_TYPE_PTTH);http_response_add_header(*response,"Connection","Upgrade");http_response_add_header(*response,"Upgrade","PTTH/1.0");}
-            http_response_finish(*response,NULL,0);return;
-        }
-        int direct_length=0,output_length=0;char *output=NULL;const char *mime="text/parameters";
-        const char *data=http_request_get_data(request,&direct_length);
-        int status=uxair_direct_request(raop->callbacks.cls,http_request_get_header(request,"X-Apple-Session-ID"),
-            method,url,http_request_get_header(request,"Content-Type"),data,direct_length,&output,&output_length,&mime);
-        *response=http_response_create();
-        http_response_init(*response,"HTTP/1.1",status,status==200?"OK":"Direct Video Request Failed");
-        http_response_add_header(*response,"Content-Type",mime);
-        http_response_finish(*response,output,output_length);free(output);return;
-    }
-'''
-
 
 def replace_region(source, start, end, replacement):
     if source.count(start) != 1 or source.count(end) != 1:
@@ -91,15 +57,101 @@ def replace_region(source, start, end, replacement):
     return source[:first] + replacement + source[last:]
 
 
+def replace_once(source, anchor, replacement):
+    if source.count(anchor) != 1:
+        raise ValueError(f'pinned UxPlay anchor changed: {anchor!r}')
+    return source.replace(anchor, replacement, 1)
+
+
+def direct_request_parser(source):
+    # llhttp can deliver the URL and protocol in different recv fragments.
+    # Capture only the declared protocol span rather than reading past the URL.
+    source = replace_once(source, '    strncpy(request->protocol, at + length + 1, 8);\n', '')
+    source = replace_once(source, 'static int\non_header_field(', r"""static int
+on_protocol(llhttp_t *parser, const char *at, size_t length)
+{
+    http_request_t *request = parser->data;
+    size_t previous = strlen(request->protocol);
+    if (previous > 4 || length > 4 - previous) return -1;
+    memcpy(request->protocol + previous, at, length);
+    request->protocol[previous + length] = '\0';
+    return 0;
+}
+
+static int
+on_header_field(""")
+    source = replace_once(source, '    request->complete = 1;\n',
+        '    if (strlen(request->protocol) != 4 || llhttp_get_http_major(parser) > 9 ||\n'
+        '        llhttp_get_http_minor(parser) > 9) return -1;\n'
+        '    request->protocol[4] = \'/\';\n'
+        '    request->protocol[5] = \'0\' + llhttp_get_http_major(parser);\n'
+        '    request->protocol[6] = \'.\';\n'
+        '    request->protocol[7] = \'0\' + llhttp_get_http_minor(parser);\n'
+        '    request->complete = 1;\n')
+    source = replace_once(source, '    request->parser_settings.on_url = &on_url;\n',
+        '    request->parser_settings.on_url = &on_url;\n'
+        '    request->parser_settings.on_protocol = &on_protocol;\n')
+    source = replace_once(source, '        if (!strcmp(request->headers[i], name)) {',
+                          '        if (!strcasecmp(request->headers[i], name)) {')
+    return '#include <strings.h>\n' + source
+
+
 def instrument_raop(source, direct_enabled=True):
     if source.count(INCLUDE) != 1 or source.count(GATE) != 1:
         raise ValueError('pinned UxPlay request gate changed; refuse to instrument')
     if not direct_enabled:
         return source.replace(INCLUDE, INCLUDE + '#include "direct_request_diag.h"\n', 1).replace(GATE, GATE + PROBE, 1)
-    source=source.replace('    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");',
-        '    uxair_direct_lost(raop->callbacks.cls,(unsigned long)conn);\n    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");',1)
-    return source.replace(INCLUDE, INCLUDE + '#include "direct_request_diag.h"\n#include "direct_bridge.h"\n#include "direct_config.h"\n', 1).replace(
-        GATE, DIRECT_GATE + GATE + PROBE, 1)
+    source = source.replace(INCLUDE, INCLUDE + '#include "direct_request_diag.h"\n', 1)
+    source = replace_once(source, '#include "http_handlers.h"\n',
+                          '#include "http_handlers.h"\n#include "direct_dispatch.h"\n')
+    source = replace_once(source,
+        'conn_request(void *ptr, http_request_t *request, http_response_t **response) {',
+        'conn_request_routed(void *ptr, http_request_t *request, http_response_t **response, uxair_route_t *route) {')
+    for name in ('logger_debug', 'logger_debug_data'):
+        suffix = '_DATA' if name.endswith('_data') else ''
+        source = replace_once(source, f'    bool {name} = (logger_get_level(raop->logger) >= LOGGER_DEBUG{suffix});\n', '')
+    source = replace_once(source, '        http_response_init(*response, protocol, 431, "Request Header Fields Too Large");\n',
+        '        *route = UX_ROUTE_REJECTED;\n'
+        '        if (*response) {\n'
+        '            http_response_init(*response, protocol, 431, "Request Header Fields Too Large");\n'
+        '            http_response_finish(*response, NULL, 0);\n'
+        '        }\n')
+    source = replace_once(source,
+        '            logger_log(raop->logger, LOGGER_ERR, "rejecting request with invalid CSeq value %s", cseq_req);\n',
+        '            *route = UX_ROUTE_REJECTED;\n')
+    source = replace_once(source, GATE, r"""    if (uxair_dispatch_direct(conn, request, response, cseq, route)) return;
+
+""" + GATE + r"""        *route = UX_ROUTE_REJECTED;
+        if (uxair_direct_enabled() && (!strcmp(protocol, "HTTP/1.1") || !strcmp(protocol, "RTSP/1.0"))) {
+            *response = uxair_response(protocol, cseq, 501);
+            if (*response) http_response_finish(*response, NULL, 0);
+            return;
+        }
+""" + PROBE)
+    source = replace_region(source, r'    logger_log(raop->logger, LOGGER_DEBUG, "\n%s %s %s", method, url, protocol);' + '\n',
+        '    raop_handler_t handler = NULL;\n',
+        '    if (client_session_id && conn->client_session_id && strcmp(client_session_id, conn->client_session_id)) {\n'
+        '        *route = UX_ROUTE_REJECTED;\n'
+        '        http_response_init(*response, protocol, 409, "Conflicting Session");\n'
+        '        goto finish;\n'
+        '    }\n')
+    source = replace_once(source, '    if (handler != NULL) {\n',
+        '    if (handler != NULL) {\n'
+        '        *route = strstr(url, "/info") && handler == &raop_handler_info ? UX_ROUTE_DISCOVERY : UX_ROUTE_RAOP;\n')
+    source = replace_once(source,
+        '        logger_log(raop->logger, LOGGER_INFO,\n                   "Unhandled Client Request: %s %s %s", method, url, protocol);\n',
+        '        *route = UX_ROUTE_UNHANDLED;\n')
+    source = replace_region(source, '    int len = 0;\n    const char *data = http_response_get_data(*response, &len);\n',
+        'static void\nconn_destroy(void *ptr) {',
+        '    free(response_data);\n}\n\n'
+        'static void\nconn_request(void *ptr, http_request_t *request, http_response_t **response) {\n'
+        '    uxair_route_t route = UX_ROUTE_UNHANDLED;\n'
+        '    conn_request_routed(ptr, request, response, &route);\n'
+        '    uxair_trace_exchange(request, *response, route);\n'
+        '}\n\n')
+    return replace_once(source, '    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");',
+        '    uxair_direct_lost(raop->callbacks.cls,(unsigned long)conn);\n'
+        '    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");')
 
 
 def instrument_http_request(source, direct_enabled=True):
@@ -116,7 +168,10 @@ def instrument_http_request(source, direct_enabled=True):
         '        (size_t) request->datalen > direct_limit - length)) return -1;\n')
     if not direct_enabled:
         guard = ''
-    return '#include "direct_request_diag.h"\n' + guarded.replace(anchor, guard + anchor, 1)
+    guarded = guarded.replace(anchor, guard + anchor, 1)
+    if direct_enabled:
+        guarded = direct_request_parser(guarded)
+    return '#include "direct_request_diag.h"\n' + guarded
 
 
 def instrument_httpd(source):

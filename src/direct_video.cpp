@@ -71,7 +71,12 @@ std::string direct_load_payload(const std::string& uri,const std::string& app,bo
     return "{\"uri\":\""+escape(uri)+"\",\"type\":\"media\",\"payload\":{\"mediaTransportType\":\""+
         (contract==DirectLoadContract::UriHls?"HLS":"URI")+"\","+option+"}}";
 }
-static bool play_body(const std::string& type,const std::string& body,std::string& uri,double& start,bool& seconds) {
+static bool play_body(const std::string& mime,const std::string& body,std::string& uri,double& start,bool& seconds) {
+    std::string type=mime.substr(0,mime.find(';'));
+    while(!type.empty() && (type.back()==' ' || type.back()=='\t'))type.pop_back();
+    std::transform(type.begin(),type.end(),type.begin(),[](unsigned char c){return char(std::tolower(c));});
+    const bool binary_signature=body.compare(0,8,"bplist00")==0;
+    if(binary_signature && (type.empty() || type=="application/octet-stream"))type="application/x-apple-binary-plist";
     start=0;seconds=false;if(body.empty()||body.size()>16384)return false;
     if(type=="application/x-apple-binary-plist"||type=="text/x-apple-plist+xml"||type=="application/x-apple-plist+xml") {
         plist_t root=nullptr;
@@ -81,7 +86,12 @@ static bool play_body(const std::string& type,const std::string& body,std::strin
         plist_t location=plist_dict_get_item(root,"Content-Location"),position=plist_dict_get_item(root,"Start-Position");
         plist_t seconds_node=plist_dict_get_item(root,"Start-Position-Seconds");
         bool valid=location&&plist_get_node_type(location)==PLIST_STRING;
-        if(valid){char *v=nullptr;plist_get_string_val(location,&v);if(v){uri=v;free(v);}else valid=false;}
+        if(valid){
+            uint64_t length=0;
+            const char *value=plist_get_string_ptr(location,&length);
+            if(value && length<=4096)uri.assign(value,size_t(length));
+            else valid=false;
+        }
         if(position){if(plist_get_node_type(position)==PLIST_REAL)plist_get_real_val(position,&start);
             else if(plist_get_node_type(position)==PLIST_UINT){uint64_t v=0;plist_get_uint_val(position,&v);start=double(v);}else valid=false;}
         valid=valid&&std::isfinite(start)&&start>=0&&start<=1;
@@ -104,7 +114,7 @@ static bool play_body(const std::string& type,const std::string& body,std::strin
 }
 DirectReply DirectSession::request(const std::string& owner,const std::string& method,const std::string& target,const std::string& type,const std::string& body,bool busy) {
     DirectReply reply;
-    if(owner.empty()||owner.size()>128||target.size()>256||body.size()>524288)return reply;
+    if(owner.empty()||owner.size()>128||owner.find_first_of("\r\n")!=std::string::npos||target.size()>256||body.size()>524288)return reply;
     std::lock_guard<std::mutex> lock(mutex_);
     if(!owner_.empty()&&owner_!=owner){reply.status=409;return reply;}
     last_request_ms_=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -141,7 +151,14 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         reply.status=501;return reply;
     } else if(method=="POST"&&target=="/play") {
         if(busy||snapshot_.state==DirectState::Loading||snapshot_.state==DirectState::Playing||snapshot_.state==DirectState::Paused||snapshot_.state==DirectState::Buffering){reply.status=409;return reply;}
-        if(!play_body(type.substr(0,type.find(';')),body,command.uri,command.position,command.position_seconds))return reply;
+        if(!play_body(type,body,command.uri,command.position,command.position_seconds)) {
+            reply.descriptor="invalid-or-unsupported";
+            return reply;
+        }
+        const auto path=command.uri.substr(0,command.uri.find('?'));
+        const bool manifest=path.size()>=5 && path.compare(path.size()-5,5,".m3u8")==0;
+        reply.descriptor=command.uri.compare(0,8,"https://")==0 ?
+            (manifest?"https-hls":"https-url") : (manifest?"http-hls":"http-url");
         if(!commands_.empty()){reply.status=503;return reply;}
         command.kind=DirectCommandKind::Play;owner_=owner;snapshot_=DirectSnapshot();snapshot_.state=DirectState::Loading;snapshot_.stage=DirectStage::Queued;
         if(reverse_running_){events_.push_back("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>category</key><string>video</string><key>state</key><string>loading</string></dict></plist>");event_cv_.notify_all();}
@@ -163,7 +180,8 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         reply.status=200;return reply;
     } else {reply.status=501;return reply;}
     if(command.kind!=DirectCommandKind::Play&&command.kind!=DirectCommandKind::Stop&&(snapshot_.state==DirectState::Idle||snapshot_.state==DirectState::Error||snapshot_.state==DirectState::Ended)){reply.status=409;return reply;}
-    if(commands_.size()>=8){reply.status=503;return reply;}commands_.push_back(command);reply.status=200;return reply;
+    if(commands_.size()>=8){reply.status=503;return reply;}
+    commands_.push_back(command);reply.status=200;reply.queued=command.kind==DirectCommandKind::Play;return reply;
 }
 bool DirectSession::take(DirectCommand& command){std::lock_guard<std::mutex> l(mutex_);if(commands_.empty())return false;command=commands_.front();commands_.pop_front();return true;}
 const char *direct_state_name(DirectState s){switch(s){case DirectState::Loading:case DirectState::Buffering:return "loading";case DirectState::Playing:return "playing";case DirectState::Paused:return "paused";case DirectState::Ended:case DirectState::Idle:return "stopped";default:return "stopped";}}

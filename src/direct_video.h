@@ -27,7 +27,12 @@ struct DirectSnapshot {
     int last_callback=-1;int64_t last_callback_value=0;
 };
 const char *direct_state_name(DirectState state);
-struct DirectReply { int status=400; std::string body,type="text/parameters"; };
+struct DirectReply {
+    int status=400;
+    std::string body,type="text/parameters";
+    const char *descriptor="none";
+    bool queued=false;
+};
 bool direct_uri_valid(const std::string& uri);
 std::string direct_load_payload(const std::string& uri,const std::string& app,bool internal=false,DirectLoadContract contract=DirectLoadContract::ArgsHls);
 class DirectSession {

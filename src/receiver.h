@@ -44,8 +44,8 @@ struct Receiver {
     DirectSession direct;
     bool reserve_direct();
     void release_direct(bool released);
-    bool direct_busy();
-    bool direct_busy_locked() const;
+    const char *direct_block_reason();
+    const char *direct_block_reason_locked() const;
     bool direct_active = false, direct_cleanup_failed = false; // protected by mutex
 #endif
     ~Receiver();

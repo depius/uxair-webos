@@ -5,7 +5,7 @@
 #include "capabilities.h"
 #include "pairing_registration.h"
 #ifdef UXAIR_DIRECT_BUILD
-#include "direct_playback.h"
+#include "direct_config.h"
 #endif
 #include <algorithm>
 #include <cmath>
@@ -173,6 +173,13 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
     if(!dnssd || err) { show("AirPlay discovery failed");return false; }
     dnssd_set_airplay_features(dnssd,0,int(capabilities.direct_video));dnssd_set_airplay_features(dnssd,4,int(capabilities.hls));
     dnssd_set_airplay_features(dnssd,42,int(capabilities.hevc));dnssd_set_airplay_features(dnssd,27,int(capabilities.legacy_pairing));
+#ifdef UXAIR_DIRECT_BUILD
+    fprintf(stderr,"[direct-protocol] discovery mask=%016llx video=%d hls=%d backend=%s\n",
+            static_cast<unsigned long long>(dnssd_get_airplay_features(dnssd)),
+            int(capabilities.direct_video),int(capabilities.hls),
+            direct_strategy()==DirectStrategy::Auto?"auto":
+            direct_strategy()==DirectStrategy::NativeUri?"native":"bufferstream");
+#endif
     raop_callbacks_t cb={};cb.cls=this;
     cb.conn_feedback=[](void *p){self(p).activity=now_ns();};
     cb.conn_reset=[](void *p,int reason){self(p).request_reset(ResetOrigin::TransportCallback,reason);};
@@ -323,17 +330,22 @@ void Receiver::stop() {
 Receiver::~Receiver() {stop();}
 
 #ifdef UXAIR_DIRECT_BUILD
-bool Receiver::direct_busy_locked() const {
-    return direct_active || direct_cleanup_failed || ingress.closing || !client.empty() ||
-           has_audio || mirror || pairing.visible();
+const char *Receiver::direct_block_reason_locked() const {
+    if(direct_cleanup_failed)return "cleanup-failed";
+    if(direct_active)return "direct-active";
+    if(ingress.closing)return "teardown";
+    if(pairing.visible())return "pairing";
+    if(mirror)return "mirroring";
+    if(has_audio)return audio_using_screen?"mirroring-audio":"audio-only";
+    return client.empty()?nullptr:"transport-reserved";
 }
-bool Receiver::direct_busy() {
+const char *Receiver::direct_block_reason() {
     std::lock_guard<std::mutex> lock(mutex);
-    return direct_busy_locked();
+    return direct_block_reason_locked();
 }
 bool Receiver::reserve_direct() {
     std::lock_guard<std::mutex> lock(mutex);
-    if(direct_busy_locked()) return false;
+    if(direct_block_reason_locked()) return false;
     direct_active=true;
     ++stream_requests;
     return true;
@@ -348,14 +360,18 @@ extern "C" void uxair_direct_lost(void *context,unsigned long token){self(contex
 extern "C" int uxair_direct_request(void *context,const char *owner,const char *method,const char *target,const char *type,const char *body,int length,char **output,int *size,const char **mime) {
     Receiver& r=self(context);
     if(length<0||length>524288||(!body&&length))return 413;
-    auto response=r.direct.request(owner?owner:"",method?method:"",target?target:"",type?type:"",body?std::string(body,size_t(length)):"",r.direct_busy());
+    const bool play=target && !strcmp(target,"/play") && method && !strcmp(method,"POST");
+    const char *blocked=play?r.direct_block_reason():nullptr;
+    auto response=r.direct.request(owner?owner:"",method?method:"",target?target:"",type?type:"",body?std::string(body,size_t(length)):"",blocked!=nullptr);
     *size=int(response.body.size());*output=nullptr;
     if(*size){*output=static_cast<char*>(malloc(size_t(*size)));if(!*output){*size=0;return 500;}memcpy(*output,response.body.data(),size_t(*size));}
     *mime=response.type=="text/parameters"?"text/parameters":"text/x-apple-plist+xml";
-    const char *route=target&&!strcmp(target,"/play")?"play":target&&!strcmp(target,"/stop")?"stop":target&&!strcmp(target,"/action")?"action":target&&!strcmp(target,"/playback-info")?"feedback":target&&!strncmp(target,"/scrub",6)?"scrub":target&&!strncmp(target,"/rate",5)?"rate":"property";
-    static std::atomic<unsigned> records{0};
-    if(records.load()<192 && records.fetch_add(1)<192)
-        fprintf(stderr,"[direct-protocol] route=%s response=%d body-bytes=%d\n",route,response.status,length);
+    if(play) {
+        static std::atomic<unsigned> starts{0};
+        if(starts.load()<64 && starts.fetch_add(1)<64)
+            fprintf(stderr,"[direct-protocol] play status=%d admission=%s descriptor=%s queued=%d\n",
+                response.status,blocked?blocked:response.status==409?"session-conflict":"idle",response.descriptor,int(response.queued));
+    }
     return response.status;
 }
 #endif
