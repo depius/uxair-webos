@@ -31,6 +31,7 @@ public:
     void guard_direct_callbacks(std::string (*describe_load)(const char*)) { direct_load_shape_ = describe_load; }
     bool direct_released() const { return direct_released_; }
     bool direct_set_paused(bool paused);
+    void direct_hold_start(bool hold) { direct_start_held_ = hold; }
     bool direct_backend_paused() const { return direct_backend_paused_; }
 #endif
 #ifndef UXAIR_MEDIA_NDL
@@ -61,7 +62,7 @@ private:
 #ifdef UXAIR_DIRECT_BUILD
     static void direct_event(int type, int64_t value, const char *message, void *generation);
     std::string (*direct_load_shape_)(const char*) = nullptr;
-    bool direct_load_uncertain_ = false, direct_released_ = true;
+    bool direct_load_uncertain_ = false, direct_released_ = true, direct_start_held_ = false;
     std::atomic<bool> direct_backend_paused_{false};
     uintptr_t callback_generation_ = 0;
 #endif

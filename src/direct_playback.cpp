@@ -7,7 +7,13 @@ constexpr int64_t native_startup_ns = 12000000000LL;
 }
 
 bool DirectPlayback::open(const DirectCommand& play, int64_t now, DirectSession& session) {
-    if (!close()) return false;
+    if (!close()) {
+        status_ = DirectSnapshot();
+        status_.generation = play.generation;
+        status_.state = DirectState::Error;
+        status_.error = DirectError::CleanupFailed;
+        return false;
+    }
     play_ = play;
     session_ = &session;
     status_ = DirectSnapshot();
@@ -58,6 +64,7 @@ void DirectPlayback::fallback(DirectSnapshot native, DirectError reason, int64_t
 }
 
 void DirectPlayback::control(const DirectCommand& command, int64_t now) {
+    if (command.generation && command.generation!=play_.generation) return;
     if (backend_ == DirectBackend::Bufferstream) {
         bufferstream_.control(command, now);
     } else if (backend_ == DirectBackend::NativeUri) {

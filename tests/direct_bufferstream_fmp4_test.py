@@ -10,18 +10,21 @@ import struct
 import subprocess
 import tempfile
 import threading
+import time
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:2\n#EXT-X-PLAYLIST-TYPE:VOD\n'
 
 
-def generate(directory, rate, seconds, video=True, split_tracks=False):
+def generate(directory, rate, seconds, video=True, split_tracks=False, silent_1080p=False):
     directory.mkdir()
+    audio = f'anullsrc=cl=stereo:r={rate}' if silent_1080p else f'sine=frequency=440:sample_rate={rate}'
     command = ['ffmpeg', '-nostdin', '-v', 'error', '-f', 'lavfi',
-               '-i', f'sine=frequency=440:sample_rate={rate}', '-ac', '2', '-c:a', 'aac', '-profile:a', 'aac_low']
+               '-i', audio, '-ac', '2', '-c:a', 'aac', '-profile:a', 'aac_low']
     if video:
-        command[4:4] = ['-f', 'lavfi', '-i', 'testsrc2=size=640x480:rate=30']
+        geometry = '1920x1080' if silent_1080p else '640x480'
+        command[4:4] = ['-f', 'lavfi', '-i', f'testsrc2=size={geometry}:rate=30']
         command += ['-c:v', 'libx264', '-threads:v', '2', '-preset', 'veryfast', '-profile:v', 'high',
                     '-pix_fmt', 'yuv420p', '-bf', '2', '-g', '60', '-sc_threshold', '0']
     command += ['-t', str(seconds), '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0',
@@ -51,6 +54,10 @@ class FixtureServer(http.server.SimpleHTTPRequestHandler):
             self.send_header('Location', '/clip/media.m3u8')
             self.end_headers()
             return
+        if url.path == '/slow-switch.m3u8':
+            self.server.slow_requests += 1
+            time.sleep(6)
+            return
         if url.path not in ('/ranges.bin', '/bad-range.bin'):
             super().do_GET()
             return
@@ -76,6 +83,11 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     generate(root / 'clip', 22050, 8)
     generate(root / 'next', 44100, 4, split_tracks=True)
     generate(root / 'audio', 44100, 4, video=False)
+    generate(root / 'silent', 44100, 4, silent_1080p=True)
+    (root / 'silent-ts').mkdir()
+    subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', '../silent/media.m3u8',
+                    '-c', 'copy', '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0', 'media.m3u8'],
+                   cwd=root / 'silent-ts', check=True, timeout=15)
     clip = root / 'clip'
 
     def playlist(name, body):
@@ -136,6 +148,7 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     with http.server.ThreadingHTTPServer((ip, 0), functools.partial(FixtureServer, directory=root)) as server:
         server.packed = packed
         server.requests = Counter()
+        server.slow_requests = 0
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
         try:
@@ -149,8 +162,10 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
         print(checked.stdout, end='')
         checked.check_returncode()
         assert {key: n for key, n in server.requests.items() if key[0] == '/ranges.bin'} == requests
+        assert server.slow_requests == 1
     for rate in (22050, 44100):
         assert re.search(rf'container=fmp4 .*aac-rate={rate} aac-channels=2 .*sps-pps=1 .*'
                          r'first-pcm-bytes=[1-9]\d* .*timestamps=valid .*tracks=2', checked.stdout)
     assert re.search(r'aac-rate=44100 .*timestamps=valid .*fragments=2', checked.stdout)
+    assert 'stage=manifest-cancelled' in checked.stdout and 'stage=replace-completed' in checked.stdout
     assert 'token=PRIVATE' not in checked.stdout and 'http://' not in checked.stdout

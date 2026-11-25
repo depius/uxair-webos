@@ -112,3 +112,42 @@ The standalone ALAC session fed 111 buffers and then stopped draining. The queue
 2. Use a verified iPhone source with clear multiplexed H.264/AAC-LC fMP4 on HTTPS. A controlled fixture can be generated with `ffmpeg` using the options in `tests/direct_bufferstream_fmp4_test.py`, extended to at least 65 seconds, and served from a trusted HTTPS endpoint. Avoid the Apple fullscreen page for this check.
 3. Look for `stage=init-segment`, `stage=fragment-demux`, accepted video and audio feeds, and `stage=continuous-playback`. Verify picture and synchronized sound on the TV for at least 60 seconds. Pause, resume, seek, stop, then reconnect and play again. Ordinary segment transitions should keep the decoder generation. Seek should start a new one.
 4. Run a separate sustained audio-only AirPlay session. If a backlog recurs, retain the `queue-flow` and receiver timing lines around the first future-dated packet. Do not share media URLs or token values.
+
+## Phase 3.7 media replacement and startup
+
+The Phase 3.6 B7 log confirms sustained H.264 playback, including 1080p MPEG-TS. Generation 6 successfully fed video and audio and reported first frames. Subsequent `sender-seek` records reused that media generation and opened new decoders. The trace omits the item and seek details needed to identify the exact command that accompanied the reported Safari A-to-B transition. The baseline nevertheless has two concrete blockers. `Receiver::direct_block_reason_locked()` returns `direct-active` for any active reservation, and `DirectSession::request()` rejects every `/play` while Loading, Buffering, Playing or Paused. The UI in `main.cpp` only opens `/play` when idle. An authenticated second play therefore cannot replace the current item. [Phase 3.6 control implementation](https://github.com/depius/uxair-webos/blob/c076bfde696dcf5c09cac27a1136be2c029aa316/src/direct_video.cpp)
+
+Startup failures have separate signatures. The baseline returns 409 for an early `/scrub` until a frame made the backend seekable. Connections 22 and 30, for generations 8 and 10, each closed the play socket after a single encrypted request while a reverse channel had upgraded. The receiver then cancelled startup. Generation 19 shows a 200 for `/stop` followed by a FIN that relabelled it as `sender-disconnect`. Several other generations failed on HEVC fMP4, which remains unsupported. The trace also contains `/action` 501 responses with insufficient detail to identify which action was sent. None of these observations proves a common cause for every first-attempt failure.
+
+### Ownership and ordering
+
+- `DirectSession::request()` matches the authenticated Apple session ID and controller key. A valid `/play` with a different bounded item `uuid` creates a new generation even when the manifest URL is identical. The same active `uuid` is idempotent, including a changed signed URL. When iOS omits the item UUID, each valid explicit `/play` creates a new generation because the request has no item identifier for deduplication. URLs and raw identities stay out of logs. [UxPlay Safari HLS request trace](https://github.com/FDH2/UxPlay/wiki/experimental-version-of-UxPlay-with-support-for-HLS-video-streaming-%28you-tube-movies%29/b1686492cf92aecb91ed0771f0e7f5c91d4a347d)
+- A fresh verified play socket can take ownership for the same session and controller. The old socket is retired, so its later commands and close cannot tear down the new item. An unsolicited disconnect of the owning play socket with a verified reverse channel attached allows a two-second authenticated handoff. A sender Stop takes effect immediately and retains its reason even if the socket closes. An explicit new `/play` is required after failure or Stop. No source is retried automatically.
+- Authenticated `playlistRemove` accepts the pinned UxPlay `params.item.uuid` shape and only stops the matching current item. Late removes and UUID-bearing scrubs for another item are rejected. Queue insertion without an admitted `/play` remains unsupported. Playback info and supported default properties retain their existing response schemas.
+- The UI retains its Direct Video reservation while it cancels and joins the old worker, clears its A/V queues, retires the callback registration, and unloads Starfish. It opens the latest queued generation only after cleanup succeeds. `DirectPlayback::control()` and `DirectSession::publish()` reject old generations. `Media::direct_event()` ignores callbacks carrying a retired decoder token. An unload failure blocks another player from opening.
+
+```mermaid
+flowchart LR
+    A[Video A owns Starfish] --> B[Authenticated Play admits B; old commands invalidated]
+    B --> C[Cancel and join A fetch; retire callbacks; unload A]
+    C --> D[Open latest admitted generation]
+    C --> E[Cleanup failed; block new decoder]
+    D --> F[Fetch and demux; 200 ms preroll]
+    F --> G[Starfish loads; honor requested rate]
+    G --> H[First frame and continuous playback]
+```
+
+Before the UI dequeues Play, early rate and seek update that pending item. During BUFFERSTREAM startup, seeks coalesce for 120 ms after the latest request with a 400 ms maximum wait. An equivalent target or one in the same initial segment reuses that startup. A real change across segments starts from the selected segment's keyframe. After presentation, seeks still recreate the decoder because the B7 feed path has no verified in-place flush and timeline reset. Explicitly paused startup can preroll and complete Load while holding the Starfish Play call until Resume. This pause keeps its playhead and starts a fresh progress watchdog on resume. [LG Starfish feed implementation](https://github.com/webosose/chromium84-temp/blob/df04aa361ad493d47003a80ebfa3034dfc9de6e0/src/media/neva/webos/media_platform_api_webos_smp.cc)
+
+### Reverse ACK and standalone audio
+
+Each reverse event has one outstanding ACK tracked on its encrypted connection. An already sent event for A can still be acknowledged after B is admitted. Unsent A events are discarded and B starts with a fresh Loading event. The same reverse socket can carry the next play after a terminal item, and a new authenticated reverse socket for that owner can supersede it. ACK framing and authentication remain strict. Diagnostics record connection, event sequence, media generation and outstanding count. In the Phase 3.6 trace, generation 6 continued through seeks and rate changes after the reverse socket rejected an extra ACK. The trace does not establish that the extra ACK was a valid response or that it caused switching to fail.
+
+The standalone ALAC interval in the Phase 3.6 capture has roughly matched ingress and feed rates, a queue of five to six packets in sampled running periods, and scheduling near the monotonic clock. Phase 3.7 leaves the RAOP timing and audio queue code intact.
+
+### Phase 3.7 LG B7 retest
+
+1. Install the Dev IPK and start it from the TV launcher. Keep UxAir selected on the iPhone while switching A → B → C using clear H.264/AAC sources, both within one site and across sites. Verify that picture and sound are from each newly selected video.
+2. Repeat while A is loading, paused, playing and seeking. Check for `replace-requested`, `old-decoder-release` where A opened a decoder, and `replace-completed`. New media should change the media generation. A seek within an item should only change the decoder generation when it needs to restart.
+3. Start the same supported item in five clean sessions. If one stops early, capture the `stage=stop` and `direct-control` lines around it, plus the reverse event and ACK sequence. Keep URLs, UUIDs and tokens out of the capture.
+4. Check small, large and backward seeks and pause/resume on the known-good 720p and 1080p MPEG-TS sources and a supported H.264 fMP4 source. Finish with several minutes of standalone AirPlay Music.

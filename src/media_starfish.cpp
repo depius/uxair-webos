@@ -257,7 +257,11 @@ void Media::tick() {
         int result=acb_video_info(acb_, video_info.c_str(), &task_);
         fprintf(stderr,"[media-init] ACB video info end result=%d\n",result);
     }
-    if (ready && !play_requested_) {
+    if (ready && !play_requested_
+#ifdef UXAIR_DIRECT_BUILD
+        && (!direct_load_shape_ || !direct_start_held_)
+#endif
+    ) {
         ++play_attempts_;
         if(play_attempts_==1 || play_attempts_%100==0)fprintf(stderr,"[media-init] Starfish Play attempt=%u\n",play_attempts_);
 #ifdef UXAIR_DIRECT_BUILD
@@ -358,6 +362,7 @@ bool Media::direct_set_paused(bool paused) {
 #endif
 void Media::close() {
 #ifdef UXAIR_DIRECT_BUILD
+    direct_start_held_ = false;
     if (callback_generation_) {
         std::lock_guard<std::mutex> lock(direct_callback_mutex);
         direct_callbacks.erase(callback_generation_);

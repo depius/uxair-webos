@@ -20,6 +20,8 @@ typedef struct {
     http_request_t *request;
     const char *close_reason;
     uint64_t deadline_ms, record_deadline_ms, http_deadline_ms, reverse_ack_ms;
+    uint64_t reverse_generation;
+    unsigned reverse_sequence;
 } uxair_crypto_t;
 
 int uxair_crypto_begin(uxair_crypto_t *state);

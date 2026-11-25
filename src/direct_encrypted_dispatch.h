@@ -39,6 +39,8 @@ int uxair_video_cipher_expired(void *opaque) {
     if (crypto->reverse_ack_ms && now>=crypto->reverse_ack_ms) {
         ++conn->raop->wire.reverse_failures;
         crypto->close_reason="reverse-ack-timeout";
+        fprintf(stderr,"[reverse-channel] conn=%u reason=reverse-ack-timeout event=%u generation=%llu outstanding=1\n",
+                conn->wire_id,crypto->reverse_sequence,(unsigned long long)crypto->reverse_generation);
         return 1;
     }
     if ((crypto->deadline_ms && now >= crypto->deadline_ms) ||
@@ -101,17 +103,21 @@ static http_response_t *uxair_encrypted_route(raop_conn_t *conn, http_request_t 
     } else if (play || (!n && !strcmp(method,"GET") &&
                (!strcmp(path,"/playback-info") || !strcmp(path,"/scrub"))) ||
                (!strcmp(method,"PUT") && uxair_control_path(path,"/setProperty")) ||
-               (!strcmp(method,"POST") && ((!n && !strcmp(path,"/stop")) ||
+               (!strcmp(method,"POST") && ((!n && !strcmp(path,"/stop")) || !strcmp(path,"/action") ||
                    uxair_control_path(path,"/rate") || uxair_control_path(path,"/scrub")))) {
         const char *reason = NULL;
         *route = play?"play":"direct";
         status=uxair_direct_request(conn->raop->callbacks.cls,conn->video_pair_owner,method,path,
             http_request_get_header(request,"Content-Type"),body,n,&output,&output_length,&content_type,
             &reason,conn->video_controller,(unsigned long)conn);
-        if (play && status==200) ++conn->raop->wire.admitted;
+        if (play && status==200 && (!reason || strcmp(reason,"duplicate-play"))) ++conn->raop->wire.admitted;
         if (play && status!=200 && !conn->video_crypto.admission_logged)
             fprintf(stderr,"[direct-session] conn=%u admission=rejected status=%d reason=%s\n",
                     conn->wire_id,status,reason?reason:"handler");
+        if (!play && !strcmp(method,"POST") && (!strcmp(path,"/action") || uxair_control_path(path,"/scrub")) &&
+            conn->video_crypto.received<=16)
+            fprintf(stderr,"[direct-control] conn=%u path=%s status=%d reason=%s\n",conn->wire_id,
+                    uxair_wire_path(path),status,reason?reason:"queued");
     }
     if (response) return response;
     response = uxair_response("HTTP/1.1", NULL, status);
@@ -155,7 +161,7 @@ int uxair_video_cipher_service(void *opaque,int fd) {
     uxair_crypto_t *crypto=&conn->video_crypto;
     if(!crypto->reverse||crypto->reverse_ack_ms) return 0;
     char event[8192];
-    const int n=uxair_direct_next_event(conn->raop->callbacks.cls,(unsigned long)conn,event,sizeof(event));
+    const int n=uxair_direct_next_event(conn->raop->callbacks.cls,(unsigned long)conn,event,sizeof(event),&crypto->reverse_generation);
     if(n<=0) {
         if(n<0) crypto->close_reason="reverse-session-ended";
         return n;
@@ -171,12 +177,19 @@ int uxair_video_cipher_service(void *opaque,int fd) {
         return -1;
     }
     ++conn->raop->wire.reverse_events;
+    ++crypto->reverse_sequence;
     crypto->reverse_ack_ms=uxair_crypto_now_ms()+5000;
+    if(crypto->reverse_sequence<=16)
+        fprintf(stderr,"[reverse-channel] conn=%u event=%u generation=%llu outstanding=1 action=sent\n",
+                conn->wire_id,crypto->reverse_sequence,(unsigned long long)crypto->reverse_generation);
     return 0;
 }
 
 static int uxair_reverse_ack_rejected(const raop_conn_t *conn, const char *reason) {
-    fprintf(stderr,"[reverse-channel] conn=%u ack=rejected reason=%s\n",conn->wire_id,reason);
+    const uxair_crypto_t *crypto=&conn->video_crypto;
+    fprintf(stderr,"[reverse-channel] conn=%u ack=rejected reason=%s event=%u generation=%llu outstanding=%d\n",
+            conn->wire_id,reason,crypto->reverse_sequence,(unsigned long long)crypto->reverse_generation,
+            crypto->reverse_ack_ms!=0);
     return -4;
 }
 
@@ -215,8 +228,10 @@ static int uxair_encrypted_http(void *opaque, const unsigned char *data, size_t 
             if (session && strcmp(session,conn->video_pair_owner))
                 return uxair_reverse_ack_rejected(conn,"session-mismatch");
             if ((size_t)consumed!=n) return uxair_reverse_ack_rejected(conn,"trailing-data");
-            if (crypto->received <= 8)
-                fprintf(stderr,"[reverse-channel] conn=%u ack=accepted fragmented=%d\n",conn->wire_id,crypto->http_bytes!=0);
+            if (crypto->reverse_sequence<=16)
+                fprintf(stderr,"[reverse-channel] conn=%u ack=accepted fragmented=%d event=%u generation=%llu outstanding=0\n",
+                        conn->wire_id,crypto->http_bytes!=0,crypto->reverse_sequence,
+                        (unsigned long long)crypto->reverse_generation);
             crypto->reverse_ack_ms=0;
             http_request_destroy(crypto->request);
             crypto->request=NULL;

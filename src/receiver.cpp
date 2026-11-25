@@ -357,6 +357,10 @@ const char *Receiver::direct_block_reason_locked(bool embedded_audio) const {
 }
 const char *Receiver::direct_block_reason(bool embedded_audio) {
     std::lock_guard<std::mutex> lock(mutex);
+    // Leave the live reservation in place. DirectSession verifies which
+    // authenticated sender may replace the media using that reservation.
+    if (embedded_audio && direct_active && direct_embedded_audio && !direct_cleanup_failed &&
+        !ingress.closing && !pairing.visible()) return nullptr;
     return direct_block_reason_locked(embedded_audio);
 }
 bool Receiver::reserve_direct(bool embedded_audio) {
@@ -378,9 +382,9 @@ extern "C" void uxair_direct_lost(void *context,unsigned long token){self(contex
 extern "C" int uxair_direct_encrypted_reverse(void *context,const char *owner,const unsigned char *key,unsigned long token) {
     return self(context).direct.bind_encrypted_reverse(owner,std::string(reinterpret_cast<const char*>(key),32),uintptr_t(token));
 }
-extern "C" int uxair_direct_next_event(void *context,unsigned long token,char *output,int capacity) {
+extern "C" int uxair_direct_next_event(void *context,unsigned long token,char *output,int capacity,uint64_t *generation) {
     std::string event;
-    const int result=self(context).direct.take_encrypted_event(uintptr_t(token),event);
+    const int result=self(context).direct.take_encrypted_event(uintptr_t(token),event,*generation);
     if(result<=0) return result;
     if(event.size()>size_t(capacity)) return -1;
     memcpy(output,event.data(),event.size());
@@ -402,7 +406,7 @@ extern "C" int uxair_direct_request(void *context,const char *owner,const char *
         static std::atomic<unsigned> starts{0};
         if(starts.load()<64 && starts.fetch_add(1)<64)
             fprintf(stderr,"[direct-protocol] play status=%d admission=%s descriptor=%s queued=%d reason=%s\n",
-                response.status,blocked?blocked:response.status==409?"session-conflict":"idle",response.descriptor,int(response.queued),
+                response.status,blocked?blocked:response.queued?"queued":response.status==409?"conflict":"handled",response.descriptor,int(response.queued),
                 response.reason?response.reason:"none");
     }
     return response.status;

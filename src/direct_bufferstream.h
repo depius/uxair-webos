@@ -25,6 +25,7 @@ private:
     struct Job {
         DirectDemuxedSegment segment;
         int64_t position_ns = 0;
+        int64_t interval_start_ns = 0, interval_end_ns = 0;
         int64_t decoder_origin_ns = 0;
         bool decoder_boundary = false;
     };
@@ -34,6 +35,7 @@ private:
     DirectError startup_error() const;
     bool fail(DirectError error);
     void set_paused(bool pause, DirectOrigin origin, int64_t now);
+    bool seek(double position, int64_t now);
     void backend_pause(bool pause, DirectOrigin origin);
     void start_running(int64_t now);
     void progress_log(const char* stage, const char* reason, int64_t now);
@@ -61,10 +63,14 @@ private:
     std::array<FeedTrack, 2> tracks_{};
     size_t preroll_bytes_ = 0;
     bool opened_ = false, presented_ = false, paused_ = false, buffering_ = false, eos_ = false;
+    bool replacement_reported_ = false, startup_paused_ = false;
     DirectOrigin pause_origin_ = DirectOrigin::None;
     uint64_t decoder_generation_ = 0;
     unsigned control_records_ = 0, progress_records_ = 0, reported_frames_ = 1, audio_underruns_ = 0;
     std::atomic<unsigned> segments_prepared_{0}, video_demuxed_{0}, audio_demuxed_{0};
     int64_t opened_at_ = 0, preroll_at_ = 0, clock_at_ = 0, clock_ns_ = 0, position_ns_ = 0;
+    int64_t opened_interval_start_ns_ = 0, opened_interval_end_ns_ = 0;
+    int64_t seek_due_ = 0, seek_deadline_ = 0;
+    double seek_position_ = 0;
     int64_t last_feed_at_ = 0, running_since_ = 0, eos_at_ = 0, next_progress_ns_ = 0;
 };

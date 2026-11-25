@@ -235,7 +235,7 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	writeQuery(other, "POST /stop HTTP/1.1\r\n\r\n", 409)
 	writeQuery(other, reverse, 409)
 	other.socket.Close()
-	writeQuery(a, "POST /scrub?position=4 HTTP/1.1\r\n\r\n", 409)
+	writeQuery(a, "POST /scrub?position=1.5 HTTP/1.1\r\n\r\n", 200)
 	step("p")
 	readEvent(reversePeer, "playing")
 	reversePeer.write(reversePeer.seal("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nx"))
@@ -264,7 +264,7 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	writeQuery(a, "POST /rate?value=1 HTTP/1.1\r\n\r\n", 200)
 	step("r")
 	event(reversePeer, "playing")
-	writeQuery(a, playRequest, 409)
+	writeQuery(a, playRequest, 200)
 	item, err := hex.DecodeString("62706c6973743030d1010254757569645f10107068617365332d746573742d6974656d080b100000000000000101000000000000000300000000000000000000000000000023")
 	must(t, err)
 	writeQuery(a, plistRequest("POST", "/scrub?position=4", item), 200)
@@ -272,23 +272,45 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	if body := writeQuery(a, "GET /scrub HTTP/1.1\r\n\r\n", 200); !bytes.Contains(body, []byte("position: 4")) {
 		t.Fatal("seek position was not published")
 	}
-	writeQuery(a, "POST /stop HTTP/1.1\r\n\r\n", 200)
-	step("t")
+	b = makePeer()
+	b.upgrade()
+	nextItem := bytes.Replace(play, []byte("phase3-test-item"), []byte("phase3-next-item"), 1)
+	writeQuery(b, plistRequest("POST", "/play", nextItem), 200)
+	event(reversePeer, "loading")
+	writeQuery(a, "POST /stop HTTP/1.1\r\n\r\n", 409)
+	writeQuery(a, playRequest, 409)
+	a.socket.Close()
+	a = b
+	writeQuery(a, plistRequest("POST", "/scrub?position=3", item), 409)
+	writeQuery(a, "POST /scrub?position=3 HTTP/1.1\r\n\r\n", 200)
+	writeQuery(a, "POST /scrub?position=2.5 HTTP/1.1\r\n\r\n", 200)
+	writeQuery(a, "POST /rate?value=0 HTTP/1.1\r\n\r\n", 200)
+	step("h")
+	event(reversePeer, "paused")
+	writeQuery(a, "POST /rate?value=1 HTTP/1.1\r\n\r\n", 200)
+	step("r")
+	event(reversePeer, "playing")
+	remove := func(uuid string) string {
+		body := fmt.Sprintf(`<plist version="1.0"><dict><key>type</key><string>playlistRemove</string><key>params</key><dict><key>item</key><dict><key>uuid</key><string>%s</string></dict></dict></dict></plist>`, uuid)
+		return fmt.Sprintf("POST /action HTTP/1.1\r\nContent-Type: text/x-apple-plist+xml\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
+	}
+	writeQuery(a, remove("phase3-test-item"), 409)
+	writeQuery(a, remove("phase3-next-item"), 200)
+	step("m")
 	event(reversePeer, "stopped")
-	requireClosed(reversePeer)
-	reversePeer = makePeer()
-	reversePeer.upgrade()
-	writeQuery(reversePeer, reverse, 101)
 	writeQuery(a, playRequest, 200)
 	event(reversePeer, "loading")
 	step("f")
 	event(reversePeer, "stopped")
-	requireClosed(reversePeer)
 	writeQuery(a, query, 503)
 	writeQuery(a, playRequest, 200)
+	event(reversePeer, "loading")
 	step("p")
+	event(reversePeer, "playing")
 	writeQuery(a, "POST /stop HTTP/1.1\r\n\r\n", 200)
 	step("t")
+	event(reversePeer, "stopped")
+	reversePeer.socket.Close()
 	writeQuery(a, "GET /secret-native-endpoint?token=private-native-query HTTP/1.1\r\n\r\n", 501)
 	replay := a.seal(query)
 	a.write(replay)
@@ -362,13 +384,14 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 		"reason=record-authentication", "reason=encrypted-http-framing",
 		"ack=accepted fragmented=1", "ack=rejected reason=body-not-empty",
 		"ack=rejected reason=no-event-outstanding", "ack=rejected reason=trailing-data",
-		"admitted=3 ", "reverse_upgrades=5", "encrypted_active=0",
+		"admitted=4 ", "reverse_upgrades=4", "encrypted_active=0",
+		"reason=stale-play-connection", "stage=replace-requested", "outstanding=0",
 	} {
 		if !strings.Contains(log, milestone) {
 			t.Errorf("missing native diagnostic %q", milestone)
 		}
 	}
-	for _, private := range []string{testSession, "different-identity", "secret-native-endpoint", "private-native-query", "private-native-url", "phase3-test-item"} {
+	for _, private := range []string{testSession, "different-identity", "secret-native-endpoint", "private-native-query", "private-native-url", "phase3-test-item", "phase3-next-item"} {
 		if strings.Contains(log, private) {
 			t.Errorf("native diagnostics leaked test input %q", private)
 		}

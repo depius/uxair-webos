@@ -7,8 +7,9 @@
 #include <thread>
 #include <condition_variable>
 #include <atomic>
+#include <array>
 enum class DirectCommandKind { Play, Pause, Resume, Seek, Stop };
-enum class DirectOrigin { None, SenderPlay, InitialRate, SenderRate, SenderSeek, SenderStop, SenderDisconnect, ReceiverTimeout, Local, Buffering };
+enum class DirectOrigin { None, SenderPlay, InitialRate, SenderRate, SenderSeek, SenderStop, SenderDisconnect, ReceiverTimeout, Local, Buffering, Replacement, SenderRemove };
 const char *direct_origin_name(DirectOrigin origin);
 struct DirectCommand {
     DirectCommandKind kind;
@@ -16,6 +17,8 @@ struct DirectCommand {
     double position=0;
     bool position_seconds=false, encrypted=false, start_paused=false;
     uint64_t generation=0;
+    int64_t admitted_ms=0;
+    bool replacement=false;
     DirectOrigin origin=DirectOrigin::None;
 };
 enum class DirectState { Idle, Loading, Playing, Paused, Ended, Error, Buffering };
@@ -56,25 +59,30 @@ bool direct_public_ipv4(uint32_t host_order);
 std::string direct_load_payload(const std::string& uri,const std::string& app,bool internal=false,DirectLoadContract contract=DirectLoadContract::ArgsHls);
 class DirectSession {
     std::thread reverse_thread_;std::atomic<bool> reverse_running_{false};int reverse_fd_=-1;uintptr_t reverse_token_=0;
-    std::condition_variable event_cv_;std::deque<std::string> events_;
+    struct ReverseEvent { std::string body; uint64_t generation; };
+    std::condition_variable event_cv_;std::deque<ReverseEvent> events_;
     int64_t last_request_ms_=0;
     unsigned request_id_=0,pending_id_=0;std::string pending_url_,pending_data_;bool pending_done_=false;
     void reverse_loop();void close_reverse();
     std::mutex mutex_;std::deque<DirectCommand> commands_;DirectSnapshot snapshot_;std::string owner_,controller_,media_uuid_;
     uintptr_t encrypted_reverse_=0, play_connection_=0;
+    std::array<uintptr_t, 16> retired_play_connections_{};
     uint64_t generation_=0;
-    bool reverse_has_play_=false;
+    int64_t handoff_until_ms_=0;
+    bool stop_queued_=false;
+    unsigned lifecycle_records_=0;
     unsigned backend_attempts_=0, backend_loads_=0, backend_failures_=0, backend_cancellations_=0, video_starts_=0, audio_starts_=0;
     DirectBackend pending_backend_=DirectBackend::None;
     bool frame_reported_=false, audio_reported_=false;
     enum class BackendOutcome { Loaded, Failed, Cancelled };
     void backend_outcome_locked(BackendOutcome outcome);
     void event_locked(DirectState state);
+    void stop_locked(DirectOrigin origin);
 public:
     ~DirectSession();
     bool bind_reverse(const std::string&,int fd,uintptr_t token);
     bool bind_encrypted_reverse(const std::string& owner,const std::string& controller,uintptr_t token);
-    int take_encrypted_event(uintptr_t token,std::string& body);
+    int take_encrypted_event(uintptr_t token,std::string& body,uint64_t& generation);
     void cancel_fetch();
     bool check_timeout(int64_t now_ms);
     void connection_lost(uintptr_t token);
@@ -83,7 +91,8 @@ public:
                         const std::string& type,const std::string& body,bool busy=false,
                         const std::string& controller={},uintptr_t token=0);
     bool take(DirectCommand& command);
-    void publish(DirectSnapshot snapshot);
+    bool is_current(uint64_t generation);
+    bool publish(DirectSnapshot snapshot);
     void summarize();
     DirectSnapshot snapshot();
     void reset(bool keep_reverse=false);

@@ -60,6 +60,10 @@ int main() {
     callback(PF_EVENT_TYPE_STR_VIDEO_INFO, 0, "{\"width\":1280,\"height\":720,\"uri\":\"https://SECRET.invalid/?token=PRIVATE\"}",
              StarfishMediaAPIs::context);
     assert(media.video_info_width == 1280 && media.video_info_height == 720);
+    media.direct_hold_start(true);
+    media.tick();
+    assert(media.ready && !media.playing && !media.play_accepted() && !media.frames);
+    media.direct_hold_start(false);
     media.tick();
     assert(media.ready && media.playing && media.play_accepted() && !media.frames);
     callback(PF_EVENT_TYPE_FRAMEREADY, 0, nullptr, live_context);
@@ -88,12 +92,21 @@ int main() {
     for (auto node : {root, arg, option, stream, contents}) assert(!plist_dict_get_item(node, "plugins"));
     plist_free(root);
 
+    media.close();
+    assert(open() && !media.ready && media.frames==0);
+    callback(PF_EVENT_TYPE_STR_STATE_UPDATE__LOADCOMPLETED, 0, nullptr, live_context);
+    callback(PF_EVENT_TYPE_FRAMEREADY, 0, nullptr, live_context);
+    callback(PF_EVENT_TYPE_INT_ERROR, 0, nullptr, live_context);
+    assert(!media.ready && !media.failed && media.frames==0);
+    auto* replacement_context = StarfishMediaAPIs::context;
+    callback(PF_EVENT_TYPE_STR_STATE_UPDATE__LOADCOMPLETED, 0, nullptr, replacement_context);
+    assert(media.ready);
     StarfishMediaAPIs::unload_exception = "unload failed for https://SECRET.invalid/?token=PRIVATE";
     media.close();
     StarfishMediaAPIs::unload_exception = nullptr;
-    std::thread late([&] { callback(PF_EVENT_TYPE_STR_STATE_UPDATE__LOADCOMPLETED, 0, nullptr, live_context); });
+    std::thread late([&] { callback(PF_EVENT_TYPE_STR_STATE_UPDATE__LOADCOMPLETED, 0, nullptr, replacement_context); });
     late.join();
     assert(!media.ready);
-    assert(!media.direct_released() && !open() && StarfishMediaAPIs::unloads == 2);
-    std::puts("PASS: real Starfish adapter builds the v1.3 BUFFERSTREAM schema, recovers from Load exceptions, and blocks reuse after failed Unload");
+    assert(!media.direct_released() && !open() && StarfishMediaAPIs::unloads == 3);
+    std::puts("PASS: Starfish BUFFERSTREAM schema, startup pause, delayed callbacks, and unload isolation");
 }

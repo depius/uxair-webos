@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
@@ -15,6 +16,8 @@ constexpr int64_t preroll_delay = 200000000;
 constexpr int64_t preroll_duration = 2 * second;
 constexpr int64_t feed_timeout = 5 * second;
 constexpr int64_t frame_timeout = 8 * second;
+constexpr int64_t startup_seek_quiet = 120000000;
+constexpr int64_t startup_seek_max_wait = 400000000;
 constexpr size_t preroll_bytes = 8 * 1024 * 1024;
 enum Track { Video, Audio };
 constexpr unsigned preroll_packets[] = {60, 100};
@@ -65,6 +68,8 @@ bool DirectBufferstream::open(const DirectCommand& play, int64_t now, DirectSess
     if (session && !play.encrypted && fcup_enabled()) {
         network_.sender_manifest = [session](const std::string& url) { return session->sender_manifest(url); };
     }
+    if (play.generation != play_.generation || play.origin != DirectOrigin::SenderSeek)
+        replacement_reported_ = false;
     play_ = play;
     ++decoder_generation_;
     paused_ = play.start_paused;
@@ -196,6 +201,8 @@ void DirectBufferstream::download(DirectCommand play) {
             }
             previous_dts = media.last_video_dts_ns;
             job->position_ns = segment->start_ns + std::min(media.skipped_ns, segment->duration_ns);
+            job->interval_start_ns = segment->start_ns;
+            job->interval_end_ns = segment->start_ns + segment->duration_ns;
             job->decoder_origin_ns = origin;
             job->decoder_boundary=boundary;
             {
@@ -400,23 +407,35 @@ void DirectBufferstream::set_paused(bool pause, DirectOrigin origin, int64_t now
     if (opened_ && presented_ && !buffering_) {
         if (!pause) start_running(now);
         backend_pause(pause, origin);
+    } else if (opened_ && !presented_) {
+        if (!pause && startup_paused_) opened_at_ = now;
+        if (media_.play_accepted()) backend_pause(pause, origin);
     }
 }
 
 bool DirectBufferstream::control(const DirectCommand& command, int64_t now) {
+    if (command.generation && command.generation!=play_.generation) return false;
     if (command.kind == DirectCommandKind::Pause || command.kind == DirectCommandKind::Resume) {
         set_paused(command.kind == DirectCommandKind::Pause, command.origin, now);
         return true;
     }
     if (command.kind == DirectCommandKind::Seek) {
-        DirectCommand restarted = play_;
-        restarted.position = command.position;
-        restarted.position_seconds = true;
-        restarted.start_paused = paused_;
-        restarted.origin = DirectOrigin::SenderSeek;
-        return open(restarted, now, session_);
+        if (presented_) return seek(command.position, now);
+        seek_position_ = command.position;
+        if (!seek_deadline_) seek_deadline_ = now + startup_seek_max_wait;
+        seek_due_ = std::min(now + startup_seek_quiet, seek_deadline_);
+        return true;
     }
     return false;
+}
+
+bool DirectBufferstream::seek(double position, int64_t now) {
+    DirectCommand restarted = play_;
+    restarted.position = position;
+    restarted.position_seconds = true;
+    restarted.start_paused = paused_;
+    restarted.origin = DirectOrigin::SenderSeek;
+    return open(restarted, now, session_);
 }
 
 void DirectBufferstream::update_snapshot() {
@@ -439,6 +458,23 @@ void DirectBufferstream::update_snapshot() {
 
 DirectSnapshot DirectBufferstream::tick(int64_t now) {
     if (status_.state == DirectState::Error) { update_snapshot(); return status_; }
+    if (seek_due_) {
+        if (now < seek_due_) { update_snapshot(); return status_; }
+        seek_due_ = seek_deadline_ = 0;
+        if (!current_) take_next();
+        const double original = play_.position_seconds ? play_.position : play_.position * duration_ns_ / second;
+        const double target = seek_position_ * second;
+        const int64_t start = opened_ ? opened_interval_start_ns_ : current_ ? current_->interval_start_ns : 0;
+        const int64_t end = opened_ ? opened_interval_end_ns_ : current_ ? current_->interval_end_ns : 0;
+        const bool same_fragment = target >= start && target < end;
+        const bool unchanged = same_fragment || ((play_.position_seconds || !play_.position || duration_ns_ > 0) &&
+                                                std::abs(seek_position_ - original) < .001);
+        if (control_records_++ < 32)
+            fprintf(stderr, "[direct-session] stage=startup-seek generation=%llu decoder=%llu position-ms=%lld result=%s\n",
+                    (unsigned long long)status_.generation, (unsigned long long)decoder_generation_,
+                    (long long)(seek_position_*1000), unchanged?"retained":"restarted");
+        if (!unchanged && !seek(seek_position_, now)) { update_snapshot(); return status_; }
+    }
     const auto download_error = download_error_.load();
     if (download_error != DirectError::None) {
         status_.stage = download_stage_.load();
@@ -479,6 +515,8 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
         status_.width = current_->segment.width;
         status_.height = current_->segment.height;
         position_ns_ = current_->position_ns;
+        opened_interval_start_ns_ = current_->interval_start_ns;
+        opened_interval_end_ns_ = current_->interval_end_ns;
 #ifdef UXAIR_DIRECT_BUILD
         media_.guard_direct_callbacks(direct_native_json_summary);
 #endif
@@ -501,6 +539,9 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
             std::fprintf(stderr, "[direct-player] stage=feed-ready owner=ui gate=load-return delay-ms=200 ready=%d playing=%d\n",
                          int(media_.ready.load()), int(media_.playing.load()));
         }
+#ifdef UXAIR_DIRECT_BUILD
+        media_.direct_hold_start(paused_ && !presented_);
+#endif
         media_.tick();
     }
     if (opened_ && media_.failed) fail(DirectError::NativeError);
@@ -524,8 +565,16 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
         if (paused_) backend_pause(true,pause_origin_);
         std::fprintf(stderr, "[direct-bufferstream] decoder-progress geometry=%ux%u video=H264 audio=AAC-LC\n",
                      status_.width, status_.height);
+        if (play_.replacement && !replacement_reported_) {
+            replacement_reported_ = true;
+            fprintf(stderr,"[direct-session] stage=replace-completed generation=%llu decoder=%llu elapsed-ms=%lld rate=%d\n",
+                    (unsigned long long)status_.generation,(unsigned long long)decoder_generation_,
+                    (long long)std::max(int64_t(0),now/1000000-play_.admitted_ms),int(!paused_));
+        }
     }
-    if (!presented_ && now - opened_at_ > startup_timeout) {
+    startup_paused_ = paused_ && opened_ && !presented_ && media_.ready &&
+                      tracks_[Video].accepted && tracks_[Audio].accepted;
+    if (!presented_ && !startup_paused_ && now - opened_at_ > startup_timeout) {
         const auto reason = startup_error();
         if (reason == DirectError::InitialFeedTimeout) status_.stage = DirectStage::Preroll;
         else if (reason == DirectError::LoadTimeout) status_.stage = DirectStage::AwaitLoad;
@@ -580,7 +629,7 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
         } else if (eos_ && !paused_ && now - std::max(eos_at_,running_since_) > feed_timeout) {
             progress_log("stall","await-eos",now);
             fail(DirectError::ProgressTimeout);
-        } else if (paused_ && presented_) {
+        } else if (paused_ && (presented_ || startup_paused_)) {
             status_.state = DirectState::Paused;
         } else if (buffering_) {
             status_.state = DirectState::Buffering;
@@ -605,11 +654,13 @@ bool DirectBufferstream::close() {
     current_.reset();
     media_.close();
     opened_ = presented_ = paused_ = buffering_ = eos_ = false;
+    startup_paused_ = false;
     tracks_ = {};
     preroll_bytes_ = 0;
     pause_origin_ = DirectOrigin::None;
     control_records_ = progress_records_ = audio_underruns_ = 0;
     reported_frames_ = 1;
+    seek_due_ = seek_deadline_ = 0;
     preroll_at_ = clock_at_ = clock_ns_ = position_ns_ = last_feed_at_ = running_since_ = eos_at_ = next_progress_ns_ = 0;
 #ifdef UXAIR_DIRECT_BUILD
     return media_.direct_released();

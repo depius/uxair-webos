@@ -39,7 +39,7 @@ const char *direct_backend_name(DirectBackend backend) {
 }
 const char *direct_origin_name(DirectOrigin origin) {
     static const char *names[]={"none","sender-play","initial-rate","sender-rate","sender-seek","sender-stop",
-        "sender-disconnect","receiver-timeout","local","buffering"};
+        "sender-disconnect","receiver-timeout","local","buffering","replacement","sender-remove"};
     const auto index = unsigned(origin);
     return index < sizeof(names)/sizeof(*names) ? names[index] : "unknown";
 }
@@ -59,6 +59,15 @@ static std::string diagnostic_plist(const DirectSnapshot& s) {
 static bool number(const std::string& text,double& value) {
     if(text.empty()||text.size()>32)return false;char *end=nullptr;value=strtod(text.c_str(),&end);
     return end==text.c_str()+text.size()&&std::isfinite(value)&&value>=0&&value<=31536000;
+}
+static int64_t direct_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+static bool live_media(DirectState state) {
+    return state==DirectState::Loading || state==DirectState::Buffering ||
+           state==DirectState::Playing || state==DirectState::Paused;
 }
 bool direct_uri_valid(const std::string& uri) {
     if(uri.size()>4096)return false;
@@ -256,11 +265,21 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
     if(owner.empty()||owner.size()>128||owner.find_first_of("\r\n")!=std::string::npos||target.size()>256||body.size()>524288)return reply;
     std::lock_guard<std::mutex> lock(mutex_);
     if(!owner_.empty()&&(owner_!=owner||controller_!=controller)){reply.status=409;reply.reason="session-conflict";return reply;}
-    last_request_ms_=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     DirectCommand command;command.kind=DirectCommandKind::Stop;command.encrypted=!controller.empty();
     command.generation=generation_;command.origin=DirectOrigin::SenderStop;
     if (command.encrypted && (!token || controller.size()!=32)) return reply;
+    const bool play=method=="POST"&&target=="/play";
+    const bool control=method=="POST"&&!play;
+    if (command.encrypted) {
+        const auto retired=std::find(retired_play_connections_.begin(),retired_play_connections_.end(),token);
+        if (retired!=retired_play_connections_.end() ||
+            (control && ((play_connection_ && token!=play_connection_) || handoff_until_ms_))) {
+            reply.status=409;reply.reason="stale-play-connection";return reply;
+        }
+    }
+    last_request_ms_=direct_now_ms();
     if(method=="POST"&&target=="/action") {
+        if(command.encrypted && body.size()>16384){reply.status=413;return reply;}
         plist_t root=nullptr;
         if(type.find("binary-plist")!=std::string::npos)plist_from_bin(body.data(),uint32_t(body.size()),&root);
         else if(body.find("<!ENTITY")==std::string::npos)plist_from_xml(body.data(),uint32_t(body.size()),&root);
@@ -269,6 +288,7 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         const auto kind=text(plist_dict_get_item(root,"type"));plist_t params=plist_dict_get_item(root,"params");
         if(!params||plist_get_node_type(params)!=PLIST_DICT){plist_free(root);return reply;}
         if(kind=="unhandledURLResponse") {
+            if(command.encrypted){reply.status=501;reply.reason="fcup-unavailable";plist_free(root);return reply;}
             uint64_t id=0,status=0;auto id_node=plist_dict_get_item(params,"FCUP_Response_RequestID"),status_node=plist_dict_get_item(params,"FCUP_Response_StatusCode"),data_node=plist_dict_get_item(params,"FCUP_Response_Data");
             if(id_node&&plist_get_node_type(id_node)==PLIST_UINT)plist_get_uint_val(id_node,&id);
             if(status_node&&plist_get_node_type(status_node)==PLIST_UINT)plist_get_uint_val(status_node,&status);
@@ -279,8 +299,23 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
             pending_done_=true;free(data);event_cv_.notify_all();reply.status=status==200&&!pending_data_.empty()?200:422;
             plist_free(root);return reply;
         }
-        if(kind=="playlistRemove") {commands_.clear();command.kind=DirectCommandKind::Stop;}
-        else {reply.status=501;plist_free(root);return reply;}
+        if(kind=="playlistRemove") {
+            if(command.encrypted) {
+                const auto item=plist_dict_get_item(params,"item");
+                const auto uuid=PLIST_IS_DICT(item)?plist_dict_get_item(item,"uuid"):nullptr;
+                uint64_t length=0;
+                const auto* id=uuid?plist_get_string_ptr(uuid,&length):nullptr;
+                const bool matches=play_connection_ && id && length && length==media_uuid_.size() &&
+                    !memcmp(id,media_uuid_.data(),size_t(length));
+                if(!matches){reply.status=409;reply.reason="media-item-conflict";plist_free(root);return reply;}
+            }
+            command.origin=DirectOrigin::SenderRemove;
+        } else {
+            reply.status=501;
+            reply.reason=kind=="playlistInsert"?"playlist-insert-unsupported":"unsupported-action";
+            plist_free(root);
+            return reply;
+        }
         plist_free(root);
     } else if(method=="PUT" && uxair_control_path(target.c_str(),"/setProperty")) {
         return set_property(target.c_str(),body);
@@ -292,8 +327,9 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         }
         // Do not acknowledge subtitle, rate-boundary or playlist mutation features we do not implement.
         reply.status=501;return reply;
-    } else if(method=="POST"&&target=="/play") {
-        if(busy||snapshot_.state==DirectState::Loading||snapshot_.state==DirectState::Playing||snapshot_.state==DirectState::Paused||snapshot_.state==DirectState::Buffering){reply.status=409;return reply;}
+    } else if(play) {
+        const bool replacing=live_media(snapshot_.state);
+        if(busy || (replacing&&!command.encrypted)){reply.status=409;reply.reason="receiver-busy";return reply;}
         std::string item;
         if(!play_body(type,body,command,owner,item)) {
             reply.descriptor="invalid-play";
@@ -313,18 +349,42 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         }
         reply.descriptor=command.uri.compare(0,8,"https://")==0 ?
             (manifest?"https-hls":"https-url") : (manifest?"http-hls":"http-url");
-        if(!commands_.empty()){reply.status=503;return reply;}
+        if(command.encrypted && play_connection_ && play_connection_!=token) {
+            const auto free=std::find(retired_play_connections_.begin(),retired_play_connections_.end(),uintptr_t(0));
+            if(free==retired_play_connections_.end()){reply.status=503;reply.reason="play-handoff-limit";return reply;}
+            *free=play_connection_;
+        }
+        if(command.encrypted) play_connection_=token;
+        handoff_until_ms_=0;
+        const bool duplicate=replacing&&!stop_queued_&&command.encrypted&&!item.empty()&&item==media_uuid_;
+        if(duplicate) {
+            reply.status=200;reply.reason="duplicate-play";
+            if (lifecycle_records_++<64)
+                fprintf(stderr,"[direct-session] stage=media-identity generation=%llu result=duplicate\n",
+                        (unsigned long long)generation_);
+            return reply;
+        }
+        if(!command.encrypted&&!commands_.empty()){reply.status=503;return reply;}
+        if(replacing) {
+            backend_outcome_locked(BackendOutcome::Cancelled);
+            events_.clear(); // Keep only an already transmitted event on the reverse socket.
+            if (lifecycle_records_++<64)
+                fprintf(stderr,"[direct-session] stage=replace-requested old=%llu new=%llu previous=%s item=%s rate=%d\n",
+                        (unsigned long long)generation_,(unsigned long long)(generation_+1),
+                        direct_state_name(snapshot_.state),item.empty()?"absent":"new",int(!command.start_paused));
+        }
+        commands_.clear();
+        stop_queued_=false;
         command.kind=DirectCommandKind::Play;owner_=owner;controller_=controller;media_uuid_=std::move(item);
         command.generation=++generation_;command.origin=DirectOrigin::SenderPlay;
-        play_connection_=command.encrypted?token:0;
-        if (encrypted_reverse_ && play_connection_) reverse_has_play_=true;
+        command.admitted_ms=last_request_ms_;
+        command.replacement=replacing;
         frame_reported_=audio_reported_=false;
         snapshot_=DirectSnapshot();snapshot_.state=DirectState::Loading;snapshot_.stage=DirectStage::Queued;
         snapshot_.generation=generation_;
         event_locked(DirectState::Loading);
     } else if(method=="POST"&&target=="/stop") {
         if(command.encrypted&&!play_connection_){reply.status=409;reply.reason="no-video-session";return reply;}
-        commands_.clear();
     }
     else if(method=="POST"&&target.compare(0,6,"/rate?")==0){
         double rate=0;
@@ -337,8 +397,8 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
             plist_t item=PLIST_IS_DICT(root)?plist_dict_get_item(root,"uuid"):nullptr;
             uint64_t len=0;
             const char *s=item?plist_get_string_ptr(item,&len):nullptr;
-            const bool valid=PLIST_IS_DICT(root)&&(!item||(s&&len&&len<=128&&
-                (media_uuid_.empty()||(len==media_uuid_.size()&&!memcmp(s,media_uuid_.data(),size_t(len))))));
+            const bool valid=PLIST_IS_DICT(root)&&(!item||(s&&len&&len==media_uuid_.size()&&
+                !memcmp(s,media_uuid_.data(),size_t(len))));
             plist_free(root);
             if(!valid){reply.status=409;reply.reason="media-item-conflict";return reply;}
         }
@@ -348,7 +408,7 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         }
         command.kind=DirectCommandKind::Seek;
         command.origin=DirectOrigin::SenderSeek;
-        if(command.encrypted&&play_connection_&&!snapshot_.seekable){reply.status=409;reply.reason="seek-unavailable";return reply;}
+        command.position_seconds=true;
     } else if(method=="GET"&&(target=="/scrub"||target=="/playback-info")) {
         if(command.encrypted&&target=="/scrub"&&!play_connection_){reply.status=409;reply.reason="no-video-session";return reply;}
         if(snapshot_.state==DirectState::Error){reply.status=503;reply.type="text/x-apple-plist+xml";
@@ -360,8 +420,33 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         if(target=="/playback-info"){const auto end=reply.body.rfind("</dict></plist>");if(end!=std::string::npos)reply.body.insert(end,diagnostic_plist(snapshot_));}
         reply.status=200;return reply;
     } else {reply.status=501;return reply;}
-    if(command.kind!=DirectCommandKind::Play&&command.kind!=DirectCommandKind::Stop&&(snapshot_.state==DirectState::Idle||snapshot_.state==DirectState::Error||snapshot_.state==DirectState::Ended)){
+    if(command.kind!=DirectCommandKind::Play&&command.kind!=DirectCommandKind::Stop&&
+       (!live_media(snapshot_.state)||stop_queued_)){
         reply.status=409;reply.reason="no-video-session";return reply;
+    }
+    if(command.kind==DirectCommandKind::Stop) {
+        stop_locked(command.origin);
+        reply.status=200;return reply;
+    }
+    // Before the UI owns the Play, apply the latest rate and position directly
+    // to it. No decoder or fetch generation has been opened yet.
+    if (command.encrypted && command.kind!=DirectCommandKind::Play) {
+        if (!commands_.empty() && commands_.front().kind==DirectCommandKind::Play) {
+            auto& startup=commands_.front();
+            if (command.kind==DirectCommandKind::Seek) {
+                startup.position=command.position;
+                startup.position_seconds=true;
+            } else startup.start_paused=command.kind==DirectCommandKind::Pause;
+            reply.status=200;reply.reason="startup-control";return reply;
+        }
+        if (!snapshot_.frame_observed) {
+            const auto same_control=[&](const DirectCommand& pending) {
+                if (pending.generation!=command.generation) return false;
+                return command.kind==DirectCommandKind::Seek?pending.kind==DirectCommandKind::Seek:
+                    pending.kind==DirectCommandKind::Pause||pending.kind==DirectCommandKind::Resume;
+            };
+            commands_.erase(std::remove_if(commands_.begin(),commands_.end(),same_control),commands_.end());
+        }
     }
     if(commands_.size()>=8){reply.status=503;return reply;}
     if(command.kind==DirectCommandKind::Play)
@@ -370,6 +455,22 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
     commands_.push_back(command);reply.status=200;reply.queued=command.kind==DirectCommandKind::Play;return reply;
 }
 bool DirectSession::take(DirectCommand& command){std::lock_guard<std::mutex> l(mutex_);if(commands_.empty())return false;command=commands_.front();commands_.pop_front();return true;}
+bool DirectSession::is_current(uint64_t generation) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return generation==generation_;
+}
+
+void DirectSession::stop_locked(DirectOrigin origin) {
+    if(stop_queued_) return;
+    stop_queued_=true;
+    handoff_until_ms_=0;
+    commands_.clear();
+    DirectCommand stop;
+    stop.kind=DirectCommandKind::Stop;
+    stop.origin=origin;
+    stop.generation=generation_;
+    commands_.push_back(stop);
+}
 const char *direct_state_name(DirectState s){switch(s){case DirectState::Loading:case DirectState::Buffering:return "loading";case DirectState::Playing:return "playing";case DirectState::Paused:return "paused";case DirectState::Ended:case DirectState::Idle:return "stopped";default:return "stopped";}}
 void DirectSession::event_locked(DirectState state) {
     if (!reverse_running_ && !encrypted_reverse_) return;
@@ -382,7 +483,7 @@ void DirectSession::event_locked(DirectState state) {
     else if(state==DirectState::Ended&&snapshot_.natural_end) event+="<key>reason</key><string>ended</string>";
     event+="</dict></plist>";
     if(events_.size()>=16) events_.pop_front();
-    events_.push_back(std::move(event));
+    events_.push_back({std::move(event),snapshot_.generation});
     event_cv_.notify_all();
 }
 void DirectSession::backend_outcome_locked(BackendOutcome outcome) {
@@ -397,9 +498,9 @@ void DirectSession::backend_outcome_locked(BackendOutcome outcome) {
             direct_backend_name(pending_backend_),int(outcome==BackendOutcome::Loaded),name);
     pending_backend_=DirectBackend::None;
 }
-void DirectSession::publish(DirectSnapshot s){
+bool DirectSession::publish(DirectSnapshot s){
     std::lock_guard<std::mutex> l(mutex_);
-    if (s.generation && s.generation!=generation_) return;
+    if (s.generation && s.generation!=generation_) return false;
     if (!s.generation) s.generation=snapshot_.generation;
     if(!std::isfinite(s.position)||s.position<0)s.position=0;if(!std::isfinite(s.duration)||s.duration<0)s.duration=0;
     const auto prior=snapshot_.state;
@@ -429,10 +530,11 @@ void DirectSession::publish(DirectSnapshot s){
                 direct_state_name(s.state),direct_stage_name(s.stage),direct_error_name(s.error),(unsigned long long)s.generation,
                 int(s.frame_observed),int(s.audio_fed));
     if(s.state==DirectState::Idle||s.state==DirectState::Ended||s.state==DirectState::Error){
-        play_connection_=0;media_uuid_.clear();
+        play_connection_=0;handoff_until_ms_=0;stop_queued_=false;media_uuid_.clear();
         if(!reverse_running_&&!encrypted_reverse_){owner_.clear();controller_.clear();}
         commands_.clear();
     }
+    return true;
 }
 DirectSnapshot DirectSession::snapshot(){std::lock_guard<std::mutex> l(mutex_);return snapshot_;}
 void DirectSession::summarize() {
@@ -463,35 +565,32 @@ bool DirectSession::bind_reverse(const std::string& owner,int fd,uintptr_t token
 bool DirectSession::bind_encrypted_reverse(const std::string& owner,const std::string& controller,uintptr_t token) {
     if(owner.empty()||owner.size()>128||owner.find_first_of("\r\n")!=std::string::npos||controller.size()!=32||!token) return false;
     std::lock_guard<std::mutex> lock(mutex_);
-    if(reverse_running_||encrypted_reverse_||token==play_connection_||
+    if(reverse_running_||token==play_connection_||token==encrypted_reverse_||
        (!owner_.empty()&&(owner_!=owner||controller_!=controller))) return false;
+    if(std::find(retired_play_connections_.begin(),retired_play_connections_.end(),token)!=retired_play_connections_.end())
+        return false;
     owner_=owner;
     controller_=controller;
     encrypted_reverse_=token;
-    reverse_has_play_=play_connection_!=0;
-    last_request_ms_=std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-    if(play_connection_) event_locked(snapshot_.state);
+    events_.clear();
+    last_request_ms_=direct_now_ms();
+    if(live_media(snapshot_.state)) event_locked(snapshot_.state);
     return true;
 }
 
-int DirectSession::take_encrypted_event(uintptr_t token,std::string& body) {
+int DirectSession::take_encrypted_event(uintptr_t token,std::string& body,uint64_t& generation) {
     std::lock_guard<std::mutex> lock(mutex_);
     if(!token||token!=encrypted_reverse_) return -1;
-    if(events_.empty()) {
-        const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
-        return !play_connection_&&((reverse_has_play_&&(snapshot_.state==DirectState::Ended||snapshot_.state==DirectState::Error))||
-            now-last_request_ms_>=30000) ? -1 : 0;
-    }
-    body=std::move(events_.front());
+    if(events_.empty()) return !live_media(snapshot_.state)&&direct_now_ms()-last_request_ms_>=30000 ? -1 : 0;
+    body=std::move(events_.front().body);
+    generation=events_.front().generation;
     events_.pop_front();
     return 1;
 }
 
 void DirectSession::reverse_loop(){
     while(reverse_running_){std::string body,owner;
-        {std::unique_lock<std::mutex> l(mutex_);event_cv_.wait_for(l,std::chrono::milliseconds(200),[&]{return !reverse_running_||!events_.empty();});if(!reverse_running_)break;if(events_.empty())continue;body=events_.front();events_.pop_front();owner=owner_;}
+        {std::unique_lock<std::mutex> l(mutex_);event_cv_.wait_for(l,std::chrono::milliseconds(200),[&]{return !reverse_running_||!events_.empty();});if(!reverse_running_)break;if(events_.empty())continue;body=std::move(events_.front().body);events_.pop_front();owner=owner_;}
         std::string wire="POST /event HTTP/1.1\r\nContent-Type: text/x-apple-plist+xml\r\nX-Apple-Session-ID: "+owner+"\r\nContent-Length: "+std::to_string(body.size())+"\r\n\r\n"+body;
         size_t offset=0;while(offset<wire.size()&&reverse_running_){pollfd p={reverse_fd_,POLLOUT,0};if(poll(&p,1,250)<=0){reverse_running_=false;break;}auto n=send(reverse_fd_,wire.data()+offset,wire.size()-offset,MSG_DONTWAIT|MSG_NOSIGNAL);if(n<=0){reverse_running_=false;break;}offset+=size_t(n);}
         if(!reverse_running_)connection_lost(reverse_token_);
@@ -500,9 +599,10 @@ void DirectSession::reverse_loop(){
 void DirectSession::connection_lost(uintptr_t token) {
     std::lock_guard<std::mutex> lock(mutex_);
     if(!token) return;
+    const auto retired=std::find(retired_play_connections_.begin(),retired_play_connections_.end(),token);
+    if(retired!=retired_play_connections_.end()){*retired=0;return;}
     if(token==encrypted_reverse_) {
         encrypted_reverse_=0;
-        reverse_has_play_=false;
         events_.clear();
         if(!play_connection_ && snapshot_.state!=DirectState::Loading &&
            snapshot_.state!=DirectState::Playing && snapshot_.state!=DirectState::Paused &&
@@ -516,12 +616,15 @@ void DirectSession::connection_lost(uintptr_t token) {
         pending_data_.clear();pending_done_=true;event_cv_.notify_all();
     }
     play_connection_=0;
-    commands_.clear();
-    DirectCommand stop;
-    stop.kind=DirectCommandKind::Stop;
-    stop.origin=DirectOrigin::SenderDisconnect;
-    stop.generation=generation_;
-    commands_.push_back(stop);
+    if(stop_queued_) return; // A subsequent FIN cannot relabel an explicit Stop.
+    if(!legacy && encrypted_reverse_ && live_media(snapshot_.state)) {
+        handoff_until_ms_=direct_now_ms()+2000;
+        if(lifecycle_records_++<64)
+            fprintf(stderr,"[direct-session] stage=play-handoff generation=%llu grace-ms=2000\n",
+                    (unsigned long long)generation_);
+        return;
+    }
+    stop_locked(DirectOrigin::SenderDisconnect);
 }
 std::string DirectSession::sender_manifest(const std::string& url){
     std::unique_lock<std::mutex> l(mutex_);if(!reverse_running_||pending_id_||!direct_uri_valid(url)||events_.size()>=16)return {};
@@ -532,11 +635,24 @@ std::string DirectSession::sender_manifest(const std::string& url){
     plist_dict_set_item(request,"FCUP_Response_RequestID",plist_new_uint(pending_id_));plist_dict_set_item(request,"FCUP_Response_URL",plist_new_string(url.c_str()));
     plist_dict_set_item(request,"FCUP_Response_ClientInfo",plist_new_uint(1));plist_dict_set_item(request,"FCUP_Response_ClientRef",plist_new_uint(40030004));
     plist_dict_set_item(request,"sessionID",plist_new_uint(1));plist_dict_set_item(headers,"X-Playback-Session-Id",plist_new_string(owner_.c_str()));plist_dict_set_item(request,"FCUP_Response_Headers",headers);plist_dict_set_item(root,"request",request);
-    char *xml=nullptr;uint32_t len=0;plist_to_xml(root,&xml,&len);plist_free(root);if(xml){events_.push_back(std::string(xml,len));free(xml);}event_cv_.notify_all();
+    char *xml=nullptr;uint32_t len=0;plist_to_xml(root,&xml,&len);plist_free(root);if(xml){events_.push_back({std::string(xml,len),generation_});free(xml);}event_cv_.notify_all();
     event_cv_.wait_for(l,std::chrono::seconds(3),[&]{return pending_done_||!reverse_running_;});const auto result=pending_data_;pending_data_.clear();pending_id_=0;pending_url_.clear();return result;
 }
-void DirectSession::reset(bool keep_reverse){if(!keep_reverse)close_reverse();std::lock_guard<std::mutex> l(mutex_);backend_outcome_locked(BackendOutcome::Cancelled);commands_.clear();if(!keep_reverse){owner_.clear();controller_.clear();events_.clear();reverse_token_=encrypted_reverse_=0;reverse_has_play_=false;}play_connection_=0;media_uuid_.clear();snapshot_=DirectSnapshot();pending_done_=true;event_cv_.notify_all();}
+void DirectSession::reset(bool keep_reverse){if(!keep_reverse)close_reverse();std::lock_guard<std::mutex> l(mutex_);backend_outcome_locked(BackendOutcome::Cancelled);commands_.clear();if(!keep_reverse){owner_.clear();controller_.clear();events_.clear();reverse_token_=encrypted_reverse_=0;retired_play_connections_={};}play_connection_=0;handoff_until_ms_=0;stop_queued_=false;media_uuid_.clear();++generation_;snapshot_=DirectSnapshot();pending_done_=true;event_cv_.notify_all();}
 
-bool DirectSession::check_timeout(int64_t now_ms){std::lock_guard<std::mutex> lock(mutex_);if(owner_.empty()||reverse_running_||(!controller_.empty()&&(!play_connection_||encrypted_reverse_))||last_request_ms_==0||now_ms-last_request_ms_<30000)return false;commands_.clear();DirectCommand stop;stop.kind=DirectCommandKind::Stop;stop.origin=DirectOrigin::ReceiverTimeout;stop.generation=generation_;commands_.push_back(stop);last_request_ms_=0;return true;}
+bool DirectSession::check_timeout(int64_t now_ms) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stop_queued_ || owner_.empty()) return false;
+    if (handoff_until_ms_) {
+        if (now_ms < handoff_until_ms_) return false;
+        stop_locked(DirectOrigin::SenderDisconnect);
+        return true;
+    }
+    if(reverse_running_||(!controller_.empty()&&(!play_connection_||encrypted_reverse_))||
+       last_request_ms_==0||now_ms-last_request_ms_<30000) return false;
+    stop_locked(DirectOrigin::ReceiverTimeout);
+    last_request_ms_=0;
+    return true;
+}
 
 void DirectSession::cancel_fetch(){std::lock_guard<std::mutex> l(mutex_);pending_data_.clear();pending_done_=true;event_cv_.notify_all();}

@@ -63,6 +63,7 @@ bool Media::open(const char*, int width, int height, bool audio, int rate, int, 
     pcm_signal = false;
     feed_audio_accepted = feed_video_accepted = frames = 0;
     failed = ended = ready = playing = false;
+    direct_backend_paused_ = false;
     play_requested_ = false;
     play_attempts_ = 0;
     mock_opened_at = now;
@@ -124,11 +125,11 @@ void Media::tick() {
         (feed_video_accepted < 12 || feed_audio_accepted < 11)) return;
     if (!ready && mode != Startup::NoLoadCallback &&
         ((mode == Startup::CallbackFirst && age >= 100000000) || (preroll && age >= 400000000))) ready = true;
-    if (ready && !play_requested_) {
+    if (ready && !play_requested_ && !direct_start_held_) {
         ++play_attempts_;
         play_requested_ = true;
     }
-    if (play_requested_ && preroll && mode != Startup::NoPlaying) {
+    if (play_requested_ && preroll && mode != Startup::NoPlaying && !direct_backend_paused_) {
         playing = true;
         if (!frames && mode != Startup::NoFrame) {
             ++frames;
@@ -146,7 +147,16 @@ void Media::pause(bool paused) {
         replay_callback_at = now + 150000000;
     }
 }
-void Media::close() { if (decoder_open) { ++closes; decoder_open = false; } ready = playing = play_requested_ = false; }
+bool Media::direct_set_paused(bool paused) {
+    pause(paused);
+    direct_backend_paused_ = paused;
+    if (paused) playing = false;
+    return true;
+}
+void Media::close() {
+    if (decoder_open) { ++closes; decoder_open = false; }
+    ready = playing = play_requested_ = direct_start_held_ = false;
+}
 
 static void public_samples(const std::string& base) {
     allow_reordering = true;
@@ -203,14 +213,15 @@ static void public_samples(const std::string& base) {
     DirectCommand rate;
     rate.kind = DirectCommandKind::Pause;
     rate.origin = DirectOrigin::SenderRate;
-    assert(player.control(rate, now));
     DirectSnapshot frozen;
     for (unsigned i = 0; i < 400; ++i) {
         frozen = player.tick(now += 20000000);
         assert(frozen.state != DirectState::Error);
-        if (frozen.state == DirectState::Paused) break;
+        if (frozen.state == DirectState::Playing) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(4));
     }
+    assert(frozen.state == DirectState::Playing && player.control(rate, now));
+    frozen = player.tick(now);
     assert(frozen.state == DirectState::Paused && frozen.frame_observed && frozen.audio_fed && frozen.buffer_bytes);
     const auto after_pause = player.tick(now += 12000000000LL);
     assert(after_pause.state == DirectState::Paused && after_pause.position == frozen.position);
@@ -237,6 +248,129 @@ static void public_samples(const std::string& base) {
     run("/apple/container.m3u8", 0, 0, DirectError::SegmentContainer);
     assert(opens == closes);
     puts("PASS: Apple BipBop (22.05 kHz AAC) and 60+ seconds of 720p Mux MPEG-TS feed without a decoder restart");
+}
+
+static void replacement_samples(const std::string& base) {
+    DirectSession session;
+    DirectPlayback playback;
+    const std::string controller(32, 'k');
+    assert(session.bind_encrypted_reverse("test-owner", controller, 2));
+    const auto submit = [&](const std::string& target, const std::string& body = {}, uintptr_t token = 1) {
+        return session.request("test-owner", "POST", target, "text/x-apple-plist+xml", body, false, controller, token);
+    };
+    const auto play = [&](const std::string& url, const char* item, bool pause = false, uintptr_t token = 1) {
+        return submit("/play", "<plist version=\"1.0\"><dict><key>Content-Location</key><string>" + url +
+                      "</string><key>uuid</key><string>" + item + "</string><key>rate</key><integer>" +
+                      (pause?"0":"1") + "</integer></dict></plist>", token);
+    };
+    const std::string a = "https://one.example/clip/media.m3u8", b = "https://two.example/silent/media.m3u8";
+    const std::string b_ts = "https://two.example/silent-ts/media.m3u8";
+    const auto start = [&](const std::string& url, int width, int height, double position = 0, bool paused = false) {
+        const auto previous = playback.snapshot();
+        DirectCommand command;
+        assert(session.take(command) && command.kind==DirectCommandKind::Play && command.uri==url &&
+               command.start_paused==paused && command.position==position);
+        // Native TCP tests cover admission with the original HTTPS descriptor.
+        // The media harness serves deterministic fixtures on its local socket.
+        command.encrypted=false;
+        command.uri=base+url.substr(url.find('/',8));
+        expected_width=width;
+        expected_height=height;
+        assert(playback.open(command,now,session));
+        if (previous.generation && previous.generation!=command.generation)
+            assert(!session.publish(previous));
+        assert(opens==closes+unsigned(decoder_open));
+        return command.generation;
+    };
+    const auto wait_for = [&](DirectState state, double position = 0) {
+        for (unsigned i=0; i<600; ++i) {
+            const auto value=playback.tick(now+=20000000);
+            assert(session.publish(value));
+            if (value.state==state && value.position>=position) return value;
+            assert(value.state!=DirectState::Error);
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        }
+        assert(false && "replacement did not reach requested state");
+        return DirectSnapshot();
+    };
+    const auto control = [&](const char* target) {
+        DirectCommand command;
+        assert(submit(target).status==200 && session.take(command));
+        playback.control(command,now);
+    };
+    assert(play(a,"item-a").queued);
+    start(a,640,480);
+    assert(wait_for(DirectState::Playing,.25).frame_observed && pcm_signal);
+    assert(!play("https://other.example/clip/media.m3u8","item-a").queued);
+    control("/rate?value=0");
+    wait_for(DirectState::Paused);
+    assert(play(b_ts,"item-b").queued);
+    start(b_ts,1920,1080);
+    assert(wait_for(DirectState::Playing,.25).frame_observed && !pcm_signal);
+
+    // Replace A after Load but before LoadCompleted and first presentation.
+    mode=Startup::NoLoadCallback;
+    assert(play(a,"item-c").queued);
+    start(a,640,480);
+    for (unsigned i=0;i<200&&!decoder_open;++i) {
+        playback.tick(now+=20000000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    }
+    assert(decoder_open && !playback.snapshot().frame_observed);
+    mode=Startup::AfterPreroll;
+    assert(play(b,"item-d",true).queued);
+    start(b,1920,1080,0,true);
+    const auto paused=wait_for(DirectState::Paused);
+    assert(paused.backend_loaded && paused.audio_fed && !paused.frame_observed && !pcm_signal);
+    const auto held=playback.tick(now+=25000000000LL);
+    assert(held.state==DirectState::Paused && held.position==paused.position);
+    control("/rate?value=1");
+    assert(wait_for(DirectState::Playing,.25).frame_observed && !pcm_signal);
+
+    // A cancelled manifest cannot finish after rapid B and C selections.
+    const std::string slow="https://one.example/slow-switch.m3u8";
+    assert(play(slow,"slow").queued);
+    start(slow,640,480);
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    assert(play(b,"intermediate",true).queued);
+    assert(play(a,"final").queued);
+    assert(submit("/scrub?position=2.5").status==200);
+    assert(submit("/scrub?position=4.5").status==200);
+    const auto final_generation=start(a,640,480,4.5);
+    assert(wait_for(DirectState::Playing,4.1).generation==final_generation && pcm_signal);
+
+    // A seek in progress belongs to A. A replacement clears it before any
+    // old-generation packet or decoder can become part of B.
+    control("/scrub?position=0");
+    assert(play(b,"after-seek").queued);
+    const auto last_generation=start(b,1920,1080);
+    assert(wait_for(DirectState::Playing,.25).generation==last_generation && !pcm_signal);
+    session.connection_lost(1);
+    DirectCommand next;
+    assert(!session.take(next));
+    const auto rebound=play(b,"after-seek",false,3);
+    assert(rebound.status==200 && !rebound.queued && session.is_current(last_generation));
+    assert(submit("/stop",{},3).status==200);
+    session.connection_lost(3);
+    assert(session.take(next) && next.origin==DirectOrigin::SenderStop && next.generation==last_generation);
+    assert(playback.close() && opens==closes);
+    auto stopped=playback.snapshot();
+    stopped.state=DirectState::Ended;
+    assert(session.publish(stopped));
+
+    // When a Play has already reached the backend, a burst of early seeks
+    // chooses the last target and starts at most one replacement decoder.
+    assert(play(a,"startup-seek").queued);
+    start(a,640,480);
+    const auto before=opens;
+    control("/scrub?position=2.2");
+    now+=40000000;
+    control("/scrub?position=4.6");
+    now+=40000000;
+    control("/scrub?position=4.6");
+    assert(wait_for(DirectState::Playing,4.1).frame_observed && opens==before+1);
+    assert(playback.close() && opens==closes);
+    puts("PASS: live media replacement, 1080p, paused startup, rapid switching, in-flight fetch, seek and control handoff");
 }
 
 static void fmp4_samples(const std::string& base) {
@@ -307,6 +441,7 @@ static void fmp4_samples(const std::string& base) {
     run("/ignored-range.m3u8", DirectError::RangeResponse, 0);
     run("/oversized.m3u8", DirectError::StreamLimit, 0);
     puts("PASS: fMP4 H.264/AAC-LC, B-frames, byte ranges, pause, seek, discontinuity, map change and rejection paths");
+    replacement_samples(base);
 }
 
 int main(int argc, char** argv) {

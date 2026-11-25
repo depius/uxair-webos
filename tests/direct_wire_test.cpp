@@ -399,15 +399,18 @@ int main(int argc, char **argv) {
             }
             else {
                 assert(receiver.direct.take(action));
-                if(step=='p'||step=='f') {
-                    assert(action.kind==DirectCommandKind::Play && action.encrypted && receiver.reserve_direct(true));
+                if(step=='p'||step=='f'||step=='h') {
+                    assert(action.kind==DirectCommandKind::Play && action.encrypted);
+                    if (step=='h') assert(action.replacement && receiver.direct_active);
+                    else assert(receiver.reserve_direct(true));
                     assert(action.uri=="https://media.example/control.m3u8?token=private-native-url");
-                    assert(action.position_seconds && action.position==1.5);
+                    assert(action.position_seconds && action.position==(step=='h'?2.5:1.5));
+                    assert(action.start_paused==(step=='h'));
                     snapshot.backend=DirectBackend::Bufferstream;
-                    if(step=='p') {
-                        snapshot.state=DirectState::Playing;
+                    if(step=='p'||step=='h') {
+                        snapshot.state=step=='h'?DirectState::Paused:DirectState::Playing;
                         snapshot.stage=DirectStage::Playing;
-                        snapshot.position=1.5;
+                        snapshot.position=action.position;
                         snapshot.duration=12;
                         snapshot.backend_loaded=true;
                         snapshot.seekable=snapshot.frame_observed=snapshot.audio_fed=true;
@@ -426,7 +429,8 @@ int main(int argc, char **argv) {
                     assert(action.kind==DirectCommandKind::Seek && action.position==4);
                     snapshot.position=action.position;
                 } else {
-                    assert(step=='t' && action.kind==DirectCommandKind::Stop);
+                    assert((step=='t'||step=='m') && action.kind==DirectCommandKind::Stop);
+                    assert(action.origin==(step=='m'?DirectOrigin::SenderRemove:DirectOrigin::SenderStop));
                     snapshot.state=DirectState::Ended;
                     receiver.release_direct(true);
                 }

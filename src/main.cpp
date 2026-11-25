@@ -567,16 +567,17 @@ int main(int argc,char **argv) {
     };
 #ifdef UXAIR_DIRECT_BUILD
     DirectPlayback direct_player;
-    bool direct_active=false, direct_overlay=false;
+    bool direct_active=false, direct_reserved=false, direct_overlay=false;
     int64_t direct_started=0, direct_tick=0, direct_maintenance=0;
     uint64_t direct_started_utc=0, direct_play_ms=0;
     DirectState direct_previous=DirectState::Idle;
     std::map<uint32_t,uint64_t> direct_days;
-    auto finish_direct=[&](DirectSnapshot status, DirectOrigin origin) {
-        fprintf(stderr,"[direct-session] stage=stop generation=%llu reason=%s error=%s\n",
+    auto finish_direct=[&](DirectSnapshot status, DirectOrigin origin, uint64_t stop_generation=0) {
+        const bool replacement=origin==DirectOrigin::Replacement;
+        fprintf(stderr,"[direct-session] stage=stop generation=%llu reason=%s prior-stage=%s presented=%d error=%s\n",
                 (unsigned long long)status.generation,
                 origin!=DirectOrigin::None?direct_origin_name(origin):status.natural_end?"eos":"backend",
-                direct_error_name(status.error));
+                direct_stage_name(status.stage),int(status.frame_observed),direct_error_name(status.error));
         const bool released=direct_player.close();
         if(!released) {
             status.state=DirectState::Error;
@@ -599,13 +600,26 @@ int main(int argc,char **argv) {
             save_usage_stats(state_dir+"/usage-v1",usage);
             history_dirty=true;
         }
-        receiver.direct.publish(status);
-        receiver.release_direct(released);
-        bus.block_screen_saver(false);
-        receiver.show(status.state==DirectState::Error?"Direct Video failed":"Direct Video stopped");
+        if (stop_generation && status.generation!=stop_generation) {
+            status=DirectSnapshot();
+            status.generation=stop_generation;
+            status.state=released?DirectState::Ended:DirectState::Error;
+            status.error=released?DirectError::None:DirectError::CleanupFailed;
+        }
+        const bool terminal_published=!replacement && receiver.direct.publish(status);
+        if(terminal_published || !released) {
+            receiver.release_direct(released);
+            direct_reserved=false;
+            bus.block_screen_saver(false);
+            receiver.show(status.state==DirectState::Error?"Direct Video failed":"Direct Video stopped");
+        }
+        if(replacement)
+            fprintf(stderr,"[direct-session] stage=old-decoder-release generation=%llu result=%d\n",
+                    (unsigned long long)status.generation,int(released));
         direct_active=false;
         ui_visible=true;
         last_ui=0;
+        return released;
     };
 #endif
     bool running=true;
@@ -619,15 +633,20 @@ int main(int argc,char **argv) {
             receiver.direct.check_timeout(now/1000000);
             DirectCommand command;
             bool stop=false;
-            if(receiver.direct.take(command)) {
-                if(command.kind==DirectCommandKind::Play && !direct_active) {
-                    if(opened || !receiver.reserve_direct(command.encrypted)) {
+            if(receiver.direct.take(command) && receiver.direct.is_current(command.generation)) {
+                if(command.kind==DirectCommandKind::Play) {
+                    const bool released=!direct_active || finish_direct(direct_player.snapshot(),DirectOrigin::Replacement);
+                    if(!receiver.direct.is_current(command.generation)) continue;
+                    if(!released || opened || (!direct_reserved && !receiver.reserve_direct(command.encrypted))) {
                         DirectSnapshot busy;
+                        busy.generation=command.generation;
                         busy.state=DirectState::Error;
                         busy.stage=DirectStage::Dequeued;
-                        busy.error=DirectError::Busy;
+                        busy.error=released?DirectError::Busy:DirectError::CleanupFailed;
                         receiver.direct.publish(busy);
                     } else {
+                        direct_reserved=true;
+                        now=now_ns();
                         direct_started=direct_tick=now;
                         direct_started_utc=uint64_t(time(nullptr));
                         direct_play_ms=0;
@@ -644,10 +663,21 @@ int main(int argc,char **argv) {
                     }
                 } else if(command.kind==DirectCommandKind::Stop) {
                     stop=true;
-                    if(!direct_active)receiver.direct.publish(DirectSnapshot());
+                    if(!direct_active) {
+                        DirectSnapshot stopped;
+                        stopped.generation=command.generation;
+                        stopped.state=DirectState::Ended;
+                        stopped.stage=DirectStage::Stopped;
+                        if(receiver.direct.publish(stopped) && direct_reserved) {
+                            receiver.release_direct(true);
+                            direct_reserved=false;
+                            bus.block_screen_saver(false);
+                        }
+                    }
                 } else if(direct_active)direct_player.control(command,now);
             }
             if(direct_active) {
+                if(!stop && !receiver.direct.is_current(direct_player.snapshot().generation)) continue;
                 if(now-direct_maintenance>=1000000000LL){rotate_log();direct_maintenance=now;}
                 if(direct_previous==DirectState::Playing && now>direct_tick) {
                     uint64_t played=uint64_t(now-direct_tick)/1000000;
@@ -667,11 +697,12 @@ int main(int argc,char **argv) {
                 status.natural_end=!abort&&status.state==DirectState::Ended;
                 if(abort ||
                    status.state==DirectState::Ended || status.state==DirectState::Error) {
-                    finish_direct(status,stop?command.origin:abort?DirectOrigin::Local:DirectOrigin::None);
+                    finish_direct(status,stop?command.origin:abort?DirectOrigin::Local:DirectOrigin::None,
+                                  stop?command.generation:0);
                     if(action==Action::Quit)break;
                     action=Action::None;
                 } else {
-                    receiver.direct.publish(status);
+                    if(!receiver.direct.publish(status)) continue;
                     if(action==Action::Select){direct_overlay=!direct_overlay;last_ui=0;}
                     bus.block_screen_saver(status.state==DirectState::Playing);
                     if(direct_overlay) {
