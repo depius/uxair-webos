@@ -250,6 +250,13 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	reversePeer = makePeer()
 	reversePeer.upgrade()
 	writeQuery(reversePeer, reverse, 101)
+	readEvent(reversePeer, "playing")
+	firstAck, extraAck := reversePeer.seal(ack), reversePeer.seal(ack)
+	reversePeer.write(append(firstAck, extraAck...))
+	requireClosed(reversePeer)
+	reversePeer = makePeer()
+	reversePeer.upgrade()
+	writeQuery(reversePeer, reverse, 101)
 	event(reversePeer, "playing")
 	writeQuery(a, "POST /rate?value=0 HTTP/1.1\r\n\r\n", 200)
 	step("a")
@@ -354,7 +361,8 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 		"reason=proof-rejected", "reason=unsupported-pairing-format", "reason=unsupported-pairing-mode",
 		"reason=record-authentication", "reason=encrypted-http-framing",
 		"ack=accepted fragmented=1", "ack=rejected reason=body-not-empty",
-		"ack=rejected reason=no-event-outstanding", "admitted=3 ", "reverse_upgrades=4", "encrypted_active=0",
+		"ack=rejected reason=no-event-outstanding", "ack=rejected reason=trailing-data",
+		"admitted=3 ", "reverse_upgrades=5", "encrypted_active=0",
 	} {
 		if !strings.Contains(log, milestone) {
 			t.Errorf("missing native diagnostic %q", milestone)
