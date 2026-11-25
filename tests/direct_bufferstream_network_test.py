@@ -31,8 +31,17 @@ try:
             time.sleep(.1)
         finally:
             connection.close()
-    subprocess.run(['build/tests/direct-bufferstream-test', f'http://{ip}:{port}'],
-                   check=True, timeout=40, cwd=root, env=dict(os.environ, UXAIR_DIRECT_LAN=ip))
+    checked = subprocess.run(['build/tests/direct-bufferstream-test', f'http://{ip}:{port}'],
+                             timeout=40, cwd=root, env=dict(os.environ, UXAIR_DIRECT_LAN=ip),
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    print(checked.stdout, end='')
+    checked.check_returncode()
+    assert 'stage=manifest-fetch code=42 http=0' in checked.stdout
+    assert 'stage=manifest-cancelled' in checked.stdout
+    assert 'backend=BUFFERSTREAM loaded=0 outcome=cancelled' in checked.stdout
+    assert ('backend_load_attempts=1 backend_loaded=0 backend_load_failures=0 backend_load_cancellations=1'
+            in checked.stdout)
+    assert 'token=PRIVATE' not in checked.stdout
 finally:
     fixture.terminate()
     fixture.wait(timeout=5)

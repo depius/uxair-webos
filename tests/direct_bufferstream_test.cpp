@@ -2,6 +2,7 @@
 #include "audio.h"
 #include "h264.h"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -16,6 +17,9 @@ bool decoder_open = false;
 bool native_open = false, native_releases = true;
 unsigned native_attempts = 0;
 bool inject_retry = true;
+bool reordered_pts = false, allow_reordering = false;
+bool pcm_signal = false;
+int expected_width = 1280, expected_height = 720;
 int64_t last_video_pts = -1, last_audio_pts = -1;
 }
 
@@ -43,10 +47,13 @@ Media::Media() : impl_(nullptr) {}
 Media::~Media() { close(); }
 
 bool Media::open(const char*, int width, int height, bool audio, int rate, int, int, int, MirrorCodec codec, int, bool) {
-    assert(!native_open && !decoder_open && width == 1280 && height == 720 && audio && rate == 44100 && codec == MirrorCodec::H264);
+    assert(!native_open && !decoder_open && width == expected_width && height == expected_height &&
+           audio && rate == 44100 && codec == MirrorCodec::H264);
     decoder_open = true;
     ++opens;
     last_video_pts = last_audio_pts = -1;
+    reordered_pts = false;
+    pcm_signal = false;
     feed_audio_accepted = feed_video_accepted = frames = 0;
     failed = ended = false;
     ready = playing = true;
@@ -63,14 +70,22 @@ FeedResult Media::feed(const void* bytes, size_t size, int64_t pts, bool video) 
     if (video) {
         const auto info = inspect_h264(static_cast<const uint8_t*>(bytes), size);
         assert(info.valid && info.picture);
-        if (!feed_video_accepted) assert(info.keyframe && info.width == 1280 && !info.configuration.empty());
-        assert(pts > last_video_pts); // fixture uses no B frames
+        if (!feed_video_accepted)
+            assert(info.keyframe && info.width == expected_width && info.pps && !info.configuration.empty());
+        if (pts <= last_video_pts) {
+            assert(allow_reordering);
+            reordered_pts = true;
+        }
         last_video_pts = pts;
         ++feed_video_accepted;
         ++frames;
         last_frame_event_ns = now;
     } else {
         assert(size % 4 == 0 && pts > last_audio_pts);
+        if (!pcm_signal) {
+            const auto* pcm = static_cast<const uint8_t*>(bytes);
+            pcm_signal = std::any_of(pcm, pcm + size, [](uint8_t byte) { return byte != 0; });
+        }
         last_audio_pts = pts;
         ++feed_audio_accepted;
     }
@@ -82,9 +97,55 @@ void Media::eos() { ++ends; ended = true; }
 void Media::pause(bool paused) { if (paused) ++pauses; }
 void Media::close() { if (decoder_open) { ++closes; decoder_open = false; } ready = playing = false; }
 
+static void public_samples(const std::string& base) {
+    allow_reordering = true;
+    inject_retry = false;
+    DirectBufferstream player;
+    const auto run = [&](const char* path, int width, int height, DirectError error) {
+        expected_width = width;
+        expected_height = height;
+        DirectCommand play;
+        play.kind = DirectCommandKind::Play;
+        play.uri = base + path + "?token=PRIVATE";
+        assert(player.open(play, now, nullptr));
+        bool played = false;
+        for (unsigned tick = 0; tick < 1400; ++tick) {
+            const auto snapshot = player.tick(now += 20000000);
+            assert(snapshot.buffer_bytes <= 16 * 1024 * 1024);
+            if (snapshot.state == DirectState::Playing) {
+                assert(snapshot.backend_loaded && snapshot.frame_observed && snapshot.audio_fed);
+                played = true;
+            }
+            if (snapshot.state == DirectState::Error) {
+                assert(snapshot.error == error);
+                assert(player.close());
+                return;
+            }
+            if (snapshot.state == DirectState::Ended) {
+                assert(error == DirectError::None && played && snapshot.position >= 19.8 && reordered_pts && pcm_signal);
+                assert(player.close());
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        }
+        assert(false && "public HLS pipeline did not reach a terminal outcome");
+    };
+    run("/apple/master.m3u8", 960, 720, DirectError::None);
+    run("/apple/gear2/prog_index.m3u8", 640, 480, DirectError::None);
+    run("/mux/master.m3u8", 1280, 720, DirectError::None);
+    run("/apple/bad-timestamp.m3u8", 640, 480, DirectError::VideoTimestamp);
+    run("/apple/discontinuous.m3u8", 640, 480, DirectError::PlaylistDiscontinuity);
+    run("/apple/timeline-reset.m3u8", 640, 480, DirectError::Discontinuity);
+    run("/apple/init-map.m3u8", 0, 0, DirectError::PlaylistInitSegment);
+    run("/apple/container.m3u8", 0, 0, DirectError::SegmentContainer);
+    assert(opens == closes);
+    puts("PASS: Apple BipBop (22.05 kHz AAC) and Mux MPEG-TS reach H.264/PCM feed with reordered PTS");
+}
+
 int main(int argc, char** argv) {
-    assert(argc == 2);
+    assert(argc == 2 || (argc == 3 && std::string(argv[2]) == "--public"));
     const std::string base = argv[1];
+    if (argc == 3) { public_samples(base); return 0; }
     DirectPlaylist selected;
     const std::string master = "#EXTM3U\n"
         "#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=1280x720,CODECS=\"avc1.42c01f,mp4a.40.2\"\n"
@@ -93,10 +154,10 @@ int main(int argc, char** argv) {
         "ultra.m3u8\n"
         "#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720,CODECS=\"avc1.42c01f,mp4a.40.29\"\n"
         "he-aac.m3u8\n";
-    assert(direct_parse_playlist(master, base + "/master.m3u8", selected) == DirectHlsResult::Ok);
+    assert(direct_parse_playlist(master, base + "/master.m3u8", selected) == DirectError::None);
     assert(selected.variant == base + "/variants/main.m3u8?token=PRIVATE");
     assert(direct_parse_playlist("#EXTM3U\n#EXT-X-DISCONTINUITY\n", base + "/media.m3u8", selected)
-           == DirectHlsResult::Unsupported);
+           == DirectError::PlaylistDiscontinuity);
     DirectBufferstream player;
     DirectCommand play;
     play.kind = DirectCommandKind::Play;
@@ -149,15 +210,28 @@ int main(int argc, char** argv) {
 
     play.uri = base + "/bad.m3u8";
     assert(player.open(play, now, nullptr));
-    assert(poll_for(DirectState::Error).error == DirectError::InvalidStream);
+    assert(poll_for(DirectState::Error).error == DirectError::PlaylistSyntax);
     player.close();
 
     play.uri = base + "/slow.m3u8";
-    assert(player.open(play, now, nullptr));
+    DirectSession cancelled;
+    const std::string controller(32, 'c');
+    assert(cancelled.request("owner", "POST", "/play", "text/parameters",
+        "Content-Location: https://media.example/slow.m3u8\r\n", false, controller, 1).status == 200);
+    DirectCommand queued;
+    assert(cancelled.take(queued) && queued.kind == DirectCommandKind::Play);
+    assert(player.open(play, now, &cancelled));
+    cancelled.publish(player.tick(now));
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    cancelled.connection_lost(1);
+    assert(cancelled.take(queued) && queued.kind == DirectCommandKind::Stop);
     const auto before = std::chrono::steady_clock::now();
+    auto stopped = player.tick(now);
     player.close();
     assert(std::chrono::steady_clock::now() - before < std::chrono::seconds(4));
+    stopped.state = DirectState::Ended;
+    cancelled.publish(stopped);
+    cancelled.summarize();
 
     play.uri = base + "/master.m3u8?token=PRIVATE";
     assert(player.open(play, now, nullptr));

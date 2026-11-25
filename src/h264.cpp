@@ -16,7 +16,7 @@ struct Bits {
     }
     int se() {unsigned n=ue();return n&1?int((n+1)/2):-int(n/2);}
 };
-bool sps(const uint8_t *p,size_t n,int& width,int& height) {
+bool sps(const uint8_t *p,size_t n,H264Info& info) {
     if(n<4 || n>65536)return false;
     Bits b;
     unsigned zeros=0;
@@ -25,11 +25,11 @@ bool sps(const uint8_t *p,size_t n,int& width,int& height) {
         b.data.push_back(p[i]);zeros=p[i]==0?zeros+1:0;
     }
     unsigned profile=b.get(8);b.get(8);b.get(8);b.ue();
-    unsigned chroma=1,separate=0;
+    unsigned chroma=1,separate=0, luma_depth=8, chroma_depth=8;
     if(profile==100||profile==110||profile==122||profile==244||profile==44||profile==83||profile==86||profile==118||profile==128||profile==138||profile==139||profile==134||profile==135) {
         chroma=b.ue();if(chroma>3)return false;
         if(chroma==3)separate=b.get(1);
-        b.ue();b.ue();b.get(1);
+        luma_depth=8+b.ue();chroma_depth=8+b.ue();b.get(1);
         if(b.get(1)) for(unsigned i=0;i<(chroma==3?12u:8u);++i) {
             if(b.get(1)) {
                 int last=8,next=8;
@@ -56,7 +56,9 @@ bool sps(const uint8_t *p,size_t n,int& width,int& height) {
     int64_t w=int64_t(mbw+1)*16-int64_t(left+uint64_t(right))*cropx;
     int64_t h=int64_t(mbh+1)*16*(2-frame)-int64_t(top+uint64_t(bottom))*cropy;
     if(w<16||h<16||w>1920||h>1920||w*h>2073600)return false;
-    width=w;height=h;return true;
+    info.width=w;info.height=h;info.profile=profile;info.chroma=chroma;
+    info.bit_depth=luma_depth==chroma_depth?luma_depth:0;
+    return true;
 }
 size_t prefix(const uint8_t *p,size_t n,size_t i) {
     if(i+3<=n&&p[i]==0&&p[i+1]==0) {
@@ -77,7 +79,8 @@ H264Info inspect_h264(const uint8_t *p,size_t n) {
         if(p[begin]&128)return H264Info{};
         if(type==1||type==5)info.picture=true;
         if(type==5)info.keyframe=true;
-        if(type==7) {if(!sps(p+begin,end-begin,info.width,info.height))return H264Info{};}
+        if(type==7) {if(!sps(p+begin,end-begin,info))return H264Info{};}
+        if(type==8) info.pps=true;
         if(type==7||type==8) {
             if(info.configuration.size()+end-pos>65536)return H264Info{};
             info.configuration.insert(info.configuration.end(),p+pos,p+end);

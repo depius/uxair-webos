@@ -26,8 +26,14 @@ std::string HlsRelay::resource_path(size_t index,const std::string& uri,bool man
     if(manifest)suffix=".m3u8";
     return "/"+token_+"/"+std::to_string(index)+suffix;
 }
-struct WriteBuffer {std::string data;size_t limit;};
-static size_t write_data(char *data,size_t size,size_t n,void *ptr){auto& b=*static_cast<WriteBuffer*>(ptr);if(n&&size>SIZE_MAX/n)return 0;const size_t count=size*n;if(count>b.limit-b.data.size())return 0;b.data.append(data,count);return count;}
+struct WriteBuffer {std::string data;size_t limit;bool exceeded=false;};
+static size_t write_data(char *data,size_t size,size_t n,void *ptr){
+    auto& b=*static_cast<WriteBuffer*>(ptr);
+    if(n&&size>SIZE_MAX/n){b.exceeded=true;return 0;}
+    const size_t count=size*n;
+    if(count>b.limit-b.data.size()){b.exceeded=true;return 0;}
+    b.data.append(data,count);return count;
+}
 bool HlsRelay::address_allowed(uint32_t address) const {
     uint32_t ip=ntohl(address);unsigned a=ip>>24,b=(ip>>16)&255;
     if(direct_public_ipv4(ip))return true;
@@ -70,7 +76,12 @@ HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest){
         char *location=nullptr,*type=nullptr;curl_easy_getinfo(curl,CURLINFO_REDIRECT_URL,&location);curl_easy_getinfo(curl,CURLINFO_CONTENT_TYPE,&type);
         std::string next=location?location:"";result.type=type?type:"application/octet-stream";
         curl_easy_cleanup(curl);++requests;trace(manifest?"manifest-fetch":"segment-fetch",int(code),status);
-        if(code!=CURLE_OK){result.status=code==CURLE_OPERATION_TIMEDOUT?504:502;break;}
+        if(code!=CURLE_OK){
+            result.limit_exceeded=buffer.exceeded||code==CURLE_FILESIZE_EXCEEDED;
+            result.status=code==CURLE_OPERATION_TIMEDOUT?504:502;
+            break;
+        }
+        if(!running_)break;
         if(status>=300&&status<400&&!next.empty()){
             auto resolved=resolve(current,next);
             if(current.compare(0,8,"https://")==0&&resolved.compare(0,8,"https://")!=0)break;
@@ -81,7 +92,11 @@ HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest){
         result.status=200;result.data.swap(buffer.data);result.url=current;bytes+=result.data.size();return result;
     }
     if(sender_manifest&&manifest&&running_&&(result.status==403||result.status==404)){auto playlist=sender_manifest(uri);if(!playlist.empty()&&playlist.size()<=manifest_limit){result.status=200;result.data=playlist;result.url=uri;result.type="application/vnd.apple.mpegurl";return result;}}
-    ++failures;return result;
+    if(!running_){
+        result.cancelled=true;
+        trace(manifest?"manifest-cancelled":"segment-cancelled",0);
+    }else ++failures;
+    return result;
 }
 std::string HlsRelay::register_url(const std::string& uri,bool manifest){
     if(!direct_uri_valid(uri))return {};

@@ -12,10 +12,23 @@ constexpr int64_t second = 1000000000;
 constexpr int64_t feed_lead = 300000000;
 constexpr int64_t startup_timeout = 20 * second;
 
-DirectError hls_error(DirectHlsResult result) {
-    if (result == DirectHlsResult::Unsupported) return DirectError::UnsupportedStream;
-    if (result == DirectHlsResult::Limit) return DirectError::StreamLimit;
-    return DirectError::InvalidStream;
+DirectError fetch_error(const HlsFetch& fetch) {
+    if (fetch.cancelled) return DirectError::FetchCancelled;
+    return fetch.limit_exceeded ? DirectError::StreamLimit : DirectError::FetchFailed;
+}
+
+void log_segment(const DirectDemuxedSegment& media, DirectError result, size_t number) {
+    std::fprintf(stderr, "[direct-hls] stage=segment-demux segment=%zu reason=%s container=%s probe-score=%d "
+        "video-codec=%d audio-codec=%d h264-profile=%d pixel-format=%s geometry=%dx%d aac-rate=%d aac-channels=%d "
+        "video-packets=%u audio-packets=%u idr=%d first-idr=%d sps-pps=%d first-video-au=%d first-pcm-bytes=%zu "
+        "timestamps=%s pts-before-dts=%u tied-dts=%u inferred-first-dts=%u\n",
+        number, direct_error_name(result), media.container, media.probe_score, media.video_codec, media.audio_codec,
+        media.h264_profile, media.pixel_format, media.width, media.height, media.aac_sample_rate, media.aac_channels,
+        media.video_packets, media.audio_packets, int(media.idr), int(media.starts_with_idr), int(media.sps_pps),
+        int(media.video_packets > 0), media.first_pcm_bytes,
+        result == DirectError::VideoTimestamp || result == DirectError::AudioTimestamp ? "invalid" :
+            result == DirectError::None ? "valid" : "incomplete",
+        media.reordered, media.tied_dts, media.inferred_dts);
 }
 
 bool fcup_enabled() {
@@ -31,7 +44,7 @@ bool DirectBufferstream::open(const DirectCommand& play, int64_t now, DirectSess
     status_ = DirectSnapshot();
     status_.backend = DirectBackend::Bufferstream;
     status_.state = DirectState::Loading;
-    status_.stage = DirectStage::Fetch;
+    status_.stage = DirectStage::ManifestFetch;
     opened_at_ = now;
     if (!released) return fail(DirectError::CleanupFailed);
     if (!network_.begin(!play.encrypted)) return fail(DirectError::RelayStart);
@@ -43,6 +56,7 @@ bool DirectBufferstream::open(const DirectCommand& play, int64_t now, DirectSess
     cancelled_ = false;
     finished_ = false;
     download_error_ = DirectError::None;
+    download_stage_ = DirectStage::ManifestFetch;
     duration_ns_ = 0;
     try {
         worker_ = std::thread(&DirectBufferstream::download, this, play);
@@ -57,13 +71,19 @@ void DirectBufferstream::download(DirectCommand play) {
     try {
         DirectPlaylist playlist;
         for (unsigned level = 0; ; ++level) {
+            download_stage_ = DirectStage::ManifestFetch;
             const auto manifest = network_.fetch(play.uri, 256 * 1024, true);
             if (cancelled_) return;
-            if (manifest.status != 200) { download_error_ = DirectError::FetchFailed; return; }
+            if (manifest.status != 200) { download_error_ = fetch_error(manifest); return; }
+            download_stage_ = DirectStage::PlaylistParse;
             const auto parsed = direct_parse_playlist(manifest.data, manifest.url, playlist);
-            if (parsed != DirectHlsResult::Ok) { download_error_ = hls_error(parsed); return; }
+            const char* type = !playlist.variant.empty() || parsed == DirectError::PlaylistVariant ? "master" :
+                !playlist.segments.empty() ? "media" : "unknown";
+            std::fprintf(stderr, "[direct-hls] stage=playlist-parse depth=%u playlist=%s segments=%zu reason=%s\n",
+                         level, type, playlist.segments.size(), direct_error_name(parsed));
+            if (parsed != DirectError::None) { download_error_ = parsed; return; }
             if (playlist.variant.empty()) break;
-            if (level == 1) { download_error_ = DirectError::UnsupportedStream; return; }
+            if (level == 1) { download_error_ = DirectError::PlaylistNested; return; }
             play.uri = playlist.variant;
         }
         duration_ns_ = playlist.duration_ns;
@@ -73,7 +93,8 @@ void DirectBufferstream::download(DirectCommand play) {
             [](int64_t time, const DirectSegment& item) { return time < item.start_ns; });
         --segment;
         AudioDecoder audio;
-        int64_t origin = 0, previous_dts = 0, previous_duration = 0;
+        int64_t origin = 0, previous_dts = 0;
+        unsigned prepared = 0;
         int width = 0, height = 0, aac_rate = 0, aac_channels = 0;
         for (; segment != playlist.segments.end(); ++segment) {
             {
@@ -83,30 +104,40 @@ void DirectBufferstream::download(DirectCommand play) {
                 if (cancelled_) return;
             }
 
+            download_stage_ = DirectStage::SegmentFetch;
             const auto response = network_.fetch(segment->url, 8 * 1024 * 1024);
             if (cancelled_) return;
-            if (response.status != 200) { download_error_ = DirectError::FetchFailed; return; }
+            if (response.status != 200) { download_error_ = fetch_error(response); return; }
+            download_stage_ = DirectStage::SegmentDemux;
             std::unique_ptr<Job> job(new Job);
-            const auto result = direct_demux_ts(response.data, cancelled_, audio, job->segment);
+            const auto result = direct_demux_ts(response.data, cancelled_, audio, width, height, job->segment);
             if (cancelled_) return;
-            if (result != DirectHlsResult::Ok) { download_error_ = hls_error(result); return; }
-
             const auto& media = job->segment;
+            if (prepared < 3 || result != DirectError::None)
+                log_segment(media, result, size_t(segment - playlist.segments.begin()));
+            if (result != DirectError::None) { download_error_ = result; return; }
+            ++prepared;
+            download_stage_ = DirectStage::SegmentTimeline;
             if (!width) {
                 origin = media.packets.front().dts_ns;
+                for (const auto& packet : media.packets) origin = std::min(origin, packet.pts_ns);
                 width = media.width;
                 height = media.height;
                 aac_rate = media.aac_sample_rate;
                 aac_channels = media.aac_channels;
-            } else if (media.width != width || media.height != height ||
-                       media.aac_sample_rate != aac_rate || media.aac_channels != aac_channels ||
-                       std::llabs(media.first_video_dts_ns - previous_dts - previous_duration) > 250000000) {
-                download_error_ = DirectError::Discontinuity;
-                return;
+            } else {
+                if (media.aac_sample_rate != aac_rate || media.aac_channels != aac_channels) {
+                    download_error_ = DirectError::TrackChange;
+                    return;
+                }
+                const auto gap = media.first_video_dts_ns - previous_dts;
+                if (gap <= 0 || gap > 250000000) {
+                    download_error_ = DirectError::Discontinuity;
+                    return;
+                }
             }
-            previous_dts = media.first_video_dts_ns;
-            previous_duration = segment->duration_ns;
-            job->position_ns = segment->start_ns;
+            previous_dts = media.last_video_dts_ns;
+            job->position_ns = segment->start_ns + std::min(media.skipped_ns, segment->duration_ns);
             job->decoder_origin_ns = origin;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -114,8 +145,10 @@ void DirectBufferstream::download(DirectCommand play) {
             }
         }
         finished_ = true;
-    } catch (...) {
+    } catch (const std::bad_alloc&) {
         download_error_ = DirectError::StreamLimit;
+    } catch (const std::exception&) {
+        download_error_ = DirectError::DownloadWorker;
     }
 }
 
@@ -178,10 +211,16 @@ void DirectBufferstream::update_snapshot() {
 DirectSnapshot DirectBufferstream::tick(int64_t now) {
     if (status_.state == DirectState::Error) { update_snapshot(); return status_; }
     const auto download_error = download_error_.load();
-    if (download_error != DirectError::None) { fail(download_error); update_snapshot(); return status_; }
+    if (download_error != DirectError::None) {
+        status_.stage = download_stage_.load();
+        fail(download_error);
+        update_snapshot();
+        return status_;
+    }
 
     // Take the last published batch even when the worker just reached EOF.
     const bool more_available = current_ || take_next();
+    if (!opened_ && !more_available) status_.stage = download_stage_.load();
     if (!opened_ && more_available) {
         status_.stage = DirectStage::BufferstreamLoad;
         status_.width = current_->segment.width;

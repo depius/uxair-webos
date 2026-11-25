@@ -6,7 +6,7 @@
 #include <mutex>
 #include <cstdint>
 #include <functional>
-struct HlsFetch {int status=502;std::string data,url,type;};
+struct HlsFetch {int status=502;std::string data,url,type;bool cancelled=false,limit_exceeded=false;};
 class HlsRelay {
     std::atomic<bool> running_{false};std::atomic<int> listener_{-1};std::vector<std::thread> workers_;
     std::mutex clients_mutex_;std::vector<int> clients_;

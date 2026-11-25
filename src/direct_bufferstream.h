@@ -41,6 +41,7 @@ private:
     std::atomic<bool> cancelled_{true}, finished_{false};
     std::atomic<int64_t> duration_ns_{0};
     std::atomic<DirectError> download_error_{DirectError::None};
+    std::atomic<DirectStage> download_stage_{DirectStage::ManifestFetch};
     std::mutex mutex_;
     std::condition_variable slot_;
     std::unique_ptr<Job> pending_, current_;

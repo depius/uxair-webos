@@ -14,12 +14,18 @@
 #include <utility>
 #include <arpa/inet.h>
 const char *direct_stage_name(DirectStage s) {
-    static const char *names[]={"idle","queued","dequeued","relay","acb-create","acb-initialize","construct","media-id","load","await-load","sink","loaded-state","window","seek","play","await-playing","playing","paused","video-info","stopped","fetch","bufferstream-load","packet-feed"};
+    static const char *names[]={"idle","queued","dequeued","relay","acb-create","acb-initialize","construct","media-id","load","await-load","sink","loaded-state","window","seek","play","await-playing","playing","paused","video-info","stopped","fetch","bufferstream-load","packet-feed",
+        "manifest-fetch","playlist-parse","segment-fetch","segment-demux","segment-timeline"};
     const unsigned n=unsigned(s);return n<sizeof(names)/sizeof(*names)?names[n]:"unknown";
 }
 const char *direct_error_name(DirectError e) {
     static const char *names[]={"none","busy","relay-start","payload","acb-create","acb-initialize","construct","media-id","load-rejected","native-error","sink","seek","play-rejected","load-timeout","duration-timeout","playing-timeout","progress-timeout","control-rejected","no-native-progress","cleanup-failed","fetch-failed","unsupported-stream",
-        "invalid-stream","stream-limit","discontinuity","bufferstream-start","bufferstream-feed","native-api-unavailable"};
+        "invalid-stream","stream-limit","discontinuity","bufferstream-start","bufferstream-feed","native-api-unavailable",
+        "playlist-syntax","no-compatible-variant","live-playlist","encrypted-playlist","init-segment-required","playlist-byte-range",
+        "unsupported-playlist-tag","nested-master","declared-discontinuity","unsupported-container","demux-open","demux-read",
+        "missing-h264","missing-aac","unsupported-video-codec","unsupported-audio-codec","multiple-av-tracks","invalid-h264-annex-b","missing-idr",
+        "missing-sps-pps","unsupported-h264-format","unsupported-aac-adts","aac-decode","video-timestamp","audio-timestamp","corrupt-packet",
+        "track-change","download-worker","fetch-cancelled"};
     const unsigned n=unsigned(e);return n<sizeof(names)/sizeof(*names)?names[n]:"unknown";
 }
 const char *direct_backend_name(DirectBackend backend) {
@@ -302,7 +308,7 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         if(!commands_.empty()){reply.status=503;return reply;}
         command.kind=DirectCommandKind::Play;owner_=owner;controller_=controller;media_uuid_=std::move(item);
         play_connection_=command.encrypted?token:0;
-        backend_reported_=frame_reported_=audio_reported_=false;
+        frame_reported_=audio_reported_=false;
         snapshot_=DirectSnapshot();snapshot_.state=DirectState::Loading;snapshot_.stage=DirectStage::Queued;
         event_locked(DirectState::Loading);
     } else if(method=="POST"&&target=="/stop") {
@@ -363,23 +369,38 @@ void DirectSession::event_locked(DirectState state) {
     events_.push_back(std::move(event));
     event_cv_.notify_all();
 }
+void DirectSession::backend_outcome_locked(BackendOutcome outcome) {
+    if (pending_backend_==DirectBackend::None) return;
+    const char *name;
+    switch (outcome) {
+    case BackendOutcome::Loaded: ++backend_loads_; name="loaded"; break;
+    case BackendOutcome::Failed: ++backend_failures_; name="failed"; break;
+    case BackendOutcome::Cancelled: ++backend_cancellations_; name="cancelled"; break;
+    }
+    fprintf(stderr,"[direct-session] backend=%s loaded=%d outcome=%s\n",
+            direct_backend_name(pending_backend_),int(outcome==BackendOutcome::Loaded),name);
+    pending_backend_=DirectBackend::None;
+}
 void DirectSession::publish(DirectSnapshot s){
     std::lock_guard<std::mutex> l(mutex_);
     if(!std::isfinite(s.position)||s.position<0)s.position=0;if(!std::isfinite(s.duration)||s.duration<0)s.duration=0;
     const auto prior=snapshot_.state;
     if(!controller_.empty()) {
         if(s.backend!=snapshot_.backend && s.backend!=DirectBackend::None) {
-            if(snapshot_.backend!=DirectBackend::None&&!backend_reported_)++backend_failures_;
+            backend_outcome_locked(BackendOutcome::Failed);
             if(s.fallback_reason!=DirectError::None&&snapshot_.backend==DirectBackend::None) {
-                ++backend_attempts_;++backend_failures_;
+                ++backend_attempts_;
+                pending_backend_=DirectBackend::NativeUri;
+                backend_outcome_locked(BackendOutcome::Failed);
             }
-            ++backend_attempts_;backend_reported_=false;
+            ++backend_attempts_;
+            pending_backend_=s.backend;
         }
-        if(!backend_reported_&&s.backend!=DirectBackend::None&&(s.backend_loaded||s.state==DirectState::Error)){
-            if(s.backend_loaded)++backend_loads_;else ++backend_failures_;
-            backend_reported_=true;
-            fprintf(stderr,"[direct-session] backend=%s loaded=%d\n",direct_backend_name(s.backend),int(s.backend_loaded));
-        }
+        if(s.backend_loaded) backend_outcome_locked(BackendOutcome::Loaded);
+        else if(s.state==DirectState::Error)
+            backend_outcome_locked(s.error==DirectError::FetchCancelled ? BackendOutcome::Cancelled : BackendOutcome::Failed);
+        else if(s.state==DirectState::Ended || s.state==DirectState::Idle)
+            backend_outcome_locked(BackendOutcome::Cancelled);
         if(s.frame_observed&&!frame_reported_){++video_starts_;frame_reported_=true;fprintf(stderr,"[direct-session] first-frame=observed\n");}
         if(s.audio_fed&&!audio_reported_){++audio_starts_;audio_reported_=true;fprintf(stderr,"[direct-audio] first-feed=accepted\n");}
     }
@@ -399,10 +420,11 @@ DirectSnapshot DirectSession::snapshot(){std::lock_guard<std::mutex> l(mutex_);r
 void DirectSession::summarize() {
     std::lock_guard<std::mutex> lock(mutex_);
     if(!backend_attempts_)return;
-    fprintf(stderr,"[direct-session-summary] backend_load_attempts=%u backend_loaded=%u backend_load_failures=%u "
+    backend_outcome_locked(BackendOutcome::Cancelled);
+    fprintf(stderr,"[direct-session-summary] backend_load_attempts=%u backend_loaded=%u backend_load_failures=%u backend_load_cancellations=%u "
                 "video_first_frames=%u audio_first_feeds=%u\n",
-            backend_attempts_,backend_loads_,backend_failures_,video_starts_,audio_starts_);
-    backend_attempts_=backend_loads_=backend_failures_=video_starts_=audio_starts_=0;
+            backend_attempts_,backend_loads_,backend_failures_,backend_cancellations_,video_starts_,audio_starts_);
+    backend_attempts_=backend_loads_=backend_failures_=backend_cancellations_=video_starts_=audio_starts_=0;
 }
 void DirectSession::close_reverse(){reverse_running_=false;event_cv_.notify_all();if(reverse_thread_.joinable())reverse_thread_.join();if(reverse_fd_>=0){close(reverse_fd_);reverse_fd_=-1;}}
 DirectSession::~DirectSession(){close_reverse();}
@@ -491,7 +513,7 @@ std::string DirectSession::sender_manifest(const std::string& url){
     char *xml=nullptr;uint32_t len=0;plist_to_xml(root,&xml,&len);plist_free(root);if(xml){events_.push_back(std::string(xml,len));free(xml);}event_cv_.notify_all();
     event_cv_.wait_for(l,std::chrono::seconds(3),[&]{return pending_done_||!reverse_running_;});const auto result=pending_data_;pending_data_.clear();pending_id_=0;pending_url_.clear();return result;
 }
-void DirectSession::reset(bool keep_reverse){if(!keep_reverse)close_reverse();std::lock_guard<std::mutex> l(mutex_);commands_.clear();if(!keep_reverse){owner_.clear();controller_.clear();events_.clear();reverse_token_=encrypted_reverse_=0;}play_connection_=0;media_uuid_.clear();snapshot_=DirectSnapshot();pending_done_=true;event_cv_.notify_all();}
+void DirectSession::reset(bool keep_reverse){if(!keep_reverse)close_reverse();std::lock_guard<std::mutex> l(mutex_);backend_outcome_locked(BackendOutcome::Cancelled);commands_.clear();if(!keep_reverse){owner_.clear();controller_.clear();events_.clear();reverse_token_=encrypted_reverse_=0;}play_connection_=0;media_uuid_.clear();snapshot_=DirectSnapshot();pending_done_=true;event_cv_.notify_all();}
 
 bool DirectSession::check_timeout(int64_t now_ms){std::lock_guard<std::mutex> lock(mutex_);if(owner_.empty()||reverse_running_||(!controller_.empty()&&(!play_connection_||encrypted_reverse_))||last_request_ms_==0||now_ms-last_request_ms_<30000)return false;commands_.clear();DirectCommand stop;stop.kind=DirectCommandKind::Stop;commands_.push_back(stop);last_request_ms_=0;return true;}
 

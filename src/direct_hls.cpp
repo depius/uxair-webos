@@ -55,8 +55,13 @@ double variant_bandwidth(const std::string& tag) {
     if (!codecs.empty()) {
         const auto comma = codecs.find(',');
         if (comma == std::string::npos || codecs.find(',', comma + 1) != std::string::npos) return 0;
-        const auto first_codec = codecs.substr(0, comma);
-        const auto second_codec = codecs.substr(comma + 1);
+        const auto trim = [](const std::string& codec) {
+            const auto start = codec.find_first_not_of(" \t");
+            return start == std::string::npos ? std::string() :
+                codec.substr(start, codec.find_last_not_of(" \t") - start + 1);
+        };
+        const auto first_codec = trim(codecs.substr(0, comma));
+        const auto second_codec = trim(codecs.substr(comma + 1));
         if (!((starts(first_codec, "avc1.") && second_codec == "mp4a.40.2") ||
               (first_codec == "mp4a.40.2" && starts(second_codec, "avc1.")))) return 0;
     }
@@ -134,28 +139,35 @@ AdtsFormat adts_aac_lc(const AVPacket& packet) {
     const unsigned rate = (data[2] >> 2) & 15;
     const unsigned channels = ((data[2] & 1) << 2) | (data[3] >> 6);
     const int frame_bytes = ((data[3] & 3) << 11) | (data[4] << 3) | (data[5] >> 5);
+    // The AAC decoder reports the actual input format to swresample. BipBop
+    // uses index 7 (22.05 kHz), and all standard ADTS rates can be resampled.
+    static constexpr int rates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000,
+                                    22050, 16000, 12000, 11025, 8000, 7350};
     if (data[0] != 0xff || (data[1] & 0xf6) != 0xf0 || (data[2] >> 6) != 1 ||
-        (rate != 3 && rate != 4) || (channels != 1 && channels != 2) ||
+        rate >= sizeof(rates) / sizeof(*rates) || (channels != 1 && channels != 2) ||
+        ((data[1] & 1) == 0 && packet.size < 9) ||
         (data[6] & 3) || frame_bytes != packet.size) return {};
-    return {rate == 3 ? 48000 : 44100, int(channels)};
+    return {rates[rate], int(channels)};
 }
 
-bool has_pps(const std::vector<uint8_t>& configuration) {
-    for (size_t i = 0; i + 3 < configuration.size(); ++i) {
-        if (!configuration[i] && !configuration[i+1] && configuration[i+2] == 1 &&
-            (configuration[i+3] & 31) == 8) return true;
-    }
-    return false;
+bool prefer_variant(double candidate, double selected) {
+    // Prefer rates that fit a maximum-length segment in the download budget.
+    // Keep a higher-rate rendition eligible when the master offers no smaller one.
+    constexpr double budget = double(max_segment_bytes) * 8 / 12;
+    if (candidate <= 0) return false;
+    if (selected <= 0) return true;
+    if (candidate <= budget) return selected > budget || candidate > selected;
+    return selected > budget && candidate < selected;
 }
 } // namespace
 
-DirectHlsResult direct_parse_playlist(const std::string& text, const std::string& base, DirectPlaylist& playlist) {
+DirectError direct_parse_playlist(const std::string& text, const std::string& base, DirectPlaylist& playlist) {
     playlist = DirectPlaylist();
-    if (text.size() > 256 * 1024) return DirectHlsResult::Limit;
-    if (text.find('\0') != std::string::npos || text.find("{$") != std::string::npos) return DirectHlsResult::Invalid;
+    if (text.size() > 256 * 1024) return DirectError::StreamLimit;
+    if (text.find('\0') != std::string::npos || text.find("{$") != std::string::npos) return DirectError::PlaylistSyntax;
     std::istringstream lines(text);
     std::string line;
-    if (!std::getline(lines, line) || (line != "#EXTM3U" && line != "#EXTM3U\r")) return DirectHlsResult::Invalid;
+    if (!std::getline(lines, line) || (line != "#EXTM3U" && line != "#EXTM3U\r")) return DirectError::PlaylistSyntax;
     bool master = false, end = false, waiting_variant = false;
     double bandwidth = 0, selected_bandwidth = 0;
     int64_t duration = 0;
@@ -163,37 +175,37 @@ DirectHlsResult direct_parse_playlist(const std::string& text, const std::string
     while (std::getline(lines, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
-        if (line.size() > 8192) return DirectHlsResult::Limit;
+        if (line.size() > 8192) return DirectError::StreamLimit;
         if (line[0] != '#') {
-            if (end || (master && !waiting_variant) || (!master && duration == 0)) return DirectHlsResult::Invalid;
+            if (end || (master && !waiting_variant) || (!master && duration == 0)) return DirectError::PlaylistSyntax;
             const auto url = HlsRelay::resolve(base, line);
-            if (url.empty()) return DirectHlsResult::Invalid;
+            if (url.empty()) return DirectError::PlaylistSyntax;
             if (master) {
-                if (bandwidth > selected_bandwidth) {
+                if (prefer_variant(bandwidth, selected_bandwidth)) {
                     playlist.variant = url;
                     selected_bandwidth = bandwidth;
                 }
                 waiting_variant = false;
             } else {
                 if (playlist.segments.size() >= 4096 || playlist.duration_ns > 24 * 60 * 60 * second - duration)
-                    return DirectHlsResult::Limit;
+                    return DirectError::StreamLimit;
                 playlist.segments.push_back({url, playlist.duration_ns, duration});
                 playlist.duration_ns += duration;
                 duration = 0;
             }
         } else if (starts(line, "#EXT-X-STREAM-INF:")) {
-            if (end || duration || waiting_variant || !playlist.segments.empty()) return DirectHlsResult::Invalid;
-            if (++variants > 32) return DirectHlsResult::Limit;
+            if (end || duration || waiting_variant || !playlist.segments.empty()) return DirectError::PlaylistSyntax;
+            if (++variants > 32) return DirectError::StreamLimit;
             master = waiting_variant = true;
             bandwidth = variant_bandwidth(line);
         } else if (starts(line, "#EXTINF:")) {
             double parsed = 0;
             if (master || end || duration || !decimal(line.substr(8, line.find(',') - 8), parsed) || parsed < 0.01)
-                return DirectHlsResult::Invalid;
-            if (parsed > 12) return DirectHlsResult::Limit;
+                return DirectError::PlaylistSyntax;
+            if (parsed > 12) return DirectError::StreamLimit;
             duration = int64_t(std::llround(parsed * second));
         } else if (line == "#EXT-X-ENDLIST") {
-            if (master || duration || end) return DirectHlsResult::Invalid;
+            if (master || duration || end) return DirectError::PlaylistSyntax;
             end = true;
         } else if (!starts(line, "#EXT") || line == "#EXT-X-INDEPENDENT-SEGMENTS" ||
                    line == "#EXT-X-KEY:METHOD=NONE" || starts(line, "#EXT-X-VERSION:") ||
@@ -202,66 +214,137 @@ DirectHlsResult direct_parse_playlist(const std::string& text, const std::string
                    starts(line, "#EXT-X-MEDIA:") || starts(line, "#EXT-X-I-FRAME-STREAM-INF:")) {
             continue;
         } else {
-            return DirectHlsResult::Unsupported;
+            if (starts(line, "#EXT-X-KEY:") || starts(line, "#EXT-X-SESSION-KEY:")) return DirectError::PlaylistEncryption;
+            if (starts(line, "#EXT-X-MAP:")) return DirectError::PlaylistInitSegment;
+            if (starts(line, "#EXT-X-BYTERANGE:")) return DirectError::PlaylistByteRange;
+            if (line == "#EXT-X-DISCONTINUITY") return DirectError::PlaylistDiscontinuity;
+            if (!starts(line, "#EXT-X-")) continue; // HLS clients ignore other extended comments.
+            return DirectError::PlaylistTag;
         }
     }
-    if (waiting_variant || duration) return DirectHlsResult::Invalid;
-    if (master) return playlist.variant.empty() ? DirectHlsResult::Unsupported : DirectHlsResult::Ok;
-    if (playlist.segments.empty()) return DirectHlsResult::Invalid;
-    return end ? DirectHlsResult::Ok : DirectHlsResult::Unsupported;
+    if (waiting_variant || duration) return DirectError::PlaylistSyntax;
+    if (master) return playlist.variant.empty() ? DirectError::PlaylistVariant : DirectError::None;
+    if (playlist.segments.empty()) return DirectError::PlaylistSyntax;
+    return end ? DirectError::None : DirectError::PlaylistLive;
 }
 
-DirectHlsResult direct_demux_ts(const std::string& data, const std::atomic<bool>& cancelled,
-                               AudioDecoder& audio, DirectDemuxedSegment& segment) {
+DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& cancelled,
+                            AudioDecoder& audio, int width, int height, DirectDemuxedSegment& segment) {
     segment = DirectDemuxedSegment();
-    if (cancelled) return DirectHlsResult::Cancelled;
-    if (data.size() > max_segment_bytes) return DirectHlsResult::Limit;
+    if (cancelled) return DirectError::FetchCancelled;
+    if (data.size() > max_segment_bytes) return DirectError::StreamLimit;
+    // Match the container even when it has a misleading URL suffix or MIME
+    // type. The ARM build exposes only the in-memory MPEG-TS demuxer.
+    const auto probe_size = std::min(data.size(), size_t(64 * 1024));
+    std::vector<uint8_t> prefix(probe_size + AVPROBE_PADDING_SIZE, 0);
+    std::copy_n(data.begin(), probe_size, prefix.begin());
+    AVProbeData probe = {};
+    probe.filename = "";
+    probe.buf = prefix.data();
+    probe.buf_size = int(probe_size);
+    const auto* input = av_probe_input_format3(&probe, 1, &segment.probe_score);
+    if (!input || std::strcmp(input->name, "mpegts")) {
+        if (data.size() >= 8 && (!data.compare(4, 4, "ftyp") || !data.compare(4, 4, "styp") ||
+                                 !data.compare(4, 4, "moof"))) segment.container = "iso-bmff";
+        return DirectError::SegmentContainer;
+    }
+    segment.container = "mpegts";
     SegmentReader reader(data, cancelled);
     Demuxer demux;
-    if (!demux.open(reader)) return cancelled ? DirectHlsResult::Cancelled : DirectHlsResult::Invalid;
+    if (!demux.open(reader)) return cancelled ? DirectError::FetchCancelled : DirectError::DemuxOpen;
+    const bool continuing = width != 0;
+    segment.width = width;
+    segment.height = height;
     int video_index = -1, audio_index = -1, result = 0;
     unsigned packets = 0;
+    // Reuse the active decoder across continuous segments. A new decoder
+    // needs in-band parameter sets and an IDR, which may follow leading AUs.
+    std::vector<uint8_t> configuration;
+    bool have_sps = false, have_pps = false;
+    int64_t leading_dts = AV_NOPTS_VALUE, first_video_pts = 0;
     int64_t audio_pts_anchor = AV_NOPTS_VALUE;
+    int64_t last_audio_pts = AV_NOPTS_VALUE;
     int audio_samples = 0;
     while (!cancelled && (result = av_read_frame(demux.format, demux.packet)) >= 0) {
-        if (++packets > max_segment_packets) return DirectHlsResult::Limit;
+        if (++packets > max_segment_packets) return DirectError::StreamLimit;
         AVPacket& packet = *demux.packet;
         const AVStream& stream = *demux.format->streams[packet.stream_index];
         const bool video = stream.codecpar->codec_type == AVMEDIA_TYPE_VIDEO;
         const bool is_audio = stream.codecpar->codec_type == AVMEDIA_TYPE_AUDIO;
         if (!video && !is_audio) { av_packet_unref(&packet); continue; }
-        if (packet.size <= 0 || size_t(packet.size) > max_packet_bytes) return DirectHlsResult::Limit;
-        if (packet.flags & AV_PKT_FLAG_CORRUPT) return DirectHlsResult::Invalid;
+        if (video) segment.video_codec = stream.codecpar->codec_id;
+        else segment.audio_codec = stream.codecpar->codec_id;
+        if (packet.size <= 0 || size_t(packet.size) > max_packet_bytes) return DirectError::StreamLimit;
+        if (packet.flags & AV_PKT_FLAG_CORRUPT) return DirectError::PacketCorrupt;
         const AVRational ns = {1, int(second)};
         DirectAccessUnit unit;
         unit.video = video;
         if (video) {
-            if (packet.pts == AV_NOPTS_VALUE || packet.dts == AV_NOPTS_VALUE) return DirectHlsResult::Invalid;
-            unit.pts_ns = av_rescale_q(packet.pts, stream.time_base, ns);
-            unit.dts_ns = av_rescale_q(packet.dts, stream.time_base, ns);
-            unit.duration_ns = av_rescale_q(packet.duration, stream.time_base, ns);
-            if (stream.codecpar->codec_id != AV_CODEC_ID_H264 ||
-                (video_index >= 0 && packet.stream_index != video_index)) return DirectHlsResult::Unsupported;
+            if (stream.codecpar->codec_id != AV_CODEC_ID_H264) return DirectError::VideoCodec;
+            if (video_index >= 0 && packet.stream_index != video_index) return DirectError::MultipleTracks;
+            video_index = packet.stream_index;
             const auto info = inspect_h264(packet.data, size_t(packet.size));
-            if (!info.valid) return DirectHlsResult::Invalid;
-            if (!info.picture) { av_packet_unref(&packet); continue; }
-            if (video_index < 0) {
-                if (!info.keyframe || !info.width || !has_pps(info.configuration)) return DirectHlsResult::Unsupported;
-                if (info.height > 1080 || info.width > 1920) return DirectHlsResult::Unsupported;
+            if (!info.valid) return DirectError::H264AnnexB;
+            if (info.width) {
+                segment.h264_profile = int(info.profile);
+                segment.pixel_format = info.chroma == 1 && info.bit_depth == 8 ? "yuv420p" : "other";
+                if (info.height > 1080 || info.width > 1920 || info.chroma != 1 || info.bit_depth != 8)
+                    return DirectError::H264Format;
+                if (segment.width && (info.width != segment.width || info.height != segment.height))
+                    return DirectError::TrackChange;
                 segment.width = info.width;
                 segment.height = info.height;
-                segment.first_video_dts_ns = unit.dts_ns;
-                video_index = packet.stream_index;
             }
-            if (info.width && (info.width != segment.width || info.height != segment.height))
-                return DirectHlsResult::Unsupported;
-            unit.data.assign(packet.data, packet.data + packet.size);
+            if (!info.configuration.empty()) {
+                if (info.width && info.pps) configuration.clear();
+                if (configuration.size() + info.configuration.size() > 65536) return DirectError::StreamLimit;
+                configuration.insert(configuration.end(), info.configuration.begin(), info.configuration.end());
+                have_sps |= info.width != 0;
+                have_pps |= info.pps;
+                segment.sps_pps |= have_sps && have_pps;
+            }
+            if (!info.picture) { av_packet_unref(&packet); continue; }
+            segment.idr |= info.keyframe;
+            if (!continuing && !segment.video_packets && (!info.keyframe || !segment.sps_pps)) {
+                if (leading_dts == AV_NOPTS_VALUE && packet.dts != AV_NOPTS_VALUE)
+                    leading_dts = av_rescale_q(packet.dts, stream.time_base, ns);
+                av_packet_unref(&packet);
+                continue;
+            }
+            if (packet.pts == AV_NOPTS_VALUE) return DirectError::VideoTimestamp;
+            unit.pts_ns = av_rescale_q(packet.pts, stream.time_base, ns);
+            if (packet.dts == AV_NOPTS_VALUE) {
+                // A random-access IDR can start the decode timeline at its
+                // own PTS. Subsequent decode times still have to keep order.
+                if (continuing || segment.video_packets || !info.keyframe) return DirectError::VideoTimestamp;
+                unit.dts_ns = unit.pts_ns;
+                ++segment.inferred_dts;
+            } else {
+                unit.dts_ns = av_rescale_q(packet.dts, stream.time_base, ns);
+            }
+            unit.duration_ns = av_rescale_q(packet.duration, stream.time_base, ns);
+            if (segment.video_packets && unit.dts_ns < segment.last_video_dts_ns)
+                return DirectError::VideoTimestamp;
+            if (segment.video_packets && unit.dts_ns == segment.last_video_dts_ns) ++segment.tied_dts;
+            if (!segment.video_packets) {
+                segment.first_video_dts_ns = unit.dts_ns;
+                segment.starts_with_idr = info.keyframe;
+                first_video_pts = unit.pts_ns;
+            }
+            if (unit.pts_ns < unit.dts_ns) ++segment.reordered;
+            segment.last_video_dts_ns = unit.dts_ns;
+            ++segment.video_packets;
+            if (!(info.width && info.pps)) unit.data.swap(configuration);
+            configuration.clear();
+            have_sps = have_pps = false;
+            unit.data.insert(unit.data.end(), packet.data, packet.data + packet.size);
         } else {
+            if (stream.codecpar->codec_id != AV_CODEC_ID_AAC) return DirectError::AudioCodec;
+            if (audio_index >= 0 && packet.stream_index != audio_index) return DirectError::MultipleTracks;
             const auto adts = adts_aac_lc(packet);
-            if (stream.codecpar->codec_id != AV_CODEC_ID_AAC || !adts.sample_rate ||
-                (segment.aac_sample_rate && (segment.aac_sample_rate != adts.sample_rate ||
-                                             segment.aac_channels != adts.channels)) ||
-                (audio_index >= 0 && packet.stream_index != audio_index)) return DirectHlsResult::Unsupported;
+            if (!adts.sample_rate) return DirectError::AacAdts;
+            if (segment.aac_sample_rate && (segment.aac_sample_rate != adts.sample_rate ||
+                                            segment.aac_channels != adts.channels)) return DirectError::TrackChange;
             segment.aac_sample_rate = adts.sample_rate;
             segment.aac_channels = adts.channels;
             const AVRational sample_time = {1, adts.sample_rate};
@@ -271,29 +354,47 @@ DirectHlsResult direct_demux_ts(const std::string& data, const std::atomic<bool>
                 audio_pts_anchor = av_rescale_q(packet.pts, stream.time_base, ns);
                 audio_samples = 0;
             }
-            if (audio_pts_anchor == AV_NOPTS_VALUE) return DirectHlsResult::Invalid;
+            if (audio_pts_anchor == AV_NOPTS_VALUE) return DirectError::AudioTimestamp;
             unit.pts_ns = unit.dts_ns = audio_pts_anchor + av_rescale_q(audio_samples, sample_time, ns);
+            if (unit.pts_ns <= last_audio_pts) return DirectError::AudioTimestamp;
+            last_audio_pts = unit.pts_ns;
             audio_samples += 1024;
             unit.duration_ns = av_rescale_q(1024, sample_time, ns);
             if (!audio.decode_adts(packet.data, size_t(packet.size), unit.data) || unit.data.empty())
-                return DirectHlsResult::Invalid;
+                return DirectError::AacDecode;
+            if (!segment.audio_packets++) segment.first_pcm_bytes = unit.data.size();
             audio_index = packet.stream_index;
         }
         constexpr int64_t max_timestamp = 2 * 24 * 60 * 60 * second;
         if (unit.pts_ns < -second || unit.pts_ns > max_timestamp || unit.dts_ns < -second ||
             unit.dts_ns > max_timestamp || unit.duration_ns < 0 || unit.duration_ns > second)
-            return DirectHlsResult::Invalid;
-        if (unit.data.size() > max_segment_bytes - segment.bytes) return DirectHlsResult::Limit;
+            return video ? DirectError::VideoTimestamp : DirectError::AudioTimestamp;
+        if (unit.pts_ns < unit.dts_ns - second || unit.pts_ns > unit.dts_ns + second)
+            return DirectError::VideoTimestamp;
+        if (unit.data.size() > max_segment_bytes - segment.bytes) return DirectError::StreamLimit;
         segment.bytes += unit.data.size();
         segment.packets.push_back(std::move(unit));
         av_packet_unref(&packet);
     }
-    if (cancelled) return DirectHlsResult::Cancelled;
-    if (result != AVERROR_EOF) return DirectHlsResult::Invalid;
-    if (video_index < 0 || audio_index < 0) return DirectHlsResult::Unsupported;
+    if (cancelled) return DirectError::FetchCancelled;
+    if (result != AVERROR_EOF) return DirectError::DemuxRead;
+    if (video_index < 0) return DirectError::MissingH264;
+    if (!segment.video_packets) return segment.idr ? DirectError::H264Configuration : DirectError::H264Keyframe;
+    if (audio_index < 0) return DirectError::MissingAac;
+    if (leading_dts != AV_NOPTS_VALUE) {
+        segment.skipped_ns = std::max(int64_t(0), segment.first_video_dts_ns - leading_dts);
+        const auto keep = std::remove_if(segment.packets.begin(), segment.packets.end(), [&](const DirectAccessUnit& unit) {
+            if (unit.video || unit.pts_ns + unit.duration_ns > first_video_pts) return false;
+            segment.bytes -= unit.data.size();
+            --segment.audio_packets;
+            return true;
+        });
+        segment.packets.erase(keep, segment.packets.end());
+        if (!segment.audio_packets) return DirectError::MissingAac;
+    }
     std::stable_sort(segment.packets.begin(), segment.packets.end(), [](const DirectAccessUnit& a, const DirectAccessUnit& b) {
         return a.dts_ns < b.dts_ns;
     });
-    if (segment.packets.back().dts_ns - segment.packets.front().dts_ns > 13 * second) return DirectHlsResult::Limit;
-    return DirectHlsResult::Ok;
+    if (segment.packets.back().dts_ns - segment.packets.front().dts_ns > 13 * second) return DirectError::StreamLimit;
+    return DirectError::None;
 }
