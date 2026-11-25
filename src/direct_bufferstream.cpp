@@ -20,12 +20,12 @@ DirectError fetch_error(const HlsFetch& fetch) {
 void log_segment(const DirectDemuxedSegment& media, DirectError result, size_t number) {
     std::fprintf(stderr, "[direct-hls] stage=segment-demux segment=%zu reason=%s container=%s probe-score=%d "
         "video-codec=%d audio-codec=%d h264-profile=%d pixel-format=%s geometry=%dx%d aac-rate=%d aac-channels=%d "
-        "video-packets=%u audio-packets=%u idr=%d first-idr=%d sps-pps=%d first-video-au=%d first-pcm-bytes=%zu "
+        "video-packets=%u audio-packets=%u idr=%d first-idr=%d sps-pps=%d first-video-au=%d first-pcm-bytes=%zu aac-without-pcm=%u "
         "timestamps=%s timestamp-problem=%s pts-before-dts=%u tied-dts=%u inferred-first-dts=%u\n",
         number, direct_error_name(result), media.container, media.probe_score, media.video_codec, media.audio_codec,
         media.h264_profile, media.pixel_format, media.width, media.height, media.aac_sample_rate, media.aac_channels,
         media.video_packets, media.audio_packets, int(media.idr), int(media.starts_with_idr), int(media.sps_pps),
-        int(media.video_packets > 0), media.first_pcm_bytes,
+        int(media.video_packets > 0), media.first_pcm_bytes, media.aac_without_pcm,
         result == DirectError::VideoTimestamp || result == DirectError::AudioTimestamp ? "invalid" :
             result == DirectError::None ? "valid" : "incomplete",
         media.timestamp_problem, media.reordered, media.tied_dts, media.inferred_dts);
@@ -165,8 +165,8 @@ bool DirectBufferstream::fail(DirectError error) {
     status_.error = error;
     std::fprintf(stderr, "[direct-bufferstream] stage=%s error=%s accepted-video=%llu accepted-audio=%llu\n",
         direct_stage_name(status_.stage), direct_error_name(error),
-        static_cast<unsigned long long>(media_.feed_video_accepted.load()),
-        static_cast<unsigned long long>(media_.feed_audio_accepted.load()));
+        static_cast<unsigned long long>(opened_ ? media_.feed_video_accepted.load() : 0),
+        static_cast<unsigned long long>(opened_ ? media_.feed_audio_accepted.load() : 0));
     return false;
 }
 

@@ -126,6 +126,7 @@ with tempfile.TemporaryDirectory(prefix='uxair-public-hls-') as folder:
     assert 'token=PRIVATE' not in checked.stdout and 'https://' not in checked.stdout and 'http://' not in checked.stdout
     assert re.search(r'container=mpegts probe-score=[1-9]\d* video-codec=27 audio-codec=86018', checked.stdout)
     assert re.search(r'aac-rate=22050 aac-channels=2 .*sps-pps=1 first-video-au=1 first-pcm-bytes=[1-9]\d* .*pts-before-dts=[1-9]\d*', checked.stdout)
+    assert re.search(r'geometry=1280x720 aac-rate=44100 .*first-pcm-bytes=[1-9]\d* aac-without-pcm=[1-9]\d*', checked.stdout)
     assert re.search(r'container=mpegts .*first-idr=0 .*timestamps=valid', checked.stdout), 'continuity across an open GOP'
     assert 'stage=segment-demux error=video-timestamp' in checked.stdout
     assert 'timestamp-problem=composition-offset' in checked.stdout

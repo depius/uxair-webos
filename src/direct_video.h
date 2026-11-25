@@ -24,7 +24,7 @@ enum class DirectError { None, Busy, RelayStart, Payload, AcbCreate, AcbInitiali
     PlaylistTag, PlaylistNested, PlaylistDiscontinuity, SegmentContainer, DemuxOpen, DemuxRead,
     MissingH264, MissingAac, VideoCodec, AudioCodec, MultipleTracks, H264AnnexB, H264Keyframe,
     H264Configuration, H264Format, AacAdts, AacDecode, VideoTimestamp, AudioTimestamp, PacketCorrupt,
-    TrackChange, DownloadWorker, FetchCancelled };
+    TrackChange, DownloadWorker, FetchCancelled, AacNoPcm };
 const char *direct_stage_name(DirectStage);
 const char *direct_error_name(DirectError);
 struct DirectSnapshot {

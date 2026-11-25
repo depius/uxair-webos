@@ -25,7 +25,7 @@ const char *direct_error_name(DirectError e) {
         "unsupported-playlist-tag","nested-master","declared-discontinuity","unsupported-container","demux-open","demux-read",
         "missing-h264","missing-aac","unsupported-video-codec","unsupported-audio-codec","multiple-av-tracks","invalid-h264-annex-b","missing-idr",
         "missing-sps-pps","unsupported-h264-format","unsupported-aac-adts","aac-decode","video-timestamp","audio-timestamp","corrupt-packet",
-        "track-change","download-worker","fetch-cancelled"};
+        "track-change","download-worker","fetch-cancelled","missing-aac-pcm"};
     const unsigned n=unsigned(e);return n<sizeof(names)/sizeof(*names)?names[n]:"unknown";
 }
 const char *direct_backend_name(DirectBackend backend) {

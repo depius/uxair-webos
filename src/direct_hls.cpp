@@ -268,6 +268,7 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
     int64_t audio_pts_anchor = AV_NOPTS_VALUE;
     int64_t last_audio_pts = AV_NOPTS_VALUE;
     int audio_samples = 0;
+    unsigned aac_without_pcm = 0;
     const auto timestamp_error = [&](bool video, const char* reason) {
         segment.timestamp_problem = reason;
         return video ? DirectError::VideoTimestamp : DirectError::AudioTimestamp;
@@ -348,6 +349,7 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
         } else {
             if (stream.codecpar->codec_id != AV_CODEC_ID_AAC) return DirectError::AudioCodec;
             if (audio_index >= 0 && packet.stream_index != audio_index) return DirectError::MultipleTracks;
+            audio_index = packet.stream_index;
             const auto adts = adts_aac_lc(packet);
             if (!adts.sample_rate) return DirectError::AacAdts;
             if (segment.aac_sample_rate && (segment.aac_sample_rate != adts.sample_rate ||
@@ -367,10 +369,18 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
             last_audio_pts = unit.pts_ns;
             audio_samples += 1024;
             unit.duration_ns = av_rescale_q(1024, sample_time, ns);
-            if (!audio.decode_adts(packet.data, size_t(packet.size), unit.data) || unit.data.empty())
+            if (!audio.decode_adts(packet.data, size_t(packet.size), unit.data))
                 return DirectError::AacDecode;
+            if (unit.data.empty()) {
+                // The first Mux ADTS packet carries encoder data and consumes
+                // a timestamp slot, while AAC returns success with no frame.
+                ++segment.aac_without_pcm;
+                if (++aac_without_pcm > 8) return DirectError::AacNoPcm;
+                av_packet_unref(&packet);
+                continue;
+            }
+            aac_without_pcm = 0;
             if (!segment.audio_packets++) segment.first_pcm_bytes = unit.data.size();
-            audio_index = packet.stream_index;
         }
         constexpr int64_t max_timestamp = 2 * 24 * 60 * 60 * second;
         if (unit.pts_ns < -second || unit.pts_ns > max_timestamp || unit.dts_ns < -second ||
@@ -388,6 +398,7 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
     if (video_index < 0) return DirectError::MissingH264;
     if (!segment.video_packets) return segment.idr ? DirectError::H264Configuration : DirectError::H264Keyframe;
     if (audio_index < 0) return DirectError::MissingAac;
+    if (!segment.audio_packets) return DirectError::AacNoPcm;
     if (leading_dts != AV_NOPTS_VALUE) {
         segment.skipped_ns = std::max(int64_t(0), segment.first_video_dts_ns - leading_dts);
         const auto keep = std::remove_if(segment.packets.begin(), segment.packets.end(), [&](const DirectAccessUnit& unit) {

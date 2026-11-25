@@ -45,6 +45,7 @@ struct DirectDemuxedSegment {
     const char* timestamp_problem = "none";
     int probe_score = 0, video_codec = -1, audio_codec = -1, h264_profile = 0;
     unsigned video_packets = 0, audio_packets = 0, reordered = 0, tied_dts = 0, inferred_dts = 0;
+    unsigned aac_without_pcm = 0;
     size_t first_pcm_bytes = 0;
     bool idr = false, starts_with_idr = false, sps_pps = false;
 };
