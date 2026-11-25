@@ -351,7 +351,7 @@ DirectError inspect_fragment(const Box& moof, uint32_t& sequence) {
     return tracks&&sequence_seen&&(!implicit_base||tracks==1)?DirectError::None:DirectError::Mp4Boxes;
 }
 
-DirectError inspect_mp4(const std::string& init,const std::string& fragment) {
+DirectError inspect_mp4(const std::string& init, const std::string& fragment, unsigned& fragments) {
     const auto* at=reinterpret_cast<const uint8_t*>(init.data());
     size_t remaining=init.size();
     Box box;
@@ -372,7 +372,6 @@ DirectError inspect_mp4(const std::string& init,const std::string& fragment) {
     if(!ftyp||!moov||!mvex) return DirectError::Mp4Boxes;
     at=reinterpret_cast<const uint8_t*>(fragment.data());remaining=fragment.size();
     bool awaiting_data=false;
-    unsigned fragments=0;
     uint32_t previous_sequence=0;
     while(remaining) {
         if(!read_box(at,remaining,box)) return DirectError::Mp4Boxes;
@@ -470,7 +469,8 @@ DirectError direct_parse_playlist(const std::string& text, const std::string& ba
             if (!map_attributes(line,map.url,map.range)) return DirectError::PlaylistSyntax;
             map.url=HlsRelay::resolve(base,map.url);
             if (map.url.empty()) return DirectError::PlaylistSyntax;
-            if (map.range.length>1024*1024||!resolve_range(map.range,map.url,playlist.segments))
+            if (map.range.length && (map.range.offset == UINT64_MAX || map.range.length > 1024 * 1024 ||
+                                     map.range.offset > uint64_t(INT64_MAX) - map.range.length))
                 return DirectError::PlaylistByteRange;
             const auto prior=std::find_if(playlist.maps.begin(),playlist.maps.end(),[&](const DirectInitSegment& other){
                 return map.url==other.url&&map.range==other.range;
@@ -553,7 +553,7 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
     if (mp4) {
         segment.container="fmp4";
         if (init.size()>1024*1024) return DirectError::StreamLimit;
-        const auto result=inspect_mp4(init,data);
+        const auto result=inspect_mp4(init,data,segment.fragments);
         if(result!=DirectError::None) return result;
     } else {
         // Match MPEG-TS even with a misleading suffix or MIME type.
@@ -591,6 +591,7 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
                     return DirectError::VideoCodec;
                 if(!par.extradata||par.extradata_size<7||par.extradata_size>65536||
                    par.extradata[0]!=1||(par.extradata[4]&3)==2) return DirectError::Mp4Config;
+                segment.h264_level = par.extradata[3];
             } else if(par.codec_type==AVMEDIA_TYPE_AUDIO) {
                 ++audios;segment.audio_codec=par.codec_id;
                 if(par.codec_id!=AV_CODEC_ID_AAC||par.codec_tag!=MKTAG('m','p','4','a')) return DirectError::AudioCodec;
@@ -617,6 +618,7 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
         segment.timestamp_problem = reason;
         return video ? DirectError::VideoTimestamp : DirectError::AudioTimestamp;
     };
+    constexpr int64_t max_timestamp = 2 * 24 * 60 * 60 * second;
     while (!cancelled && (result = av_read_frame(demux.format, demux.packet)) >= 0) {
         if (++packets > max_segment_packets) return DirectError::StreamLimit;
         AVPacket& packet = *demux.packet;
@@ -630,6 +632,8 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
         if (packet.flags & AV_PKT_FLAG_CORRUPT) return DirectError::PacketCorrupt;
         if (mp4 && (av_packet_get_side_data(&packet,AV_PKT_DATA_ENCRYPTION_INFO,nullptr)||
                     av_packet_get_side_data(&packet,AV_PKT_DATA_ENCRYPTION_INIT_INFO,nullptr))) return DirectError::EncryptedMedia;
+        if (mp4 && av_packet_get_side_data(&packet, AV_PKT_DATA_NEW_EXTRADATA, nullptr))
+            return DirectError::Mp4Config;
         const AVRational ns = {1, int(second)};
         DirectAccessUnit unit;
         unit.video = video;
@@ -662,8 +666,11 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
             if (!info.picture) { av_packet_unref(&packet); continue; }
             segment.idr |= info.keyframe;
             if (!continuing && !segment.video_packets && (!info.keyframe || !segment.sps_pps)) {
-                if (leading_dts == AV_NOPTS_VALUE && packet.dts != AV_NOPTS_VALUE)
+                if (leading_dts == AV_NOPTS_VALUE && packet.dts != AV_NOPTS_VALUE) {
                     leading_dts = av_rescale_q(packet.dts, stream.time_base, ns);
+                    if (leading_dts < -second || leading_dts > max_timestamp)
+                        return timestamp_error(true, "out-of-range");
+                }
                 av_packet_unref(&packet);
                 continue;
             }
@@ -713,6 +720,8 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
                 audio_samples = 0;
             }
             if (audio_pts_anchor == AV_NOPTS_VALUE) return timestamp_error(false, "missing-anchor");
+            if (mp4 && (audio_pts_anchor < -second || audio_pts_anchor > max_timestamp))
+                return timestamp_error(false, "out-of-range");
             unit.pts_ns = unit.dts_ns = audio_pts_anchor + av_rescale_q(audio_samples, sample_time, ns);
             if (unit.pts_ns <= last_audio_pts) return timestamp_error(false, "presentation-order");
             last_audio_pts = unit.pts_ns;
@@ -724,6 +733,25 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
                 audio.decode_adts(packet.data,size_t(packet.size),unit.data);
             if (!decoded)
                 return DirectError::AacDecode;
+            // MOV can attach leading and trailing AAC trim for priming and
+            // edits. The shared decoder takes raw bytes, so apply it to PCM.
+            size_t trim_size = 0;
+            const auto* trim = mp4 ? av_packet_get_side_data(&packet, AV_PKT_DATA_SKIP_SAMPLES, &trim_size) : nullptr;
+            if (trim) {
+                if (trim_size != 10) return DirectError::Mp4Config;
+                const auto leading = AV_RL32(trim), trailing = AV_RL32(trim + 4);
+                if (leading > 1024 || trailing > 1024 - leading)
+                    return timestamp_error(false, "aac-trim");
+                const auto trim_bytes = [&](uint32_t samples) {
+                    return size_t(av_rescale(samples, 44100, adts.sample_rate)) * 4;
+                };
+                const size_t front = std::min(trim_bytes(leading), unit.data.size());
+                const size_t back = std::min(trim_bytes(trailing), unit.data.size() - front);
+                unit.data.resize(unit.data.size() - back);
+                unit.data.erase(unit.data.begin(), unit.data.begin() + front);
+                unit.pts_ns += av_rescale_q(leading, sample_time, ns);
+                unit.dts_ns = unit.pts_ns;
+            }
             if (unit.data.empty()) {
                 // The first Mux ADTS packet carries encoder data and consumes
                 // a timestamp slot, while AAC returns success with no frame.
@@ -736,7 +764,6 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
             unit.duration_ns = av_rescale_q(unit.data.size() / 4, AVRational{1, 44100}, ns);
             if (!segment.audio_packets++) segment.first_pcm_bytes = unit.data.size();
         }
-        constexpr int64_t max_timestamp = 2 * 24 * 60 * 60 * second;
         if (unit.pts_ns < -second || unit.pts_ns > max_timestamp || unit.dts_ns < -second ||
             unit.dts_ns > max_timestamp || unit.duration_ns < 0 || unit.duration_ns > second)
             return timestamp_error(video, "out-of-range");

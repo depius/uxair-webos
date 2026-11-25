@@ -29,7 +29,8 @@ void log_segment(const DirectDemuxedSegment& media, DirectError result, size_t n
     std::fprintf(stderr, "[direct-hls] stage=%s segment=%zu reason=%s container=%s probe-score=%d "
         "video-codec=%d audio-codec=%d h264-profile=%d pixel-format=%s geometry=%dx%d aac-rate=%d aac-channels=%d "
         "video-packets=%u audio-packets=%u idr=%d first-idr=%d sps-pps=%d first-video-au=%d first-pcm-bytes=%zu aac-without-pcm=%u "
-        "timestamps=%s timestamp-problem=%s pts-before-dts=%u tied-dts=%u inferred-first-dts=%u ffmpeg-timestamp-warnings=%u tracks=%u\n",
+        "timestamps=%s timestamp-problem=%s pts-before-dts=%u tied-dts=%u inferred-first-dts=%u ffmpeg-timestamp-warnings=%u "
+        "tracks=%u fragments=%u h264-level=%d\n",
         media.container[0] == 'f' ? "fragment-demux" : "segment-demux",
         number, direct_error_name(result), media.container, media.probe_score, media.video_codec, media.audio_codec,
         media.h264_profile, media.pixel_format, media.width, media.height, media.aac_sample_rate, media.aac_channels,
@@ -38,7 +39,7 @@ void log_segment(const DirectDemuxedSegment& media, DirectError result, size_t n
         result == DirectError::VideoTimestamp || result == DirectError::AudioTimestamp ? "invalid" :
             result == DirectError::None ? "valid" : "incomplete",
         media.timestamp_problem, media.reordered, media.tied_dts, media.inferred_dts, media.ffmpeg_timestamp_warnings,
-        media.tracks);
+        media.tracks, media.fragments, media.h264_level);
 }
 
 bool fcup_enabled() {

@@ -297,10 +297,12 @@ static void fmp4_samples(const std::string& base) {
     run("/missing-init.m3u8", DirectError::InitFetch, 0);
     run("/malformed.m3u8", DirectError::Mp4Boxes, 0);
     run("/encrypted.m3u8", DirectError::EncryptedMedia, 0);
+    run("/encrypted-playlist.m3u8", DirectError::PlaylistEncryption, 0);
     run("/unsupported.m3u8", DirectError::VideoCodec, 0);
     run("/audio-only.m3u8", DirectError::Mp4Track, 0);
     run("/separate.m3u8", DirectError::SeparateAudio, 0);
     run("/invalid-range.m3u8", DirectError::PlaylistByteRange, 0);
+    run("/invalid-map-range.m3u8", DirectError::PlaylistByteRange, 0);
     run("/bad-range-response.m3u8", DirectError::RangeResponse, 0);
     run("/ignored-range.m3u8", DirectError::RangeResponse, 0);
     run("/oversized.m3u8", DirectError::StreamLimit, 0);

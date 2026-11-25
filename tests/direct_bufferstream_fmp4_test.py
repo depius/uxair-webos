@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HEADER = '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:2\n#EXT-X-PLAYLIST-TYPE:VOD\n'
 
 
-def generate(directory, rate, seconds, video=True):
+def generate(directory, rate, seconds, video=True, split_tracks=False):
     directory.mkdir()
     command = ['ffmpeg', '-nostdin', '-v', 'error', '-f', 'lavfi',
                '-i', f'sine=frequency=440:sample_rate={rate}', '-ac', '2', '-c:a', 'aac', '-profile:a', 'aac_low']
@@ -27,6 +27,8 @@ def generate(directory, rate, seconds, video=True):
     command += ['-t', str(seconds), '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0',
                 '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init.mp4',
                 '-hls_segment_filename', 'part%d.m4s', 'media.m3u8']
+    if split_tracks:
+        command[-1:-1] = ['-hls_segment_options', 'movflags=+separate_moof']
     subprocess.run(command, cwd=directory, check=True, timeout=25)
 
 
@@ -72,7 +74,7 @@ class FixtureServer(http.server.SimpleHTTPRequestHandler):
 with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     root = Path(folder)
     generate(root / 'clip', 22050, 8)
-    generate(root / 'next', 44100, 4)
+    generate(root / 'next', 44100, 4, split_tracks=True)
     generate(root / 'audio', 44100, 4, video=False)
     clip = root / 'clip'
 
@@ -105,6 +107,7 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     packed.extend(b'never requested')
     playlist('ranges', ranged)
     playlist('invalid-range', ranged_init + '#EXTINF:2,\n#EXT-X-BYTERANGE:100\nranges.bin?token=PRIVATE\n')
+    playlist('invalid-map-range', ranged.replace(f'@{len(prefix)}"', '"', 1))
     playlist('bad-range-response', ranged.replace('ranges.bin', 'bad-range.bin'))
     playlist('ignored-range', ranged.replace('ranges.bin', 'ignored-range.bin'))
     (root / 'ignored-range.bin').write_bytes(packed)
@@ -118,6 +121,8 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     playlist('malformed', init('clip/init.mp4') + entry('bad.m4s'))
     (root / 'encrypted.mp4').write_bytes(init_bytes + struct.pack('>I4s', 8, b'pssh'))
     playlist('encrypted', init('encrypted.mp4') + entry('clip/part0.m4s'))
+    playlist('encrypted-playlist', '#EXT-X-KEY:METHOD=SAMPLE-AES,URI="never-fetched"\n' +
+             init('clip/init.mp4') + entry('clip/part0.m4s'))
     (root / 'mpeg4.mp4').write_bytes(init_bytes.replace(b'avc1', b'mp4v'))
     playlist('unsupported', init('mpeg4.mp4') + entry('clip/part0.m4s'))
     playlist('audio-only', init('audio/init.mp4') + entry('audio/part0.m4s'))
@@ -147,4 +152,5 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     for rate in (22050, 44100):
         assert re.search(rf'container=fmp4 .*aac-rate={rate} aac-channels=2 .*sps-pps=1 .*'
                          r'first-pcm-bytes=[1-9]\d* .*timestamps=valid .*tracks=2', checked.stdout)
+    assert re.search(r'aac-rate=44100 .*timestamps=valid .*fragments=2', checked.stdout)
     assert 'token=PRIVATE' not in checked.stdout and 'http://' not in checked.stdout
