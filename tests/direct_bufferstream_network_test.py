@@ -39,6 +39,9 @@ try:
     assert 'stage=manifest-fetch code=42 http=0' in checked.stdout
     assert 'stage=manifest-cancelled' in checked.stdout
     assert 'backend=BUFFERSTREAM loaded=0 outcome=cancelled' in checked.stdout
+    assert 'stage=stall reason=no-decoder-frames' in checked.stdout
+    assert 'stage=stall reason=audio-backpressure' in checked.stdout
+    assert 'stage=buffering reason=waiting-for-segment' in checked.stdout
     assert ('backend_load_attempts=1 backend_loaded=0 backend_load_failures=0 backend_load_cancellations=1'
             in checked.stdout)
     assert 'token=PRIVATE' not in checked.stdout

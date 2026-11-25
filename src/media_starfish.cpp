@@ -89,7 +89,15 @@ void Media::event(int type, int64_t value, const char *message, void *user) {
         m->playing = true;
         fprintf(stderr,"[media-state] playing event=0x%x\n",type);
 #ifdef UXAIR_DIRECT_BUILD
-        if (m->direct_load_shape_) fprintf(stderr,"[direct-player] stage=playing owner=callback\n");
+        if (m->direct_load_shape_) {
+            m->direct_backend_paused_ = false;
+            fprintf(stderr,"[direct-player] stage=playing owner=callback\n");
+        }
+#endif
+        break;
+    case 0x1b: // PF_EVENT_TYPE_STR_STATE_UPDATE__PAUSED on the Starfish ABI
+#ifdef UXAIR_DIRECT_BUILD
+        if (m->direct_load_shape_) m->direct_backend_paused_ = true;
 #endif
         break;
     case PF_EVENT_TYPE_STR_STATE_UPDATE__ENDOFSTREAM: m->ended = true; break;
@@ -335,6 +343,19 @@ FeedResult Media::feed(const void *data, size_t size, int64_t pts_ns, bool video
 }
 void Media::eos() { if (api_ && loaded_) api_->pushEOS(); }
 void Media::pause(bool paused) {if(api_&&loaded_) {fprintf(stderr,"[media-state] pause-request=%d ready=%d playing=%d\n",int(paused),int(ready.load()),int(playing.load()));if(paused)api_->Pause();else api_->Play();}}
+#ifdef UXAIR_DIRECT_BUILD
+bool Media::direct_set_paused(bool paused) {
+    if (!api_ || !loaded_ || failed) return false;
+    try {
+        return paused ? api_->Pause() : api_->Play();
+    } catch (const std::bad_alloc&) {
+        throw;
+    } catch (const std::exception& error) {
+        direct_starfish_exception("bufferstream", paused ? "pause" : "resume", error);
+        return false;
+    }
+}
+#endif
 void Media::close() {
 #ifdef UXAIR_DIRECT_BUILD
     if (callback_generation_) {
@@ -375,7 +396,10 @@ void Media::close() {
     }
     loaded_ = sink_attached_ = play_requested_ = acb_playing_ = false;
 #ifdef UXAIR_DIRECT_BUILD
-    if (direct_load_shape_) ready = playing = ended = false;
+    if (direct_load_shape_) {
+        ready = playing = ended = false;
+        direct_backend_paused_ = false;
+    }
 #endif
     play_attempts_=0;
     video_info_pending_ = false;

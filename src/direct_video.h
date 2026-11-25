@@ -8,11 +8,15 @@
 #include <condition_variable>
 #include <atomic>
 enum class DirectCommandKind { Play, Pause, Resume, Seek, Stop };
+enum class DirectOrigin { None, SenderPlay, InitialRate, SenderRate, SenderSeek, SenderStop, SenderDisconnect, ReceiverTimeout, Local, Buffering };
+const char *direct_origin_name(DirectOrigin origin);
 struct DirectCommand {
     DirectCommandKind kind;
     std::string uri;
     double position=0;
     bool position_seconds=false, encrypted=false, start_paused=false;
+    uint64_t generation=0;
+    DirectOrigin origin=DirectOrigin::None;
 };
 enum class DirectState { Idle, Loading, Playing, Paused, Ended, Error, Buffering };
 enum class DirectBackend { None, NativeUri, Bufferstream };
@@ -36,6 +40,7 @@ struct DirectSnapshot {
     uint64_t media_gets=0,buffer_bytes=0;
     uint64_t callbacks=0,relay_requests=0,upstream_fetches=0,downloaded_bytes=0,relay_failures=0;
     int last_callback=-1;int64_t last_callback_value=0;
+    uint64_t generation=0;
 };
 const char *direct_state_name(DirectState state);
 struct DirectReply {
@@ -56,6 +61,8 @@ class DirectSession {
     void reverse_loop();void close_reverse();
     std::mutex mutex_;std::deque<DirectCommand> commands_;DirectSnapshot snapshot_;std::string owner_,controller_,media_uuid_;
     uintptr_t encrypted_reverse_=0, play_connection_=0;
+    uint64_t generation_=0;
+    bool reverse_has_play_=false;
     unsigned backend_attempts_=0, backend_loads_=0, backend_failures_=0, backend_cancellations_=0, video_starts_=0, audio_starts_=0;
     DirectBackend pending_backend_=DirectBackend::None;
     bool frame_reported_=false, audio_reported_=false;

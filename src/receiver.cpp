@@ -234,7 +234,12 @@ bool Receiver::start(const std::string& dir, const Settings& settings) {
         // the cover is kept as it is: iOS sends a track's cover before its text
         if(m.title!=r.meta.title||m.artist!=r.meta.artist)r.meta.track_ns=now_ns();
         r.meta.title=m.title;r.meta.artist=m.artist;r.meta.album=m.album;++r.meta.generation;
+#ifdef UXAIR_DEV_BUILD
+        fprintf(stderr,"[now-playing] metadata artist-present=%d title-present=%d album-present=%d\n",
+                int(!m.artist.empty()),int(!m.title.empty()),int(!m.album.empty()));
+#else
         fprintf(stderr,"[now-playing] %.60s - %.60s (%.60s)\n",m.artist.c_str(),m.title.c_str(),m.album.c_str());
+#endif
     };
     cb.audio_set_coverart=[](void *p,const void *buffer,int length){
         Receiver& r=self(p);

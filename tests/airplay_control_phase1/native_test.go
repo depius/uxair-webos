@@ -249,6 +249,7 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	writeQuery(a, "POST /rate?value=1 HTTP/1.1\r\n\r\n", 200)
 	step("r")
 	event(reversePeer, "playing")
+	writeQuery(a, playRequest, 409)
 	item, err := hex.DecodeString("62706c6973743030d1010254757569645f10107068617365332d746573742d6974656d080b100000000000000101000000000000000300000000000000000000000000000023")
 	must(t, err)
 	writeQuery(a, plistRequest("POST", "/scrub?position=4", item), 200)
@@ -260,8 +261,14 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	step("t")
 	event(reversePeer, "stopped")
 	requireClosed(reversePeer)
+	reversePeer = makePeer()
+	reversePeer.upgrade()
+	writeQuery(reversePeer, reverse, 101)
 	writeQuery(a, playRequest, 200)
+	event(reversePeer, "loading")
 	step("f")
+	event(reversePeer, "stopped")
+	requireClosed(reversePeer)
 	writeQuery(a, query, 503)
 	writeQuery(a, playRequest, 200)
 	step("p")
@@ -339,7 +346,7 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 		"reason=proof-rejected", "reason=unsupported-pairing-format", "reason=unsupported-pairing-mode",
 		"reason=record-authentication", "reason=encrypted-http-framing",
 		"ack=accepted fragmented=1", "ack=rejected reason=body-not-empty",
-		"admitted=3 ", "reverse_upgrades=2", "encrypted_active=0",
+		"admitted=3 ", "reverse_upgrades=3", "encrypted_active=0",
 	} {
 		if !strings.Contains(log, milestone) {
 			t.Errorf("missing native diagnostic %q", milestone)

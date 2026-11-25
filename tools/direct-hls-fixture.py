@@ -29,10 +29,13 @@ def main():
         subprocess.run(['ffmpeg', '-nostdin', '-loglevel', 'error', '-i', str(root / 'media.m3u8'),
                         '-c', 'copy', '-movflags', '+faststart', str(root / 'probe.mp4')], check=True, timeout=30)
         (root / 'master.m3u8').write_text('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=1280x720,CODECS="mp4a.40.2,avc1.42c01f"\nmedia.m3u8\n')
+        (root / 'buffering.m3u8').write_text(
+            (root / 'media.m3u8').read_text().replace('media1.ts', 'delayed-segment.ts'))
         (root / 'index.html').write_text('<!doctype html><meta name="viewport" content="width=device-width"><title>UxAir HLS fixture</title><h1>Unprotected H.264/AAC HLS</h1><video controls playsinline x-webkit-airplay="allow" width="100%" src="master.m3u8"></video>')
         class Handler(http.server.SimpleHTTPRequestHandler):
             records = 0
             records_lock = threading.Lock()
+            release_segment = threading.Event()
             def log_message(self, *unused):
                 pass  # Never print URL query strings.
             def log_request(self, code='-', size='-'):
@@ -44,6 +47,14 @@ def main():
                 method = self.command if self.command in ('GET', 'HEAD') else 'other'
                 print(f'[fixture] request={method} role={role} http={int(code)}', flush=True)
             def do_GET(self):
+                if self.path == '/release-segment':
+                    self.release_segment.set()
+                    self.send_response(200); self.end_headers(); return
+                if self.path == '/delayed-segment.ts':
+                    if not self.release_segment.wait(timeout=9):
+                        self.send_error(503)
+                        return
+                    self.path = '/media1.ts'
                 if self.path == '/redirect':
                     self.send_response(302)
                     self.send_header('Location', '/master.m3u8')

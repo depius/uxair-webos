@@ -29,17 +29,15 @@ bool DirectPlayback::open(const DirectCommand& play, int64_t now, DirectSession&
         status_ = native_.snapshot();
         if (!accepted && strategy_ == DirectStrategy::Auto) fallback(status_, status_.error, now);
     }
+    status_.generation = play.generation;
     return status_.state != DirectState::Error;
 }
 
 void DirectPlayback::start_bufferstream(int64_t now) {
     backend_ = DirectBackend::Bufferstream;
-    const bool opened = bufferstream_.open(play_, now, session_);
-    if (opened && pause_requested_) {
-        DirectCommand pause;
-        pause.kind = DirectCommandKind::Pause;
-        bufferstream_.control(pause, now);
-    }
+    auto play = play_;
+    play.start_paused = pause_requested_;
+    bufferstream_.open(play, now, session_);
     status_ = bufferstream_.tick(now);
 }
 
@@ -115,6 +113,7 @@ DirectSnapshot DirectPlayback::tick(int64_t now) {
         status_.relay_requests = prior_native_.relay_requests;
         status_.media_gets = prior_native_.media_gets;
     }
+    status_.generation = play_.generation;
     return status_;
 }
 

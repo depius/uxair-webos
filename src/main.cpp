@@ -572,7 +572,11 @@ int main(int argc,char **argv) {
     uint64_t direct_started_utc=0, direct_play_ms=0;
     DirectState direct_previous=DirectState::Idle;
     std::map<uint32_t,uint64_t> direct_days;
-    auto finish_direct=[&](DirectSnapshot status) {
+    auto finish_direct=[&](DirectSnapshot status, DirectOrigin origin) {
+        fprintf(stderr,"[direct-session] stage=stop generation=%llu reason=%s error=%s\n",
+                (unsigned long long)status.generation,
+                origin!=DirectOrigin::None?direct_origin_name(origin):status.natural_end?"eos":"backend",
+                direct_error_name(status.error));
         const bool released=direct_player.close();
         if(!released) {
             status.state=DirectState::Error;
@@ -663,7 +667,7 @@ int main(int argc,char **argv) {
                 status.natural_end=!abort&&status.state==DirectState::Ended;
                 if(abort ||
                    status.state==DirectState::Ended || status.state==DirectState::Error) {
-                    finish_direct(status);
+                    finish_direct(status,stop?command.origin:abort?DirectOrigin::Local:DirectOrigin::None);
                     if(action==Action::Quit)break;
                     action=Action::None;
                 } else {

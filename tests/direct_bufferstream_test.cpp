@@ -26,6 +26,8 @@ Startup mode = Startup::AfterPreroll;
 int64_t mock_opened_at = 0;
 bool saw_early_video = false, saw_early_audio = false;
 bool replay_resumed = false;
+bool stall_frames = false, starve_audio = false;
+int64_t replay_callback_at = 0;
 }
 
 // Mock the unavailable television URI player. The fallback uses real HLS,
@@ -65,6 +67,7 @@ bool Media::open(const char*, int width, int height, bool audio, int rate, int, 
     play_attempts_ = 0;
     mock_opened_at = now;
     replay_resumed = false;
+    replay_callback_at = 0;
     saw_early_video = saw_early_audio = false;
     return true;
 }
@@ -75,6 +78,7 @@ FeedResult Media::feed(const void* bytes, size_t size, int64_t pts, bool video) 
     if (mode == Startup::CallbackFirst) assert(ready && play_requested_);
     if (mode == Startup::RejectVideo && video) return FeedResult::Error;
     if (mode == Startup::NoFeed) return FeedResult::Retry;
+    if (!video && starve_audio) return FeedResult::Retry;
     if (mode == Startup::PauseReplay && !replay_resumed &&
         (video ? feed_video_accepted.load() >= 12 : feed_audio_accepted.load() >= 11))
         return FeedResult::Retry;
@@ -95,7 +99,7 @@ FeedResult Media::feed(const void* bytes, size_t size, int64_t pts, bool video) 
         }
         last_video_pts = pts;
         ++feed_video_accepted;
-        if (playing && mode != Startup::NoFrame) {
+        if (playing && mode != Startup::NoFrame && !stall_frames && now >= replay_callback_at) {
             ++frames;
             last_frame_event_ns = now;
         }
@@ -136,8 +140,11 @@ void Media::eos() { ++ends; ended = true; }
 void Media::pause(bool paused) {
     if (paused) {
         ++pauses;
-        if (mode == Startup::PauseReplay) assert(feed_video_accepted == 12 && feed_audio_accepted == 11);
-    } else if (mode == Startup::PauseReplay) replay_resumed = true;
+        if (mode == Startup::PauseReplay && !replay_resumed) assert(feed_video_accepted == 12 && feed_audio_accepted == 11);
+    } else if (mode == Startup::PauseReplay) {
+        replay_resumed = true;
+        replay_callback_at = now + 150000000;
+    }
 }
 void Media::close() { if (decoder_open) { ++closes; decoder_open = false; } ready = playing = play_requested_ = false; }
 
@@ -193,6 +200,7 @@ static void public_samples(const std::string& base) {
     assert(player.open(play, now, nullptr));
     DirectCommand rate;
     rate.kind = DirectCommandKind::Pause;
+    rate.origin = DirectOrigin::SenderRate;
     assert(player.control(rate, now));
     DirectSnapshot frozen;
     for (unsigned i = 0; i < 400; ++i) {
@@ -402,6 +410,39 @@ int main(int argc, char** argv) {
     poll_for(DirectState::Playing);
     assert(player.close() && opens == closes);
 
+    for (bool audio_stall : {false, true}) {
+        assert(player.open(play, now, nullptr));
+        poll_for(DirectState::Playing, .4);
+        const auto active_decoder = opens;
+        starve_audio = audio_stall;
+        stall_frames = !audio_stall;
+        const auto timeout = poll_for(DirectState::Error);
+        assert(timeout.error == DirectError::ProgressTimeout && opens == active_decoder);
+        assert(player.close() && opens == closes);
+        stall_frames = starve_audio = false;
+    }
+
+    play.uri = base + "/buffering.m3u8";
+    assert(player.open(play, now, nullptr));
+    const auto buffering = poll_for(DirectState::Buffering);
+    const auto pausing_decoder = opens;
+    const auto backend_pauses = pauses;
+    control.kind = DirectCommandKind::Pause;
+    control.origin = DirectOrigin::SenderRate;
+    assert(player.control(control, now));
+    assert(player.tick(now += 12000000000LL).state == DirectState::Paused);
+    assert(pauses == backend_pauses);
+    HlsRelay release;
+    assert(release.begin() && release.fetch(base + "/release-segment", 256).status == 200);
+    release.stop();
+    const auto still_paused = poll_for(DirectState::Paused, buffering.position);
+    assert(still_paused.position == buffering.position && opens == pausing_decoder);
+    control.kind = DirectCommandKind::Resume;
+    assert(player.control(control, now));
+    poll_for(DirectState::Playing, buffering.position + .2);
+    assert(opens == pausing_decoder && player.close() && opens == closes);
+
     puts("PASS: bounded preroll resolves delayed load and Playing, reports startup faults, and supports stop and reopen");
+    puts("PASS: pause while buffering, delayed resume frames, decoder stall and independent audio backpressure");
     puts("PASS: real H.264/AAC MPEG-TS demux and PCM feed, bounded buffering, retry, seek, EOS, cancellation and recovery");
 }
