@@ -74,6 +74,7 @@ static const int64_t kMaxHoldNs=0;
 int main(int argc,char **argv) {
     umask(0077);
 #ifdef UXAIR_DIRECT_BUILD
+    direct_hls_log_setup();
     fprintf(stderr,"[startup] phase=entry app=%s euid=%lu\n",UXAIR_APP_ID,static_cast<unsigned long>(geteuid()));
     fflush(stderr);
 #endif

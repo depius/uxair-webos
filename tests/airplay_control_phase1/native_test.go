@@ -135,7 +135,7 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 			t.Fatal("simulated backend did not receive command")
 		}
 	}
-	event := func(p *peer, state string) {
+	readEvent := func(p *peer, state string) {
 		t.Helper()
 		wire, err := p.rx.Read(p.wire)
 		must(t, err)
@@ -149,7 +149,15 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 			!bytes.Contains(body, []byte("<key>sessionID</key><integer>1</integer>")) {
 			t.Fatalf("unexpected encrypted reverse event for %s", state)
 		}
-		p.write(p.seal("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
+	}
+	event := func(p *peer, state string) {
+		readEvent(p, state)
+		if state == "loading" {
+			p.write(p.seal("HTTP/1.1 200 OK\r\nX-Apple-Ses"))
+			p.write(p.seal("sion-ID: " + testSession + "\r\n\r\n"))
+		} else {
+			p.write(p.seal("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
+		}
 	}
 	requireClosed := func(p *peer) {
 		_, err := p.wire.ReadByte()
@@ -228,8 +236,9 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	other.socket.Close()
 	writeQuery(a, "POST /scrub?position=4 HTTP/1.1\r\n\r\n", 409)
 	step("p")
-	event(reversePeer, "playing")
-	reversePeer.socket.Close()
+	readEvent(reversePeer, "playing")
+	reversePeer.write(reversePeer.seal("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nx"))
+	requireClosed(reversePeer)
 	reversePeer = makePeer()
 	reversePeer.upgrade()
 	writeQuery(reversePeer, reverse, 101)
@@ -329,6 +338,7 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 		"path=/play authenticated=1 first=0 route=play status=200",
 		"reason=proof-rejected", "reason=unsupported-pairing-format", "reason=unsupported-pairing-mode",
 		"reason=record-authentication", "reason=encrypted-http-framing",
+		"ack=accepted fragmented=1", "ack=rejected reason=body-not-empty",
 		"admitted=3 ", "reverse_upgrades=2", "encrypted_active=0",
 	} {
 		if !strings.Contains(log, milestone) {

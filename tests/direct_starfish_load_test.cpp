@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 
 void (*StarfishMediaAPIs::callback)(int,int64_t,const char*,void*) = nullptr;
 void *StarfishMediaAPIs::context = nullptr;
@@ -43,14 +44,26 @@ int main() {
     const auto callback = StarfishMediaAPIs::callback;
 
     StarfishMediaAPIs::load_exception = nullptr;
+    StarfishMediaAPIs::synchronous_load = false;
     assert(open() && acb_player_type == PLAYER_TYPE_MSE);
     callback(PF_EVENT_TYPE_INT_ERROR, 0, nullptr, failed_context);
-    assert(!media.failed && media.ready);
+    assert(!media.failed && !media.ready);
+    media.tick();
+    assert(!media.play_accepted());
+    const unsigned char sample[] = {1,2,3,4};
+    assert(media.feed(sample, sizeof(sample), 0, true) == FeedResult::Accepted);
+    assert(media.feed(sample, sizeof(sample), 0, false) == FeedResult::Accepted);
+    assert(!media.ready && !media.frames);
+    auto* live_context = StarfishMediaAPIs::context;
+    std::thread ready([&] { callback(PF_EVENT_TYPE_STR_STATE_UPDATE__LOADCOMPLETED, 0, nullptr, live_context); });
+    ready.join();
     callback(PF_EVENT_TYPE_STR_VIDEO_INFO, 0, "{\"width\":1280,\"height\":720,\"uri\":\"https://SECRET.invalid/?token=PRIVATE\"}",
              StarfishMediaAPIs::context);
     assert(media.video_info_width == 1280 && media.video_info_height == 720);
     media.tick();
-    assert(media.playing);
+    assert(media.ready && media.playing && media.play_accepted() && !media.frames);
+    callback(PF_EVENT_TYPE_FRAMEREADY, 0, nullptr, live_context);
+    assert(media.frames==1);
 
     const auto& payload = StarfishMediaAPIs::payload;
     plist_t root = nullptr;
@@ -78,6 +91,9 @@ int main() {
     StarfishMediaAPIs::unload_exception = "unload failed for https://SECRET.invalid/?token=PRIVATE";
     media.close();
     StarfishMediaAPIs::unload_exception = nullptr;
+    std::thread late([&] { callback(PF_EVENT_TYPE_STR_STATE_UPDATE__LOADCOMPLETED, 0, nullptr, live_context); });
+    late.join();
+    assert(!media.ready);
     assert(!media.direct_released() && !open() && StarfishMediaAPIs::unloads == 2);
     std::puts("PASS: real Starfish adapter builds the v1.3 BUFFERSTREAM schema, recovers from Load exceptions, and blocks reuse after failed Unload");
 }

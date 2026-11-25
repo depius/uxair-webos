@@ -15,7 +15,7 @@
 #include <arpa/inet.h>
 const char *direct_stage_name(DirectStage s) {
     static const char *names[]={"idle","queued","dequeued","relay","acb-create","acb-initialize","construct","media-id","load","await-load","sink","loaded-state","window","seek","play","await-playing","playing","paused","video-info","stopped","fetch","bufferstream-load","packet-feed",
-        "manifest-fetch","playlist-parse","segment-fetch","segment-demux","segment-timeline"};
+        "manifest-fetch","playlist-parse","segment-fetch","segment-demux","segment-timeline","preroll","await-first-frame"};
     const unsigned n=unsigned(s);return n<sizeof(names)/sizeof(*names)?names[n]:"unknown";
 }
 const char *direct_error_name(DirectError e) {
@@ -25,7 +25,7 @@ const char *direct_error_name(DirectError e) {
         "unsupported-playlist-tag","nested-master","declared-discontinuity","unsupported-container","demux-open","demux-read",
         "missing-h264","missing-aac","unsupported-video-codec","unsupported-audio-codec","multiple-av-tracks","invalid-h264-annex-b","missing-idr",
         "missing-sps-pps","unsupported-h264-format","unsupported-aac-adts","aac-decode","video-timestamp","audio-timestamp","corrupt-packet",
-        "track-change","download-worker","fetch-cancelled","missing-aac-pcm"};
+        "track-change","download-worker","fetch-cancelled","missing-aac-pcm","startup-fetch-timeout","initial-feed-timeout","first-frame-timeout"};
     const unsigned n=unsigned(e);return n<sizeof(names)/sizeof(*names)?names[n]:"unknown";
 }
 const char *direct_backend_name(DirectBackend backend) {

@@ -7,6 +7,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/mem.h>
 #include <libavutil/mathematics.h>
+#include <libavutil/log.h>
 }
 
 #include <algorithm>
@@ -21,6 +22,22 @@ constexpr int64_t second = 1000000000;
 constexpr size_t max_segment_bytes = 8 * 1024 * 1024;
 constexpr size_t max_packet_bytes = 2 * 1024 * 1024;
 constexpr size_t max_segment_packets = 1152;
+thread_local unsigned* timestamp_warnings = nullptr;
+
+void hls_ffmpeg_log(void* object, int level, const char* format, va_list args) {
+    if (timestamp_warnings && level == AV_LOG_WARNING &&
+        std::strncmp(format, "Invalid timestamps stream=", sizeof("Invalid timestamps stream=")-1) == 0) {
+        ++*timestamp_warnings;
+        return;
+    }
+    av_log_default_callback(object, level, format, args);
+}
+
+struct TimestampWarnings {
+    unsigned* previous = timestamp_warnings;
+    explicit TimestampWarnings(unsigned& count) { timestamp_warnings = &count; }
+    ~TimestampWarnings() { timestamp_warnings = previous; }
+};
 
 bool starts(const std::string& value, const char* prefix) {
     return value.compare(0, std::strlen(prefix), prefix) == 0;
@@ -164,6 +181,8 @@ bool prefer_variant(double candidate, double selected) {
 }
 } // namespace
 
+void direct_hls_log_setup() { av_log_set_callback(hls_ffmpeg_log); }
+
 DirectError direct_parse_playlist(const std::string& text, const std::string& base, DirectPlaylist& playlist) {
     playlist = DirectPlaylist();
     if (text.size() > 256 * 1024) return DirectError::StreamLimit;
@@ -217,12 +236,29 @@ DirectError direct_parse_playlist(const std::string& text, const std::string& ba
                    starts(line, "#EXT-X-MEDIA:") || starts(line, "#EXT-X-I-FRAME-STREAM-INF:")) {
             continue;
         } else {
-            if (starts(line, "#EXT-X-KEY:") || starts(line, "#EXT-X-SESSION-KEY:")) return DirectError::PlaylistEncryption;
-            if (starts(line, "#EXT-X-MAP:")) return DirectError::PlaylistInitSegment;
-            if (starts(line, "#EXT-X-BYTERANGE:")) return DirectError::PlaylistByteRange;
-            if (line == "#EXT-X-DISCONTINUITY") return DirectError::PlaylistDiscontinuity;
             if (!starts(line, "#EXT-X-")) continue; // HLS clients ignore other extended comments.
-            return DirectError::PlaylistTag;
+            const auto tag = line.substr(0, line.find(':'));
+            if (tag.size() > 48 || tag.find_first_not_of("#-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != std::string::npos)
+                return DirectError::PlaylistSyntax;
+            if (tag == "#EXT-X-KEY" || tag == "#EXT-X-SESSION-KEY") {
+                playlist.diagnostic_tag = tag; return DirectError::PlaylistEncryption;
+            }
+            if (tag == "#EXT-X-MAP" || tag == "#EXT-X-I-FRAMES-ONLY") {
+                playlist.diagnostic_tag = tag; return DirectError::PlaylistInitSegment;
+            }
+            if (tag == "#EXT-X-BYTERANGE") {
+                playlist.diagnostic_tag = tag; return DirectError::PlaylistByteRange;
+            }
+            if (tag == "#EXT-X-DISCONTINUITY") {
+                playlist.diagnostic_tag = tag; return DirectError::PlaylistDiscontinuity;
+            }
+            if (tag == "#EXT-X-GAP" || tag == "#EXT-X-PART" || tag == "#EXT-X-SKIP" ||
+                tag == "#EXT-X-PRELOAD-HINT" || tag == "#EXT-X-CONTENT-STEERING" || tag == "#EXT-X-DEFINE") {
+                playlist.diagnostic_tag = tag; return DirectError::PlaylistTag;
+            }
+            // Unknown tags and metadata such as DATERANGE do not change
+            // where this single-rendition VOD reader gets its complete segments.
+            if (playlist.diagnostic_tag.empty()) playlist.diagnostic_tag = tag;
         }
     }
     if (waiting_variant || duration) return DirectError::PlaylistSyntax;
@@ -234,6 +270,7 @@ DirectError direct_parse_playlist(const std::string& text, const std::string& ba
 DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& cancelled,
                             AudioDecoder& audio, int width, int height, DirectDemuxedSegment& segment) {
     segment = DirectDemuxedSegment();
+    const TimestampWarnings warnings(segment.ffmpeg_timestamp_warnings);
     if (cancelled) return DirectError::FetchCancelled;
     if (data.size() > max_segment_bytes) return DirectError::StreamLimit;
     // Match the container even when it has a misleading URL suffix or MIME
@@ -380,6 +417,7 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
                 continue;
             }
             aac_without_pcm = 0;
+            unit.duration_ns = av_rescale_q(unit.data.size() / 4, AVRational{1, 44100}, ns);
             if (!segment.audio_packets++) segment.first_pcm_bytes = unit.data.size();
         }
         constexpr int64_t max_timestamp = 2 * 24 * 60 * 60 * second;

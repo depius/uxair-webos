@@ -19,7 +19,7 @@ The prior B7 jail ran as UID 5999 and GID 5000. UID 1001 is the reported install
    ```
 
 2. Confirm the complete UxAir UI and Magic Remote navigation. Pick **UxAir Dev** from the iPhone and confirm that the PIN is visible on the TV. Pair, close, and relaunch to check that the development app reuses the same pairing and settings.
-3. Reopen the development app from TV Home to reset the trace counters. In iPhone Safari, AirPlay Apple BipBop gear 2 to **UxAir Dev**, then repeat with the Mux 720p sample. Look for encrypted `/reverse` 101 and `/play` 200, then `stage=segment-demux reason=none`, `contract=BUFFERSTREAM`, `load-completed`, `first-feed=accepted` and `decoder-progress`. Check moving picture and synchronized audible audio for at least 25 seconds to cross multiple segment boundaries. Then test pause, seek and stop. [Apple BipBop gear 2](https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_4x3/gear2/prog_index.m3u8) · [Mux 720p](https://test-streams.mux.dev/x36xhzz/url_0/193039199_mp4_h264_aac_hd_7.m3u8)
+3. Reopen the development app from TV Home to reset the trace counters. In iPhone Safari, AirPlay Apple BipBop gear 2 to **UxAir Dev**. Look for `load-returned accepted=1`, `first-feed-accepted` for video and audio, `load-completed`, `play-request`, `playing`, `first-decoder-frame` and `decoder-progress`. The first accepted feeds can precede `load-completed`. Check moving picture and synchronized audible audio for at least 25 seconds to cross multiple segments. Test pause, resume, stop and reconnect, then repeat with Mux. [Apple BipBop gear 2](https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_4x3/gear2/prog_index.m3u8) · [Mux 720p](https://test-streams.mux.dev/x36xhzz/url_0/193039199_mp4_h264_aac_hd_7.m3u8)
 4. If the startup Diagnostics page appears, report its effective UID and filesystem error. If the UI appears and playback fails, wait about 30 seconds after selecting AirPlay. Disconnect AirPlay on the iPhone and exit UxAir with Back to record the final listener totals. Collect the single filtered log below before relaunching or trying mirroring. Include whether the TV displayed moving video or played audio, and the iOS version. Keep the lines for the same conn and sid together so verification, server-info, fp-setup, property and seek responses, and the first play request can be read in seq order. Include the listener-stop totals.
 
    ```powershell
@@ -46,3 +46,32 @@ FFmpeg emits that warning before parsing the packet and continues. BipBop has si
 The HLS master selector prefers a compatible muxed rendition whose advertised bitrate fits the 8 MiB fetch budget for a maximum-length segment. This selects Mux's 720p rendition instead of the 1080p entry, whose second segment exceeds the cap. Mux's first AAC packet is accepted by the decoder and emits zero PCM. The receiver advances the sample clock for that packet, then feeds subsequent PCM with the correct timestamps. The diagnostic logs give allowlisted stage and reason names plus container, codec and packet statistics. Live playlists, fragmented MP4, external audio groups, encrypted media, and declared or detected timestamp discontinuities are rejected. [Mux master](https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8)
 
 Curl 42 is `CURLE_ABORTED_BY_CALLBACK`. The B7 trace shows the play socket closing before curl returns 42. That queues a stop, which cancels the transfer through the worker's curl progress callback. The cancelled attempt previously ended without a load outcome. The summary now balances attempts against loaded, failed and cancelled outcomes. The full pipeline tests replay the first two clear Apple and Mux segments over HTTP through the real downloader and simulated Starfish feed, plus malformed timestamps, discontinuities and cancellation. [libcurl return codes](https://curl.se/libcurl/c/libcurl-errors.html)
+
+## Phase 3.4 startup ordering
+
+The a078c1d B7 trace shows a successful Load, resource-info, and no LoadCompleted, Play request, or Feed. The blocking expression was `media_.ready && media_.playing` in `DirectBufferstream::tick()`. `Media::tick()` only requests Play after LoadCompleted. A working mirroring trace on this B7 records a first accepted preroll AU with `ready=0 playing=0`, followed by LoadCompleted, ACB loaded state, Play, and Playing. That order is also permitted by the v1.3 source. [Previous Direct Video feeder](https://github.com/depius/uxair-webos/blob/a078c1d55763e36108f656c62c0f40b85b33b840/src/direct_bufferstream.cpp#L230-L256) · [v1.3 mirroring](https://github.com/depius/uxair-webos/blob/d453a49cee41b0ce5e0f2d3654c3e658da776c73/src/main.cpp)
+
+```text
+a078c1d   Load accepted -> wait for LoadCompleted and Playing -> Feed
+                           LoadCompleted -> ACB loaded -> Play -> Playing
+                           B7 reference accepts Feed before LoadCompleted
+
+Dev       Load accepted -> 200 ms -> bounded H.264/PCM Feed
+           LoadCompleted -> ACB loaded -> Play -> Playing
+           accepted A/V + Playing + frame callback -> decoder-progress
+```
+
+| Stage | Working v1.3 mirroring | Direct Video in a078c1d | Phase 3.4 |
+| --- | --- | --- | --- |
+| ACB and initialization | MSE role, media ID binding and display window | Same shared Starfish adapter | Log ACB results and retain these operations |
+| Load and caps | BUFFERSTREAM with codec, geometry and PCM declarations | Same schema, fixed 60 FPS | Use the existing 30/60 fields based on initial video DTS spacing |
+| Feed readiness | H.264 feeds after successful Load and a 200 ms delay. HEVC has bounded preroll | Loading and Playing callbacks required before the first feed | Start bounded preroll after Load acceptance and 200 ms, independent of those callbacks |
+| Play and rendering | LoadCompleted drives ACB loaded and Play. Frame callback is measured separately | Shared Play logic was blocked on LoadCompleted | Retain callback-driven Play, and distinguish Play acceptance, Playing and actual frame callback |
+| Data and timing | Incoming Annex B and PCM in a scheduled queue | HLS worker supplies Annex B access units and decoded PCM | Keep per-track decode order, pass nanosecond PTS relative to a common origin and let either track advance under backpressure |
+| Session ownership | Receiver ingress and UI media owner | Separate HLS worker and UI media owner | Cancel and join the download worker, retire the callback generation and unload on stop or seek |
+
+Preroll is limited to two seconds of media, 60 video AUs, 100 PCM buffers and 8 MiB of accepted data, with at most 24 Feed calls per UI tick. Feed retries retain the AU and PTS. The startup deadline remains 20 seconds. Failures identify missing initial feeds, LoadCompleted, Play acceptance, Playing, or the first decoder frame.
+
+The GStreamer caps assertions also appear in the successful B7 mirroring trace before its LoadCompleted and decoder callbacks. The app supplies the same v1.3 PCM declaration, 44.1 kHz stereo interleaved S16LE, and resamples BipBop's 22.05 kHz AAC with FFmpeg before scheduling it. PCM duration uses the resampled sample count. GStreamer is reached via the system media stack. The available log and SDK declarations do not identify the internal caps consumer or the null caps source. The package retains the v1.3 schema. Repeated FFmpeg timestamp warnings are counted per segment on the HLS worker while unrelated errors retain normal logging.
+
+The reverse channel requires one bodyless HTTP/1.1 200 per encrypted event, accepts an ACK across multiple records, and checks a supplied session header against the authenticated owner. The original B7 label `reverse-ack-framing` lacked the HTTP rejection reason. Dev now reports a bounded reason without showing the response. The failing Mux log likewise omitted the tag. The public Mux master and full selected playlist are exercised, optional metadata and unknown tags can be skipped, and known directives that require another decoding or download mode still fail with an allowlisted tag name. [HLS client rules](https://www.rfc-editor.org/rfc/rfc8216.html#section-6.3.1)

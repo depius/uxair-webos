@@ -95,7 +95,8 @@ on_header_field(""")
     source = replace_once(source, '        if (!strcmp(request->headers[i], name)) {',
                           '        if (!strcasecmp(request->headers[i], name)) {')
     source = replace_once(source, '    int complete;\n',
-        '    int complete, consumed;\n    bool encrypted, encrypted_reply;\n    size_t header_bytes;\n')
+        '    int complete, consumed;\n    bool encrypted, encrypted_reply;\n    size_t header_bytes;\n'
+        '    const char *reply_rejection;\n')
     for field in ('on_url', 'on_header_field', 'on_header_value'):
         start = f'{field}(llhttp_t *parser, const char *at, size_t length)\n{{\n    http_request_t *request = parser->data;\n'
         source = replace_once(source, start, start +
@@ -108,9 +109,12 @@ on_headers_complete(llhttp_t *parser)
     if (!request->encrypted && !fp2) return 0;
     if (request->encrypted_reply) {
         if (strcmp(request->protocol, "HTTP") || llhttp_get_http_major(parser)!=1 ||
-            llhttp_get_http_minor(parser)!=1 || llhttp_get_status_code(parser)!=200 ||
-            parser->content_length || parser->upgrade || (parser->flags & (F_CHUNKED | F_TRANSFER_ENCODING))) return -1;
-        return 1;
+            llhttp_get_http_minor(parser)!=1) request->reply_rejection = "protocol";
+        else if (llhttp_get_status_code(parser)!=200) request->reply_rejection = "status";
+        else if (parser->upgrade) request->reply_rejection = "upgrade";
+        else if (parser->flags & (F_CHUNKED | F_TRANSFER_ENCODING)) request->reply_rejection = "transfer-encoding";
+        else if (parser->content_length) request->reply_rejection = "body-not-empty";
+        return request->reply_rejection ? -1 : 1;
     }
     if (parser->flags & (F_CHUNKED | F_TRANSFER_ENCODING) ||
         parser->content_length > (fp2 ? 120U : 16384U) ||
@@ -140,6 +144,9 @@ on_message_complete""")
         '        return HPE_OK;\n'
         '    }\n')
     source = replace_once(source, 'int\nhttp_request_is_complete', r"""int uxair_request_consumed(const http_request_t *request) { return request->consumed; }
+const char *uxair_reply_rejection(const http_request_t *request) {
+    return request->reply_rejection ? request->reply_rejection : "http-syntax";
+}
 void uxair_request_encrypted(http_request_t *request) { request->encrypted = true; }
 void uxair_request_encrypted_reply(http_request_t *request) {
     request->encrypted = request->encrypted_reply = true;

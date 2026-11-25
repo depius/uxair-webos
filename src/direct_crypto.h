@@ -33,6 +33,7 @@ int uxair_crypto_feed(uxair_crypto_t *state, const unsigned char *data, size_t n
 
 /* Generated from the pinned parser and RAOP source for the Direct Dev build. */
 int uxair_request_consumed(const http_request_t *request);
+const char *uxair_reply_rejection(const http_request_t *request);
 void uxair_request_encrypted(http_request_t *request);
 void uxair_request_encrypted_reply(http_request_t *request);
 int uxair_video_cipher_active(void *conn);

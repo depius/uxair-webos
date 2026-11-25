@@ -175,6 +175,11 @@ int uxair_video_cipher_service(void *opaque,int fd) {
     return 0;
 }
 
+static int uxair_reverse_ack_rejected(const raop_conn_t *conn, const char *reason) {
+    fprintf(stderr,"[reverse-channel] conn=%u ack=rejected reason=%s\n",conn->wire_id,reason);
+    return -4;
+}
+
 static int uxair_encrypted_http(void *opaque, const unsigned char *data, size_t n) {
     uxair_encrypted_dispatch_t *dispatch = opaque;
     raop_conn_t *conn = dispatch->conn;
@@ -182,7 +187,7 @@ static int uxair_encrypted_http(void *opaque, const unsigned char *data, size_t 
     if (crypto->received == 1)
         fprintf(stderr, "[video-crypto] conn=%u encrypted_records_rx=1\n", conn->wire_id);
     while (n) {
-        if (crypto->reverse && !crypto->reverse_ack_ms) return -4;
+        if (crypto->reverse && !crypto->reverse_ack_ms) return uxair_reverse_ack_rejected(conn,"no-event-outstanding");
         if (!crypto->request) {
             crypto->request = http_request_init();
             if (!crypto->request) return -3;
@@ -195,20 +200,29 @@ static int uxair_encrypted_http(void *opaque, const unsigned char *data, size_t 
         size_t chunk = limit - crypto->http_bytes;
         if (chunk > n) chunk = n;
         http_request_add_data(request, (const char *)data, (int)chunk);
-        if (http_request_has_error(request)) return -4;
+        if (http_request_has_error(request))
+            return crypto->reverse ? uxair_reverse_ack_rejected(conn,uxair_reply_rejection(request)) : -4;
         if (!http_request_is_complete(request)) {
             crypto->http_bytes += chunk;
-            return crypto->http_bytes >= limit ? -4 : 0;
+            if (crypto->http_bytes < limit) return 0;
+            return crypto->reverse ? uxair_reverse_ack_rejected(conn,"header-limit") : -4;
         }
         const int consumed = uxair_request_consumed(request);
-        if (consumed <= 0 || (size_t)consumed > chunk) return -4;
+        if (consumed <= 0 || (size_t)consumed > chunk)
+            return crypto->reverse ? uxair_reverse_ack_rejected(conn,"parser-length") : -4;
         if (crypto->reverse) {
+            const char *session = http_request_get_header(request,"X-Apple-Session-ID");
+            if (session && strcmp(session,conn->video_pair_owner))
+                return uxair_reverse_ack_rejected(conn,"session-mismatch");
+            if ((size_t)consumed!=n) return uxair_reverse_ack_rejected(conn,"trailing-data");
+            if (crypto->received <= 8)
+                fprintf(stderr,"[reverse-channel] conn=%u ack=accepted fragmented=%d\n",conn->wire_id,crypto->http_bytes!=0);
             crypto->reverse_ack_ms=0;
             http_request_destroy(crypto->request);
             crypto->request=NULL;
             crypto->http_bytes=0;
             crypto->http_deadline_ms=0;
-            return (size_t)consumed==n?0:-4;
+            return 0;
         }
         uxair_wire_stats_t *stats = &conn->raop->wire;
         ++stats->crypto_requests;

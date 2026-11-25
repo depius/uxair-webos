@@ -16,7 +16,7 @@ assert '#define UXAIR_APP_ID UXAIR_DEV_APP_ID' in identity
 assert 'AcbAPI_initialize(acb_,PLAYER_TYPE_VIDEO,UXAIR_DEV_APP_ID,' in (ROOT/'src/direct_player.cpp').read_text()
 assert "const char *app_id=runtime_app_id&&*runtime_app_id?runtime_app_id:UXAIR_APP_ID;" in main
 assert "media.open(app_id," in main
-assert 'AcbAPI_initialize(acb_, PLAYER_TYPE_MSE, app_id, acb_event)' in media
+assert 'AcbAPI_initialize(acb_, PLAYER_TYPE_MSE, app_id, acb_callback)' in media
 assert 'starfish_load_payload(app_id,' in media
 assert "app['id'] += '.dev'" in package
 assert "'com.github.depius.uxair'" == repr(app['id'])

@@ -28,6 +28,8 @@ def fixture(root, upstream, name):
     manifest = download(urljoin(upstream, name), 256 * 1024).decode()
     directory = root / Path(name).parent
     directory.mkdir(parents=True, exist_ok=True)
+    if upstream == MUX:
+        (directory / 'full-media.m3u8').write_text(manifest)
     lines = []
     segments = []
     for line in manifest.splitlines():
@@ -128,6 +130,8 @@ with tempfile.TemporaryDirectory(prefix='uxair-public-hls-') as folder:
     assert re.search(r'aac-rate=22050 aac-channels=2 .*sps-pps=1 first-video-au=1 first-pcm-bytes=[1-9]\d* .*pts-before-dts=[1-9]\d*', checked.stdout)
     assert re.search(r'geometry=1280x720 aac-rate=44100 .*first-pcm-bytes=[1-9]\d* aac-without-pcm=[1-9]\d*', checked.stdout)
     assert re.search(r'container=mpegts .*first-idr=0 .*timestamps=valid', checked.stdout), 'continuity across an open GOP'
+    assert 'Invalid timestamps stream=' not in checked.stdout
+    assert re.search(r'ffmpeg-timestamp-warnings=[1-9]\d*', checked.stdout)
     assert 'stage=segment-demux error=video-timestamp' in checked.stdout
     assert 'timestamp-problem=composition-offset' in checked.stdout
     assert 'stage=playlist-parse error=declared-discontinuity' in checked.stdout

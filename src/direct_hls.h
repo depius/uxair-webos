@@ -16,6 +16,7 @@ struct DirectSegment {
 
 struct DirectPlaylist {
     std::string variant;
+    std::string diagnostic_tag;
     std::vector<DirectSegment> segments;
     int64_t duration_ns = 0;
 };
@@ -46,9 +47,12 @@ struct DirectDemuxedSegment {
     int probe_score = 0, video_codec = -1, audio_codec = -1, h264_profile = 0;
     unsigned video_packets = 0, audio_packets = 0, reordered = 0, tied_dts = 0, inferred_dts = 0;
     unsigned aac_without_pcm = 0;
+    unsigned ffmpeg_timestamp_warnings = 0;
     size_t first_pcm_bytes = 0;
     bool idr = false, starts_with_idr = false, sps_pps = false;
 };
 
 DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& cancelled,
                             AudioDecoder& audio, int width, int height, DirectDemuxedSegment& segment);
+// Install before starting playback threads. Unrelated FFmpeg logs retain the default callback.
+void direct_hls_log_setup();

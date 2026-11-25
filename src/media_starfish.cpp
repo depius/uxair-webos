@@ -48,9 +48,26 @@ Media::~Media() { close(); delete impl_; }
 static void acb_event(long, long, long event, long app, long play, const char *reply) {
     fprintf(stderr, "[acb] event=%ld app=%ld play=%ld %s\n", event, app, play, reply ? reply : "");
 }
+#ifdef UXAIR_DIRECT_BUILD
+static void direct_acb_event(long, long, long event, long app, long play, const char *) {
+    fprintf(stderr, "[direct-player] stage=acb-callback event=%ld app-state=%ld play-state=%ld\n", event, app, play);
+}
+#endif
 void Media::event(int type, int64_t value, const char *message, void *user) {
     Media *m = static_cast<Media *>(user);
-    if (type == PF_EVENT_TYPE_FRAMEREADY) { ++m->frames; m->last_frame_event_ns=monotonic_ns(); return; }
+    if (type == PF_EVENT_TYPE_FRAMEREADY) {
+        m->last_frame_event_ns=monotonic_ns();
+#ifdef UXAIR_DIRECT_BUILD
+        if (m->direct_load_shape_) {
+            if (m->frames.fetch_add(1)==0)
+                fprintf(stderr, "[direct-player] stage=first-decoder-frame owner=callback ready=%d playing=%d\n",
+                        int(m->ready.load()), int(m->playing.load()));
+            return;
+        }
+#endif
+        ++m->frames;
+        return;
+    }
     if (type == PF_EVENT_TYPE_INT_NEED_DATA || type == PF_EVENT_TYPE_INT_ENOUGH_DATA || type == PF_EVENT_TYPE_INT_BUFFERLOW || type == 0x2a) return;
 #ifdef UXAIR_DIRECT_BUILD
     if (m->direct_load_shape_)
@@ -64,10 +81,16 @@ void Media::event(int type, int64_t value, const char *message, void *user) {
     case PF_EVENT_TYPE_STR_STATE_UPDATE__LOADCOMPLETED:
         m->ready = true;
         fprintf(stderr,"[media-state] load-completed event=0x%x\n",type);
+#ifdef UXAIR_DIRECT_BUILD
+        if (m->direct_load_shape_) fprintf(stderr,"[direct-player] stage=load-completed owner=callback\n");
+#endif
         break;
     case PF_EVENT_TYPE_STR_STATE_UPDATE__PLAYING:
         m->playing = true;
         fprintf(stderr,"[media-state] playing event=0x%x\n",type);
+#ifdef UXAIR_DIRECT_BUILD
+        if (m->direct_load_shape_) fprintf(stderr,"[direct-player] stage=playing owner=callback\n");
+#endif
         break;
     case PF_EVENT_TYPE_STR_STATE_UPDATE__ENDOFSTREAM: m->ended = true; break;
     case PF_EVENT_TYPE_INT_ERROR:
@@ -136,7 +159,12 @@ bool Media::open(const char *app_id, int width, int height, bool audio, int rate
     }
     phase=monotonic_ns();
     fprintf(stderr,"[media-init] ACB initialize begin\n");
-    if (!AcbAPI_initialize(acb_, PLAYER_TYPE_MSE, app_id, acb_event)) {
+    const auto acb_callback =
+#ifdef UXAIR_DIRECT_BUILD
+        direct_load_shape_ ? direct_acb_event :
+#endif
+        acb_event;
+    if (!AcbAPI_initialize(acb_, PLAYER_TYPE_MSE, app_id, acb_callback)) {
         open_failure_=MediaOpenFailure::AcbInitialize;
         fprintf(stderr, "[media] ACB initialization failed\n"); close(); return false;
     }
@@ -166,6 +194,7 @@ bool Media::open(const char *app_id, int width, int height, bool audio, int rate
             direct_callbacks.emplace(callback_generation_, this);
         }
         phase = monotonic_ns();
+        fprintf(stderr, "[direct-player] stage=load-request owner=ui backend=bufferstream\n");
         try {
             loaded_ = api_->Load(payload.c_str(), direct_event, reinterpret_cast<void*>(callback_generation_));
         } catch (const std::bad_alloc&) {
@@ -182,12 +211,22 @@ bool Media::open(const char *app_id, int width, int height, bool audio, int rate
         loaded_ = api_->Load(payload.c_str(), event, this);
     }
     fprintf(stderr,"[media-init] Starfish Load end ms=%.2f success=%d\n",(monotonic_ns()-phase)/1e6,int(loaded_));
+#ifdef UXAIR_DIRECT_BUILD
+    if (direct_load_shape_)
+        fprintf(stderr, "[direct-player] stage=load-returned owner=ui accepted=%d ready=%d\n",
+                int(loaded_), int(ready.load()));
+#endif
     if (!loaded_) { open_failure_=MediaOpenFailure::StarfishLoad;close(); return false; }
     phase=monotonic_ns();
     if(!audio_only) {
-        AcbAPI_setDisplayWindow(acb_, window.x, window.y, window.width, window.height, true, &task_);
+        const int result = AcbAPI_setDisplayWindow(acb_, window.x, window.y, window.width, window.height, true, &task_);
         fprintf(stderr,"[media-init] ACB display window=%d,%d %dx%d source=%dx%d end ms=%.2f\n",
                 window.x,window.y,window.width,window.height,width,height,(monotonic_ns()-phase)/1e6);
+#ifdef UXAIR_DIRECT_BUILD
+        if (direct_load_shape_) fprintf(stderr,"[direct-player] stage=acb-display owner=ui result=%d\n",result);
+#else
+        (void)result;
+#endif
     } else fprintf(stderr,"[media-init] audio-only session has no ACB video window\n");
     return true;
 }
@@ -195,21 +234,41 @@ void Media::tick() {
     if (!api_ || !loaded_ || failed) return;
     if (ready && !sink_attached_) {
         fprintf(stderr,"[media-init] ACB sink and loaded state begin\n");
-        AcbAPI_setSinkType(acb_, SINK_TYPE_MAIN);
-        AcbAPI_setState(acb_, APPSTATE_FOREGROUND, PLAYSTATE_LOADED, &task_);
-        fprintf(stderr,"[media-init] ACB sink and loaded state end\n");
+        const int sink = AcbAPI_setSinkType(acb_, SINK_TYPE_MAIN);
+        const int state = AcbAPI_setState(acb_, APPSTATE_FOREGROUND, PLAYSTATE_LOADED, &task_);
+        fprintf(stderr,"[media-init] ACB sink and loaded state end sink-result=%d state-result=%d\n",sink,state);
         sink_attached_ = true;
     }
     if (video_info_pending_.exchange(false)) {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
+        std::string video_info;
+        {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            video_info = impl_->video_info;
+        }
         fprintf(stderr,"[media-init] ACB video info begin\n");
-        int result=acb_video_info(acb_, impl_->video_info.c_str(), &task_);
+        int result=acb_video_info(acb_, video_info.c_str(), &task_);
         fprintf(stderr,"[media-init] ACB video info end result=%d\n",result);
     }
     if (ready && !play_requested_) {
         ++play_attempts_;
         if(play_attempts_==1 || play_attempts_%100==0)fprintf(stderr,"[media-init] Starfish Play attempt=%u\n",play_attempts_);
-        play_requested_ = api_->Play();
+#ifdef UXAIR_DIRECT_BUILD
+        if (direct_load_shape_) {
+            try {
+                play_requested_ = api_->Play();
+            } catch (const std::bad_alloc&) {
+                throw;
+            } catch (const std::exception& error) {
+                direct_starfish_exception("bufferstream", "play", error);
+                failed = true;
+                return;
+            }
+            if (play_attempts_ == 1 || play_requested_)
+                fprintf(stderr,"[direct-player] stage=play-request owner=ui attempt=%u accepted=%d ready=1\n",
+                        play_attempts_, int(play_requested_));
+        } else
+#endif
+            play_requested_ = api_->Play();
         if(play_requested_)fprintf(stderr,"[media-init] Starfish Play accepted after %u attempts\n",play_attempts_);
     }
     if (playing && sink_attached_ && !acb_playing_) {
@@ -230,7 +289,20 @@ FeedResult Media::feed(const void *data, size_t size, int64_t pts_ns, bool video
     char payload[200];
     snprintf(payload, sizeof(payload), "{\"bufferAddr\":\"%p\",\"bufferSize\":%zu,\"pts\":%lld,\"esData\":%d}",
              data, size, (long long)pts_ns, video ? 1 : 2);
-    std::string reply = api_->Feed(payload);
+    std::string reply;
+#ifdef UXAIR_DIRECT_BUILD
+    if (direct_load_shape_) {
+        try {
+            reply = api_->Feed(payload);
+        } catch (const std::bad_alloc&) {
+            throw;
+        } catch (const std::exception& error) {
+            direct_starfish_exception("bufferstream", "feed", error);
+            return FeedResult::Error;
+        }
+    } else
+#endif
+        reply = api_->Feed(payload);
     clock_gettime(CLOCK_MONOTONIC, &after);
     int64_t elapsed_signed=int64_t(after.tv_sec-before.tv_sec)*1000000000LL+int64_t(after.tv_nsec-before.tv_nsec);
     uint64_t elapsed=elapsed_signed>0?uint64_t(elapsed_signed):0;
@@ -251,7 +323,13 @@ FeedResult Media::feed(const void *data, size_t size, int64_t pts_ns, bool video
         (video?feed_video_retries:feed_audio_retries).fetch_add(1);
         return FeedResult::Retry;
     }
-    fprintf(stderr, "[media] Feed rejected: %s\n", reply.c_str());
+#ifdef UXAIR_DIRECT_BUILD
+    if (direct_load_shape_)
+        fprintf(stderr, "[media] feed rejected kind=%s ready=%d playing=%d reply-class=%s\n",
+                video?"video":"audio", int(ready.load()), int(playing.load()), reply.empty()?"empty":"other");
+    else
+#endif
+        fprintf(stderr, "[media] Feed rejected: %s\n", reply.c_str());
     if(video)++feed_video_rejected;
     return FeedResult::Error;
 }

@@ -31,6 +31,10 @@ public:
     void guard_direct_callbacks(std::string (*describe_load)(const char*)) { direct_load_shape_ = describe_load; }
     bool direct_released() const { return direct_released_; }
 #endif
+#ifndef UXAIR_MEDIA_NDL
+    bool play_accepted() const { return play_requested_; }
+    unsigned play_attempts() const { return play_attempts_; }
+#endif
     MediaOpenFailure open_failure() const { return open_failure_; }
     std::atomic<bool> ready{false}, playing{false}, ended{false}, failed{false};
     std::atomic<unsigned> frames{0};

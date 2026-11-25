@@ -21,6 +21,10 @@ bool reordered_pts = false, allow_reordering = false;
 bool pcm_signal = false;
 int expected_width = 1280, expected_height = 720;
 int64_t last_video_pts = -1, last_audio_pts = -1;
+enum class Startup { AfterPreroll, CallbackFirst, NoLoadCallback, NoPlaying, NoFrame, RejectVideo, NoFeed };
+Startup mode = Startup::AfterPreroll;
+int64_t mock_opened_at = 0;
+bool saw_early_video = false, saw_early_audio = false;
 }
 
 // Mock the unavailable television URI player. The fallback uses real HLS,
@@ -55,19 +59,27 @@ bool Media::open(const char*, int width, int height, bool audio, int rate, int, 
     reordered_pts = false;
     pcm_signal = false;
     feed_audio_accepted = feed_video_accepted = frames = 0;
-    failed = ended = false;
-    ready = playing = true;
+    failed = ended = ready = playing = false;
+    play_requested_ = false;
+    play_attempts_ = 0;
+    mock_opened_at = now;
+    saw_early_video = saw_early_audio = false;
     return true;
 }
 
 FeedResult Media::feed(const void* bytes, size_t size, int64_t pts, bool video) {
     assert(decoder_open && size > 0 && pts >= 0);
+    assert(now >= mock_opened_at + 200000000LL && "preroll must follow the successful Load");
+    if (mode == Startup::CallbackFirst) assert(ready && play_requested_);
+    if (mode == Startup::RejectVideo && video) return FeedResult::Error;
+    if (mode == Startup::NoFeed) return FeedResult::Retry;
     if (inject_retry) {
         inject_retry = false;
         ++retries;
         return FeedResult::Retry;
     }
     if (video) {
+        saw_early_video |= !ready;
         const auto info = inspect_h264(static_cast<const uint8_t*>(bytes), size);
         assert(info.valid && info.picture);
         if (!feed_video_accepted)
@@ -78,9 +90,12 @@ FeedResult Media::feed(const void* bytes, size_t size, int64_t pts, bool video) 
         }
         last_video_pts = pts;
         ++feed_video_accepted;
-        ++frames;
-        last_frame_event_ns = now;
+        if (playing && mode != Startup::NoFrame) {
+            ++frames;
+            last_frame_event_ns = now;
+        }
     } else {
+        saw_early_audio |= !ready;
         assert(size % 4 == 0 && pts > last_audio_pts);
         if (!pcm_signal) {
             const auto* pcm = static_cast<const uint8_t*>(bytes);
@@ -92,14 +107,38 @@ FeedResult Media::feed(const void* bytes, size_t size, int64_t pts, bool video) 
     return FeedResult::Accepted;
 }
 
-void Media::tick() {}
+void Media::tick() {
+    if (!decoder_open) return;
+    const auto age = now - mock_opened_at;
+    const bool preroll = feed_video_accepted && feed_audio_accepted;
+    if (!ready && mode != Startup::NoLoadCallback &&
+        ((mode == Startup::CallbackFirst && age >= 100000000) || (preroll && age >= 400000000))) ready = true;
+    if (ready && !play_requested_) {
+        ++play_attempts_;
+        play_requested_ = true;
+    }
+    if (play_requested_ && preroll && mode != Startup::NoPlaying) {
+        playing = true;
+        if (!frames && mode != Startup::NoFrame) {
+            ++frames;
+            last_frame_event_ns = now;
+        }
+    }
+}
 void Media::eos() { ++ends; ended = true; }
 void Media::pause(bool paused) { if (paused) ++pauses; }
-void Media::close() { if (decoder_open) { ++closes; decoder_open = false; } ready = playing = false; }
+void Media::close() { if (decoder_open) { ++closes; decoder_open = false; } ready = playing = play_requested_ = false; }
 
 static void public_samples(const std::string& base) {
     allow_reordering = true;
     inject_retry = false;
+    HlsRelay fetch;
+    assert(fetch.begin());
+    const auto full_mux = fetch.fetch(base + "/mux/url_0/full-media.m3u8", 256 * 1024, true);
+    DirectPlaylist playlist;
+    assert(full_mux.status == 200 && direct_parse_playlist(full_mux.data, full_mux.url, playlist) == DirectError::None);
+    assert(playlist.segments.size() > 2);
+    fetch.stop();
     DirectBufferstream player;
     const auto run = [&](const char* path, int width, int height, DirectError error) {
         expected_width = width;
@@ -144,6 +183,7 @@ static void public_samples(const std::string& base) {
 
 int main(int argc, char** argv) {
     assert(argc == 2 || (argc == 3 && std::string(argv[2]) == "--public"));
+    direct_hls_log_setup();
     const std::string base = argv[1];
     if (argc == 3) { public_samples(base); return 0; }
     DirectPlaylist selected;
@@ -158,6 +198,11 @@ int main(int argc, char** argv) {
     assert(selected.variant == base + "/variants/main.m3u8?token=PRIVATE");
     assert(direct_parse_playlist("#EXTM3U\n#EXT-X-DISCONTINUITY\n", base + "/media.m3u8", selected)
            == DirectError::PlaylistDiscontinuity);
+    assert(direct_parse_playlist("#EXTM3U\n#EXT-X-DATERANGE:ID=\"PRIVATE\"\n#EXT-X-DISCONTINUITY-SEQUENCE:0\n"
+        "#EXTINF:2,\nmedia.ts\n#EXT-X-ENDLIST\n", base + "/media.m3u8", selected) == DirectError::None);
+    assert(selected.diagnostic_tag == "#EXT-X-DATERANGE");
+    assert(direct_parse_playlist("#EXTM3U\n#EXT-X-PART:URI=\"PRIVATE\"\n", base + "/media.m3u8", selected)
+           == DirectError::PlaylistTag && selected.diagnostic_tag=="#EXT-X-PART");
     DirectBufferstream player;
     DirectCommand play;
     play.kind = DirectCommandKind::Play;
@@ -181,6 +226,7 @@ int main(int argc, char** argv) {
     assert(player.open(play, now, nullptr));
     const auto playing = poll_for(DirectState::Playing, .3);
     assert(playing.duration == 12 && playing.width == 1280 && playing.downloaded_bytes > 0 && retries == 1);
+    assert(saw_early_video && saw_early_audio);
     DirectCommand control;
     control.kind = DirectCommandKind::Pause;
     assert(player.control(control, now));
@@ -270,5 +316,44 @@ int main(int argc, char** argv) {
     assert(!automatic.open(play,now,session));
     assert(automatic.tick(now).error==DirectError::CleanupFailed && opens==closes);
     puts("PASS: auto fallback after native teardown, no decoder overlap or retry after cleanup failure");
+
+    for (const auto& fault : {std::make_pair(Startup::NoLoadCallback, DirectError::LoadTimeout),
+             std::make_pair(Startup::NoPlaying, DirectError::PlayingTimeout),
+             std::make_pair(Startup::NoFrame, DirectError::FirstFrameTimeout),
+             std::make_pair(Startup::RejectVideo, DirectError::BufferstreamFeed),
+             std::make_pair(Startup::NoFeed, DirectError::InitialFeedTimeout)}) {
+        mode = fault.first;
+        assert(player.open(play, now, nullptr));
+        for (unsigned i=0; i<200 && !decoder_open; ++i) {
+            player.tick(now += 20000000);
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        }
+        assert(decoder_open);
+        for (unsigned i=0; i<55; ++i) player.tick(now += 20000000);
+        const auto failed = player.tick(now += 21000000000LL);
+        assert(failed.state == DirectState::Error && failed.error == fault.second && !failed.frame_observed);
+        if (mode == Startup::NoLoadCallback) assert(saw_early_video && saw_early_audio);
+        assert(player.close() && opens == closes);
+    }
+    mode = Startup::CallbackFirst;
+    assert(player.open(play, now, nullptr));
+    poll_for(DirectState::Playing);
+    assert(!saw_early_video && !saw_early_audio);
+    assert(player.close() && opens == closes);
+    mode = Startup::AfterPreroll;
+    assert(player.open(play, now, nullptr));
+    for (unsigned i=0; i<200 && !decoder_open; ++i) {
+        player.tick(now += 20000000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    }
+    assert(decoder_open);
+    const auto before_feed = player.tick(now += 20000000);
+    assert(!before_feed.backend_loaded && !before_feed.audio_fed && !before_feed.frame_observed);
+    assert(player.close());
+    assert(player.open(play, now, nullptr));
+    poll_for(DirectState::Playing);
+    assert(player.close() && opens == closes);
+
+    puts("PASS: bounded preroll resolves delayed load and Playing, reports startup faults, and supports stop and reopen");
     puts("PASS: real H.264/AAC MPEG-TS demux and PCM feed, bounded buffering, retry, seek, EOS, cancellation and recovery");
 }
