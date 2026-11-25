@@ -21,14 +21,14 @@ void log_segment(const DirectDemuxedSegment& media, DirectError result, size_t n
     std::fprintf(stderr, "[direct-hls] stage=segment-demux segment=%zu reason=%s container=%s probe-score=%d "
         "video-codec=%d audio-codec=%d h264-profile=%d pixel-format=%s geometry=%dx%d aac-rate=%d aac-channels=%d "
         "video-packets=%u audio-packets=%u idr=%d first-idr=%d sps-pps=%d first-video-au=%d first-pcm-bytes=%zu "
-        "timestamps=%s pts-before-dts=%u tied-dts=%u inferred-first-dts=%u\n",
+        "timestamps=%s timestamp-problem=%s pts-before-dts=%u tied-dts=%u inferred-first-dts=%u\n",
         number, direct_error_name(result), media.container, media.probe_score, media.video_codec, media.audio_codec,
         media.h264_profile, media.pixel_format, media.width, media.height, media.aac_sample_rate, media.aac_channels,
         media.video_packets, media.audio_packets, int(media.idr), int(media.starts_with_idr), int(media.sps_pps),
         int(media.video_packets > 0), media.first_pcm_bytes,
         result == DirectError::VideoTimestamp || result == DirectError::AudioTimestamp ? "invalid" :
             result == DirectError::None ? "valid" : "incomplete",
-        media.reordered, media.tied_dts, media.inferred_dts);
+        media.timestamp_problem, media.reordered, media.tied_dts, media.inferred_dts);
 }
 
 bool fcup_enabled() {

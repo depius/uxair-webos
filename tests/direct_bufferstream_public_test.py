@@ -128,6 +128,7 @@ with tempfile.TemporaryDirectory(prefix='uxair-public-hls-') as folder:
     assert re.search(r'aac-rate=22050 aac-channels=2 .*sps-pps=1 first-video-au=1 first-pcm-bytes=[1-9]\d* .*pts-before-dts=[1-9]\d*', checked.stdout)
     assert re.search(r'container=mpegts .*first-idr=0 .*timestamps=valid', checked.stdout), 'continuity across an open GOP'
     assert 'stage=segment-demux error=video-timestamp' in checked.stdout
+    assert 'timestamp-problem=composition-offset' in checked.stdout
     assert 'stage=playlist-parse error=declared-discontinuity' in checked.stdout
     assert 'stage=segment-timeline error=discontinuity' in checked.stdout
     assert 'stage=playlist-parse error=init-segment-required' in checked.stdout

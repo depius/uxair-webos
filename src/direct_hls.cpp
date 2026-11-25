@@ -122,7 +122,10 @@ struct Demuxer {
         format = avformat_alloc_context();
         if (!format) return false;
         format->pb = io;
-        format->flags |= AVFMT_FLAG_CUSTOM_IO;
+        // Keep explicit PES timestamps. FFmpeg's generic timestamp fill-in
+        // can move DTS backwards after a BipBop B frame, even though the
+        // original PES decode times are ordered. AAC uses its own sample clock.
+        format->flags |= AVFMT_FLAG_CUSTOM_IO | AVFMT_FLAG_NOFILLIN;
         format->max_streams = 8;
         format->probesize = 128 * 1024;
         format->max_probe_packets = 64;
@@ -265,6 +268,10 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
     int64_t audio_pts_anchor = AV_NOPTS_VALUE;
     int64_t last_audio_pts = AV_NOPTS_VALUE;
     int audio_samples = 0;
+    const auto timestamp_error = [&](bool video, const char* reason) {
+        segment.timestamp_problem = reason;
+        return video ? DirectError::VideoTimestamp : DirectError::AudioTimestamp;
+    };
     while (!cancelled && (result = av_read_frame(demux.format, demux.packet)) >= 0) {
         if (++packets > max_segment_packets) return DirectError::StreamLimit;
         AVPacket& packet = *demux.packet;
@@ -311,12 +318,12 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
                 av_packet_unref(&packet);
                 continue;
             }
-            if (packet.pts == AV_NOPTS_VALUE) return DirectError::VideoTimestamp;
+            if (packet.pts == AV_NOPTS_VALUE) return timestamp_error(true, "missing-pts");
             unit.pts_ns = av_rescale_q(packet.pts, stream.time_base, ns);
             if (packet.dts == AV_NOPTS_VALUE) {
                 // A random-access IDR can start the decode timeline at its
                 // own PTS. Subsequent decode times still have to keep order.
-                if (continuing || segment.video_packets || !info.keyframe) return DirectError::VideoTimestamp;
+                if (continuing || segment.video_packets || !info.keyframe) return timestamp_error(true, "missing-dts");
                 unit.dts_ns = unit.pts_ns;
                 ++segment.inferred_dts;
             } else {
@@ -324,7 +331,7 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
             }
             unit.duration_ns = av_rescale_q(packet.duration, stream.time_base, ns);
             if (segment.video_packets && unit.dts_ns < segment.last_video_dts_ns)
-                return DirectError::VideoTimestamp;
+                return timestamp_error(true, "decode-order");
             if (segment.video_packets && unit.dts_ns == segment.last_video_dts_ns) ++segment.tied_dts;
             if (!segment.video_packets) {
                 segment.first_video_dts_ns = unit.dts_ns;
@@ -354,9 +361,9 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
                 audio_pts_anchor = av_rescale_q(packet.pts, stream.time_base, ns);
                 audio_samples = 0;
             }
-            if (audio_pts_anchor == AV_NOPTS_VALUE) return DirectError::AudioTimestamp;
+            if (audio_pts_anchor == AV_NOPTS_VALUE) return timestamp_error(false, "missing-anchor");
             unit.pts_ns = unit.dts_ns = audio_pts_anchor + av_rescale_q(audio_samples, sample_time, ns);
-            if (unit.pts_ns <= last_audio_pts) return DirectError::AudioTimestamp;
+            if (unit.pts_ns <= last_audio_pts) return timestamp_error(false, "presentation-order");
             last_audio_pts = unit.pts_ns;
             audio_samples += 1024;
             unit.duration_ns = av_rescale_q(1024, sample_time, ns);
@@ -368,9 +375,9 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
         constexpr int64_t max_timestamp = 2 * 24 * 60 * 60 * second;
         if (unit.pts_ns < -second || unit.pts_ns > max_timestamp || unit.dts_ns < -second ||
             unit.dts_ns > max_timestamp || unit.duration_ns < 0 || unit.duration_ns > second)
-            return video ? DirectError::VideoTimestamp : DirectError::AudioTimestamp;
+            return timestamp_error(video, "out-of-range");
         if (unit.pts_ns < unit.dts_ns - second || unit.pts_ns > unit.dts_ns + second)
-            return DirectError::VideoTimestamp;
+            return timestamp_error(true, "composition-offset");
         if (unit.data.size() > max_segment_bytes - segment.bytes) return DirectError::StreamLimit;
         segment.bytes += unit.data.size();
         segment.packets.push_back(std::move(unit));
