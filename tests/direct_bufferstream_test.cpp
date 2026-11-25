@@ -159,7 +159,7 @@ static void public_samples(const std::string& base) {
     assert(playlist.segments.size() > 2);
     fetch.stop();
     DirectBufferstream player;
-    const auto run = [&](const char* path, int width, int height, DirectError error) {
+    const auto run = [&](const char* path, int width, int height, DirectError error, double duration = 19.8) {
         expected_width = width;
         expected_height = height;
         DirectCommand play;
@@ -167,7 +167,8 @@ static void public_samples(const std::string& base) {
         play.uri = base + path + "?token=PRIVATE";
         assert(player.open(play, now, nullptr));
         bool played = false;
-        for (unsigned tick = 0; tick < 1400; ++tick) {
+        const auto previous_opens = opens;
+        for (unsigned tick = 0; tick < 4000; ++tick) {
             const auto snapshot = player.tick(now += 20000000);
             assert(snapshot.buffer_bytes <= 16 * 1024 * 1024);
             if (snapshot.state == DirectState::Playing) {
@@ -180,7 +181,8 @@ static void public_samples(const std::string& base) {
                 return;
             }
             if (snapshot.state == DirectState::Ended) {
-                assert(error == DirectError::None && played && snapshot.position >= 19.8 && reordered_pts && pcm_signal);
+                assert(error == DirectError::None && played && snapshot.position >= duration && reordered_pts && pcm_signal);
+                assert(opens == previous_opens + 1);
                 assert(player.close());
                 return;
             }
@@ -227,21 +229,93 @@ static void public_samples(const std::string& base) {
     puts("PASS: 640x480 resumes after a long pause at 12 video and 11 audio feeds, with no decoder reopen");
     mode = Startup::AfterPreroll;
     run("/apple/gear2/prog_index.m3u8", 640, 480, DirectError::None);
-    run("/mux/master.m3u8", 1280, 720, DirectError::None);
+    run("/mux/master.m3u8", 1280, 720, DirectError::None, 60.0);
     run("/apple/bad-timestamp.m3u8", 640, 480, DirectError::VideoTimestamp);
     run("/apple/discontinuous.m3u8", 640, 480, DirectError::PlaylistDiscontinuity);
     run("/apple/timeline-reset.m3u8", 640, 480, DirectError::Discontinuity);
-    run("/apple/init-map.m3u8", 0, 0, DirectError::PlaylistInitSegment);
+    run("/apple/init-map.m3u8", 0, 0, DirectError::Mp4Boxes);
     run("/apple/container.m3u8", 0, 0, DirectError::SegmentContainer);
     assert(opens == closes);
-    puts("PASS: Apple BipBop (22.05 kHz AAC) and Mux MPEG-TS reach H.264/PCM feed with reordered PTS");
+    puts("PASS: Apple BipBop (22.05 kHz AAC) and 60+ seconds of 720p Mux MPEG-TS feed without a decoder restart");
+}
+
+static void fmp4_samples(const std::string& base) {
+    expected_width = 640;
+    expected_height = 480;
+    allow_reordering = true;
+    inject_retry = false;
+    DirectBufferstream player;
+    const auto run = [&](const char* path, DirectError error, unsigned expected_opens, bool seek = false) {
+        const unsigned before = opens;
+        bool played = false, sought = false;
+        DirectCommand command;
+        command.kind = DirectCommandKind::Play;
+        command.uri = base + path;
+        assert(player.open(command, now, nullptr));
+        for (unsigned i = 0; i < 1800; ++i) {
+            const auto snapshot = player.tick(now += 20000000);
+            assert(snapshot.buffer_bytes <= 16 * 1024 * 1024);
+            if (snapshot.state == DirectState::Playing && snapshot.position > (sought ? 4.3 : .5)) {
+                assert(snapshot.backend_loaded && snapshot.frame_observed && snapshot.audio_fed);
+                played = true;
+                if (seek && !sought) {
+                    command.kind = DirectCommandKind::Pause;
+                    assert(player.control(command, now));
+                    const auto frozen = player.tick(now += 12000000000LL);
+                    assert(frozen.state == DirectState::Paused && frozen.position == snapshot.position);
+                    command.kind = DirectCommandKind::Resume;
+                    assert(player.control(command, now));
+                    assert(player.tick(now += 8000000).state != DirectState::Error);
+                    command.kind = DirectCommandKind::Seek;
+                    command.position = 4.25;
+                    assert(player.control(command, now));
+                    sought = true;
+                    played = false;
+                }
+            }
+            if (snapshot.state == DirectState::Error || snapshot.state == DirectState::Ended) {
+                if (error == DirectError::None) {
+                    assert(snapshot.state == DirectState::Ended && played && snapshot.position >= 7.9);
+                    assert(reordered_pts && pcm_signal && std::llabs(last_video_pts - last_audio_pts) < 160000000);
+                } else {
+                    assert(snapshot.state == DirectState::Error && snapshot.error == error);
+                }
+                assert(opens == before + expected_opens);
+                assert(player.close() && opens == closes);
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        }
+        assert(false && "fMP4 pipeline did not reach a terminal outcome");
+    };
+    run("/master.m3u8", DirectError::None, 1);
+    run("/ranges.m3u8", DirectError::None, 1);
+    run("/clip/media.m3u8", DirectError::None, 2, true);
+    run("/boundary.m3u8", DirectError::None, 2);
+    run("/changed-map.m3u8", DirectError::None, 2);
+    run("/missing-map.m3u8", DirectError::PlaylistInitSegment, 0);
+    run("/missing-init.m3u8", DirectError::InitFetch, 0);
+    run("/malformed.m3u8", DirectError::Mp4Boxes, 0);
+    run("/encrypted.m3u8", DirectError::EncryptedMedia, 0);
+    run("/unsupported.m3u8", DirectError::VideoCodec, 0);
+    run("/audio-only.m3u8", DirectError::Mp4Track, 0);
+    run("/separate.m3u8", DirectError::SeparateAudio, 0);
+    run("/invalid-range.m3u8", DirectError::PlaylistByteRange, 0);
+    run("/bad-range-response.m3u8", DirectError::RangeResponse, 0);
+    run("/ignored-range.m3u8", DirectError::RangeResponse, 0);
+    run("/oversized.m3u8", DirectError::StreamLimit, 0);
+    puts("PASS: fMP4 H.264/AAC-LC, B-frames, byte ranges, pause, seek, discontinuity, map change and rejection paths");
 }
 
 int main(int argc, char** argv) {
-    assert(argc == 2 || (argc == 3 && std::string(argv[2]) == "--public"));
+    assert(argc == 2 || (argc == 3 && (std::string(argv[2]) == "--public" || std::string(argv[2]) == "--fmp4")));
     direct_hls_log_setup();
     const std::string base = argv[1];
-    if (argc == 3) { public_samples(base); return 0; }
+    if (argc == 3) {
+        if (std::string(argv[2]) == "--fmp4") fmp4_samples(base);
+        else public_samples(base);
+        return 0;
+    }
     DirectPlaylist selected;
     const std::string master = "#EXTM3U\n"
         "#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=1280x720,CODECS=\"avc1.42c01f,mp4a.40.2\"\n"

@@ -21,14 +21,15 @@ struct DirectCommand {
 enum class DirectState { Idle, Loading, Playing, Paused, Ended, Error, Buffering };
 enum class DirectBackend { None, NativeUri, Bufferstream };
 const char *direct_backend_name(DirectBackend);
-enum class DirectStage { Idle, Queued, Dequeued, Relay, AcbCreate, AcbInitialize, Construct, MediaId, Load, AwaitLoad, Sink, LoadedState, Window, Seek, Play, AwaitPlaying, Playing, Paused, VideoInfo, Stopped, Fetch, BufferstreamLoad, PacketFeed, ManifestFetch, PlaylistParse, SegmentFetch, SegmentDemux, SegmentTimeline, Preroll, AwaitFirstFrame };
+enum class DirectStage { Idle, Queued, Dequeued, Relay, AcbCreate, AcbInitialize, Construct, MediaId, Load, AwaitLoad, Sink, LoadedState, Window, Seek, Play, AwaitPlaying, Playing, Paused, VideoInfo, Stopped, Fetch, BufferstreamLoad, PacketFeed, ManifestFetch, PlaylistParse, SegmentFetch, SegmentDemux, SegmentTimeline, Preroll, AwaitFirstFrame, InitSegment };
 enum class DirectError { None, Busy, RelayStart, Payload, AcbCreate, AcbInitialize, Construct, MediaId, LoadRejected, NativeError, Sink, Seek, PlayRejected, LoadTimeout, DurationTimeout, PlayingTimeout, ProgressTimeout, ControlRejected, NoNativeProgress, CleanupFailed, FetchFailed, UnsupportedStream,
     InvalidStream, StreamLimit, Discontinuity, BufferstreamStart, BufferstreamFeed, NativeApiUnavailable,
     PlaylistSyntax, PlaylistVariant, PlaylistLive, PlaylistEncryption, PlaylistInitSegment, PlaylistByteRange,
     PlaylistTag, PlaylistNested, PlaylistDiscontinuity, SegmentContainer, DemuxOpen, DemuxRead,
     MissingH264, MissingAac, VideoCodec, AudioCodec, MultipleTracks, H264AnnexB, H264Keyframe,
     H264Configuration, H264Format, AacAdts, AacDecode, VideoTimestamp, AudioTimestamp, PacketCorrupt,
-    TrackChange, DownloadWorker, FetchCancelled, AacNoPcm, StartupFetchTimeout, InitialFeedTimeout, FirstFrameTimeout };
+    TrackChange, DownloadWorker, FetchCancelled, AacNoPcm, StartupFetchTimeout, InitialFeedTimeout, FirstFrameTimeout,
+    InitFetch, Mp4Boxes, Mp4Track, Mp4Config, SeparateAudio, EncryptedMedia, RangeResponse };
 const char *direct_stage_name(DirectStage);
 const char *direct_error_name(DirectError);
 struct DirectSnapshot {

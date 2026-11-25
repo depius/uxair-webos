@@ -6,7 +6,12 @@
 #include <mutex>
 #include <cstdint>
 #include <functional>
-struct HlsFetch {int status=502;std::string data,url,type;bool cancelled=false,limit_exceeded=false;};
+struct HlsRange {
+    uint64_t offset=0,length=0;
+    bool operator==(const HlsRange& other) const { return offset==other.offset && length==other.length; }
+};
+bool hls_decimal_integer(const std::string& value, uint64_t& number);
+struct HlsFetch {int status=502;std::string data,url,type;bool cancelled=false,limit_exceeded=false,range_rejected=false;};
 class HlsRelay {
     std::atomic<bool> running_{false};std::atomic<int> listener_{-1};std::vector<std::thread> workers_;
     std::mutex clients_mutex_;std::vector<int> clients_;
@@ -24,7 +29,7 @@ public:
     void cancel() { running_=false; }
     std::string start(const std::string&,bool allow_configured_lan=true);
     void stop();
-    HlsFetch fetch(const std::string&,size_t limit,bool manifest=false);
+    HlsFetch fetch(const std::string&,size_t limit,bool manifest=false,HlsRange range={});
     std::string rewrite(const std::string&,const std::string& base);
     static std::string resolve(const std::string&,const std::string&);
     bool address_allowed(uint32_t address) const;

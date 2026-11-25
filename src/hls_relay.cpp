@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <cstring>
+#include <strings.h>
 #include <sstream>
 #include <cstdlib>
 #include <cstdio>
@@ -26,11 +27,66 @@ std::string HlsRelay::resource_path(size_t index,const std::string& uri,bool man
     if(manifest)suffix=".m3u8";
     return "/"+token_+"/"+std::to_string(index)+suffix;
 }
-struct WriteBuffer {std::string data;size_t limit;bool exceeded=false;};
+bool hls_decimal_integer(const std::string& value, uint64_t& number) {
+    if (value.empty() || value.size()>20) return false;
+    number=0;
+    for (const char c : value) {
+        if(c<'0'||c>'9'||number>(UINT64_MAX-unsigned(c-'0'))/10) return false;
+        number=number*10+unsigned(c-'0');
+    }
+    return true;
+}
+struct WriteBuffer {
+    std::string data;
+    size_t limit;
+    bool exceeded=false;
+    HlsRange range;
+    bool range_seen=false, range_match=false, other_encoding=false;
+    long http=0;
+};
+static size_t range_header(char *data,size_t size,size_t n,void *ptr){
+    auto& b=*static_cast<WriteBuffer*>(ptr);
+    if (n && size>SIZE_MAX/n) return 0;
+    const size_t count=size*n;
+    if (count>8192) return 0;
+    const std::string line(data,count);
+    if (line.compare(0,5,"HTTP/")==0) {
+        const auto space=line.find(' ');
+        b.http=space==std::string::npos?0:strtol(line.c_str()+space+1,nullptr,10);
+        b.range_seen=b.range_match=b.other_encoding=false;
+        b.data.clear();
+    } else if (!strncasecmp(line.c_str(),"Content-Range:",14)) {
+        if (b.range_seen) { b.range_match=false; return count; }
+        b.range_seen=true;
+        const auto start=line.find_first_not_of(" \t",14);
+        if (start==std::string::npos || line.compare(start,6,"bytes ")) return count;
+        const auto dash=line.find('-',start+6), slash=line.find('/',start+6);
+        if (dash==std::string::npos||slash==std::string::npos||dash>=slash) return count;
+        const auto end=line.find_last_not_of(" \t\r\n");
+        if (end<=slash) return count;
+        uint64_t first,last,total;
+        const auto extent=line.substr(slash+1,end-slash);
+        b.range_match=hls_decimal_integer(line.substr(start+6,dash-start-6),first)&&
+            hls_decimal_integer(line.substr(dash+1,slash-dash-1),last)&&
+            (extent=="*"||(hls_decimal_integer(extent,total)&&total>last))&&
+            first==b.range.offset&&last==b.range.offset+b.range.length-1;
+    } else if (!strncasecmp(line.c_str(),"Content-Encoding:",17)) {
+        const auto first=line.find_first_not_of(" \t",17);
+        const auto last=line.find_last_not_of(" \t\r\n");
+        if (first==std::string::npos||last<first||strcasecmp(line.substr(first,last-first+1).c_str(),"identity"))
+            b.other_encoding=true;
+    } else if ((line=="\r\n" || line=="\n") && b.http>=200 && b.http<300 &&
+               (b.http!=206 || !b.range_match || b.other_encoding)) {
+        return 0;
+    }
+    return count;
+}
 static size_t write_data(char *data,size_t size,size_t n,void *ptr){
     auto& b=*static_cast<WriteBuffer*>(ptr);
     if(n&&size>SIZE_MAX/n){b.exceeded=true;return 0;}
     const size_t count=size*n;
+    if (b.range.length && b.http>=300 && b.http<400) return count;
+    if (b.range.length && (b.http!=206||!b.range_match||b.other_encoding)) return 0;
     if(count>b.limit-b.data.size()){b.exceeded=true;return 0;}
     b.data.append(data,count);return count;
 }
@@ -52,13 +108,25 @@ std::string HlsRelay::resolve(const std::string& base,const std::string& relativ
     if(curl_url_set(u,CURLUPART_URL,base.c_str(),0)==CURLUE_OK&&curl_url_set(u,CURLUPART_URL,relative.c_str(),0)==CURLUE_OK){char *p=nullptr;if(curl_url_get(u,CURLUPART_URL,&p,0)==CURLUE_OK){out=p;curl_free(p);}}
     curl_url_cleanup(u);return direct_uri_valid(out)?out:std::string();
 }
-HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest){
+HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest,HlsRange range){
     HlsFetch result;std::string current=uri;const auto began=std::chrono::steady_clock::now();
+    if (range.length && (range.length>std::min(limit,segment_limit)||range.offset>uint64_t(INT64_MAX)-range.length)) {
+        result.range_rejected=true; return result;
+    }
     for(int redirect=0;redirect<=3&&running_;++redirect){
         const long remaining=12000-long(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-began).count());
         if(remaining<=0){result.status=504;break;}
         if(!direct_uri_valid(current)){trace("invalid-url",0);break;}
         CURL *curl=curl_easy_init();if(!curl)break;WriteBuffer buffer;buffer.limit=std::min(limit,segment_limit);
+        std::string request_range;
+        if (range.length) {
+            buffer.limit=size_t(range.length);
+            buffer.range=range;
+            request_range=std::to_string(range.offset)+"-"+std::to_string(range.offset+range.length-1);
+            curl_easy_setopt(curl,CURLOPT_RANGE,request_range.c_str());
+            curl_easy_setopt(curl,CURLOPT_HEADERFUNCTION,range_header);
+            curl_easy_setopt(curl,CURLOPT_HEADERDATA,&buffer);
+        }
         curl_easy_setopt(curl,CURLOPT_URL,current.c_str());curl_easy_setopt(curl,CURLOPT_PROTOCOLS_STR,"http,https");
         curl_easy_setopt(curl,CURLOPT_PROXY,"");curl_easy_setopt(curl,CURLOPT_NETRC,CURL_NETRC_IGNORED);
         curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,0L);curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT_MS,3000L);curl_easy_setopt(curl,CURLOPT_TIMEOUT_MS,remaining);
@@ -69,7 +137,7 @@ HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest){
         curl_easy_setopt(curl,CURLOPT_SSL_VERIFYPEER,1L);curl_easy_setopt(curl,CURLOPT_SSL_VERIFYHOST,2L);
         curl_easy_setopt(curl,CURLOPT_OPENSOCKETFUNCTION,open_socket);curl_easy_setopt(curl,CURLOPT_OPENSOCKETDATA,this);
         curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,write_data);curl_easy_setopt(curl,CURLOPT_WRITEDATA,&buffer);
-        curl_easy_setopt(curl,CURLOPT_MAXFILESIZE_LARGE,curl_off_t(buffer.limit));
+        curl_easy_setopt(curl,CURLOPT_MAXFILESIZE_LARGE,curl_off_t(std::min(limit,segment_limit)));
         curl_easy_setopt(curl,CURLOPT_NOPROGRESS,0L);curl_easy_setopt(curl,CURLOPT_XFERINFOFUNCTION,progress);curl_easy_setopt(curl,CURLOPT_XFERINFODATA,&running_);
         curl_easy_setopt(curl,CURLOPT_USERAGENT,"UxAir/1.4");
         auto code=curl_easy_perform(curl);long status=0;curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);
@@ -78,6 +146,7 @@ HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest){
         curl_easy_cleanup(curl);++requests;trace(manifest?"manifest-fetch":"segment-fetch",int(code),status);
         if(code!=CURLE_OK){
             result.limit_exceeded=buffer.exceeded||code==CURLE_FILESIZE_EXCEEDED;
+            result.range_rejected=range.length&&status!=0&&(status!=206||!buffer.range_match||buffer.other_encoding||buffer.data.size()!=range.length);
             result.status=code==CURLE_OPERATION_TIMEDOUT?504:502;
             break;
         }
@@ -88,7 +157,10 @@ HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest){
             current=std::move(resolved);
             continue;
         }
-        if(status!=200){result.status=status==404||status==403?int(status):502;break;}
+        if(range.length && (status!=206||!buffer.range_match||buffer.other_encoding||buffer.data.size()!=range.length)){
+            result.range_rejected=true;break;
+        }
+        if(!range.length&&status!=200){result.status=status==404||status==403?int(status):502;break;}
         result.status=200;result.data.swap(buffer.data);result.url=current;bytes+=result.data.size();return result;
     }
     if(sender_manifest&&manifest&&running_&&(result.status==403||result.status==404)){auto playlist=sender_manifest(uri);if(!playlist.empty()&&playlist.size()<=manifest_limit){result.status=200;result.data=playlist;result.url=uri;result.type="application/vnd.apple.mpegurl";return result;}}

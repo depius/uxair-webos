@@ -5,9 +5,11 @@
 
 extern "C" {
 #include <libavformat/avformat.h>
+#include <libavcodec/bsf.h>
 #include <libavutil/mem.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/log.h>
+#include <libavutil/intreadwrite.h>
 }
 
 #include <algorithm>
@@ -16,6 +18,7 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
+#include <map>
 
 namespace {
 constexpr int64_t second = 1000000000;
@@ -79,10 +82,11 @@ double variant_bandwidth(const std::string& tag) {
         };
         const auto first_codec = trim(codecs.substr(0, comma));
         const auto second_codec = trim(codecs.substr(comma + 1));
-        if (!((starts(first_codec, "avc1.") && second_codec == "mp4a.40.2") ||
-              (first_codec == "mp4a.40.2" && starts(second_codec, "avc1.")))) return 0;
+        const auto avc = [](const std::string& codec) { return starts(codec,"avc1.")||starts(codec,"avc3."); };
+        if (!((avc(first_codec) && second_codec == "mp4a.40.2") ||
+              (first_codec == "mp4a.40.2" && avc(second_codec)))) return 0;
     }
-    if (!attribute(tag, "AUDIO").empty() || !attribute(tag, "VIDEO").empty()) return 0;
+    if (!attribute(tag, "VIDEO").empty()) return 0;
     const auto resolution = attribute(tag, "RESOLUTION");
     if (!resolution.empty()) {
         const auto divider = resolution.find('x');
@@ -97,44 +101,108 @@ double variant_bandwidth(const std::string& tag) {
     return decimal(attribute(tag, "BANDWIDTH"), bandwidth) && bandwidth <= 20000000 ? bandwidth : 0;
 }
 
+bool parse_range(const std::string& value, HlsRange& range) {
+    const auto separator=value.find('@');
+    if (!hls_decimal_integer(value.substr(0,separator),range.length) || !range.length) return false;
+    range.offset=UINT64_MAX; // resolved against the preceding media subrange once its URI is known
+    return separator==std::string::npos ||
+        (hls_decimal_integer(value.substr(separator+1),range.offset) && range.offset!=UINT64_MAX);
+}
+
+bool resolve_range(HlsRange& range, const std::string& uri, const std::vector<DirectSegment>& segments) {
+    if (!range.length) return true;
+    if (range.offset==UINT64_MAX) {
+        if (segments.empty() || segments.back().url!=uri || !segments.back().range.length) return false;
+        const auto& last=segments.back().range;
+        range.offset=last.offset+last.length;
+    }
+    return range.length<=max_segment_bytes && range.offset<=uint64_t(INT64_MAX)-range.length;
+}
+
+bool map_attributes(const std::string& line, std::string& uri, HlsRange& range) {
+    bool have_range=false;
+    for (size_t at=line.find(':')+1; at<line.size();) {
+        const auto equal=line.find('=',at);
+        if (equal==std::string::npos || equal==at || equal+1==line.size()) return false;
+        const auto name=line.substr(at,equal-at);
+        const bool quoted=line[equal+1]=='"';
+        const auto begin=equal+(quoted?2:1);
+        auto end=line.find(quoted?'"':',',begin);
+        if (quoted && end==std::string::npos) return false;
+        if (end==std::string::npos) end=line.size();
+        const auto value=line.substr(begin,end-begin);
+        if (name=="URI") {
+            if (!quoted||!uri.empty()||value.empty()) return false;
+            uri=value;
+        } else if (name=="BYTERANGE") {
+            if (!quoted||have_range||!parse_range(value,range)) return false;
+            have_range=true;
+        }
+        at=end+unsigned(quoted);
+        if (at==line.size()) break;
+        if (line[at]!=',' || ++at==line.size()) return false;
+    }
+    return !uri.empty();
+}
+
 struct SegmentReader {
+    const std::string& init;
     const std::string& data;
     const std::atomic<bool>& cancelled;
     size_t offset = 0;
 
-    SegmentReader(const std::string& bytes, const std::atomic<bool>& cancelled) : data(bytes), cancelled(cancelled) {}
+    SegmentReader(const std::string& prefix, const std::string& bytes, const std::atomic<bool>& cancelled)
+        : init(prefix), data(bytes), cancelled(cancelled) {}
+
+    size_t size() const { return init.size()+data.size(); }
 
     static int read(void* opaque, uint8_t* dst, int length) {
         auto& reader = *static_cast<SegmentReader*>(opaque);
         if (reader.cancelled) return AVERROR_EXIT;
-        const size_t count = std::min(size_t(length), reader.data.size() - reader.offset);
+        const bool in_init=reader.offset<reader.init.size();
+        const auto& part=in_init?reader.init:reader.data;
+        const size_t start=in_init?reader.offset:reader.offset-reader.init.size();
+        const size_t count = std::min(size_t(length), part.size() - start);
         if (!count) return AVERROR_EOF;
-        std::memcpy(dst, reader.data.data() + reader.offset, count);
+        std::memcpy(dst, part.data() + start, count);
         reader.offset += count;
         return int(count);
     }
 
     static int interrupted(void* opaque) { return static_cast<SegmentReader*>(opaque)->cancelled.load(); }
+    static int64_t seek(void* opaque, int64_t offset, int whence) {
+        auto& reader=*static_cast<SegmentReader*>(opaque);
+        if (reader.cancelled) return AVERROR_EXIT;
+        const int64_t size=reader.size();
+        if (whence==AVSEEK_SIZE) return size;
+        whence&=~AVSEEK_FORCE;
+        if (whence!=SEEK_SET&&whence!=SEEK_CUR&&whence!=SEEK_END) return AVERROR(EINVAL);
+        const int64_t base=whence==SEEK_SET?0:whence==SEEK_CUR?int64_t(reader.offset):size;
+        if (offset< -base||offset>size-base) return AVERROR(EINVAL);
+        return reader.offset=size_t(base+offset);
+    }
 };
 
 struct Demuxer {
     AVFormatContext* format = nullptr;
     AVIOContext* io = nullptr;
     AVPacket* packet = nullptr;
+    AVBSFContext* annex_b = nullptr;
 
     ~Demuxer() {
         av_packet_free(&packet);
+        av_bsf_free(&annex_b);
         avformat_close_input(&format);
         if (io) av_freep(&io->buffer);
         avio_context_free(&io);
     }
 
-    bool open(SegmentReader& reader) {
-        const auto* input = av_find_input_format("mpegts");
+    bool open(SegmentReader& reader, bool mp4) {
+        const auto* input = av_find_input_format(mp4?"mov":"mpegts");
         if (!input) return false;
         auto* buffer = static_cast<uint8_t*>(av_malloc(16384));
         if (!buffer) return false;
-        io = avio_alloc_context(buffer, 16384, 0, &reader, SegmentReader::read, nullptr, nullptr);
+        io = avio_alloc_context(buffer, 16384, 0, &reader, SegmentReader::read, nullptr, mp4?SegmentReader::seek:nullptr);
         if (!io) { av_free(buffer); return false; }
         format = avformat_alloc_context();
         if (!format) return false;
@@ -147,11 +215,28 @@ struct Demuxer {
         format->probesize = 128 * 1024;
         format->max_probe_packets = 64;
         format->interrupt_callback = {SegmentReader::interrupted, &reader};
+        // A MOV reference can never open a path, device or URL on its own.
+        if (mp4) format->io_open=[](AVFormatContext*,AVIOContext**,const char*,int,AVDictionary**) {
+            return AVERROR(EPERM);
+        };
         return avformat_open_input(&format, nullptr, input, nullptr) == 0 && (packet = av_packet_alloc());
+    }
+
+    bool convert_video(const AVStream& stream) {
+        if (!annex_b) {
+            const auto* filter=av_bsf_get_by_name("h264_mp4toannexb");
+            if (!filter||av_bsf_alloc(filter,&annex_b)<0||
+                avcodec_parameters_copy(annex_b->par_in,stream.codecpar)<0) return false;
+            annex_b->time_base_in=stream.time_base;
+            if (av_bsf_init(annex_b)<0) return false;
+        }
+        return av_bsf_send_packet(annex_b,packet)==0&&av_bsf_receive_packet(annex_b,packet)==0;
     }
 };
 
 struct AdtsFormat { int sample_rate; int channels; };
+constexpr int aac_rates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000,
+                             22050, 16000, 12000, 11025, 8000, 7350};
 
 AdtsFormat adts_aac_lc(const AVPacket& packet) {
     if (packet.size < 7) return {};
@@ -161,13 +246,155 @@ AdtsFormat adts_aac_lc(const AVPacket& packet) {
     const int frame_bytes = ((data[3] & 3) << 11) | (data[4] << 3) | (data[5] >> 5);
     // The AAC decoder reports the actual input format to swresample. BipBop
     // uses index 7 (22.05 kHz), and all standard ADTS rates can be resampled.
-    static constexpr int rates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000,
-                                    22050, 16000, 12000, 11025, 8000, 7350};
     if (data[0] != 0xff || (data[1] & 0xf6) != 0xf0 || (data[2] >> 6) != 1 ||
-        rate >= sizeof(rates) / sizeof(*rates) || (channels != 1 && channels != 2) ||
+        rate >= sizeof(aac_rates) / sizeof(*aac_rates) || (channels != 1 && channels != 2) ||
         ((data[1] & 1) == 0 && packet.size < 9) ||
         (data[6] & 3) || frame_bytes != packet.size) return {};
-    return {rates[rate], int(channels)};
+    return {aac_rates[rate], int(channels)};
+}
+
+AdtsFormat mp4_aac_lc(const AVCodecParameters& codec) {
+    const auto* asc=codec.extradata;
+    if (!asc||codec.extradata_size<2||codec.extradata_size>64) return {};
+    const unsigned rate=((asc[0]&7)<<1)|(asc[1]>>7), channels=(asc[1]>>3)&15;
+    if ((asc[0]>>3)!=2||(asc[1]&7)||rate>=sizeof(aac_rates)/sizeof(*aac_rates)||
+        (channels!=1&&channels!=2)||codec.sample_rate!=aac_rates[rate]||
+        codec.ch_layout.nb_channels!=int(channels)) return {};
+    return {aac_rates[rate],int(channels)};
+}
+
+// Validate the two resources independently before exposing their virtual
+// concatenation to MOV. Only self-contained, movie-relative fragments fit it.
+struct Box { uint32_t type=0; const uint8_t* data=nullptr; size_t size=0; };
+constexpr uint32_t fourcc(char a,char b,char c,char d) { return MKBETAG(a,b,c,d); }
+bool read_box(const uint8_t*& cursor, size_t& remaining, Box& box) {
+    if (remaining<8) return false;
+    uint64_t size=AV_RB32(cursor);
+    const size_t header=size==1?16:8;
+    if (remaining<header) return false;
+    if (size==1) size=AV_RB64(cursor+8);
+    if (size<header||size>remaining) return false;
+    box.type=AV_RB32(cursor+4);box.data=cursor+header;box.size=size_t(size)-header;
+    cursor+=size_t(size);remaining-=size_t(size);
+    return true;
+}
+bool encryption_box(uint32_t type) {
+    return type==fourcc('p','s','s','h')||type==fourcc('s','e','n','c')||type==fourcc('s','a','i','z')||
+        type==fourcc('s','a','i','o')||type==fourcc('t','e','n','c')||type==fourcc('s','i','n','f')||
+        type==fourcc('e','n','c','v')||type==fourcc('e','n','c','a');
+}
+
+DirectError inspect_boxes(const uint8_t* at, size_t length, unsigned depth, bool& mvex) {
+    if (depth>8) return DirectError::Mp4Boxes;
+    Box child;
+    while (length) {
+        if (!read_box(at,length,child)) return DirectError::Mp4Boxes;
+        if (encryption_box(child.type)) return DirectError::EncryptedMedia;
+        size_t skip=0;
+        switch (child.type) {
+        case fourcc('m','v','e','x'): mvex=true; break;
+        case fourcc('t','r','a','k'): case fourcc('m','d','i','a'): case fourcc('m','i','n','f'):
+        case fourcc('s','t','b','l'): break;
+        case fourcc('s','t','s','d'): skip=8; break;  // full box and entry count
+        case fourcc('a','v','c','1'): case fourcc('a','v','c','3'): skip=78; break;
+        case fourcc('m','p','4','a'):
+            if (child.size<28 || AV_RB16(child.data+8)!=0) return DirectError::Mp4Config;
+            skip=28;
+            break;
+        default: continue;
+        }
+        if (child.size<skip) return DirectError::Mp4Boxes;
+        const auto error=inspect_boxes(child.data+skip,child.size-skip,depth+1,mvex);
+        if (error!=DirectError::None) return error;
+    }
+    return DirectError::None;
+}
+
+DirectError inspect_fragment(const Box& moof, uint32_t& sequence) {
+    auto* at=moof.data;
+    auto remaining=moof.size;
+    Box child;
+    unsigned tracks=0;
+    bool sequence_seen=false, implicit_base=false;
+    while (remaining) {
+        if (!read_box(at,remaining,child)) return DirectError::Mp4Boxes;
+        if (encryption_box(child.type)) return DirectError::EncryptedMedia;
+        if (child.type==fourcc('m','f','h','d')) {
+            if (sequence_seen||child.size!=8||AV_RB32(child.data)!=0) return DirectError::Mp4Boxes;
+            sequence_seen=true;sequence=AV_RB32(child.data+4);
+        }
+        if (child.type!=fourcc('t','r','a','f')) continue;
+        if (++tracks>2) return DirectError::Mp4Track;
+        auto* field=child.data;
+        auto left=child.size;
+        bool tfhd=false,tfdt=false,trun=false;
+        Box entry;
+        while (left) {
+            if (!read_box(field,left,entry)) return DirectError::Mp4Boxes;
+            if (encryption_box(entry.type)) return DirectError::EncryptedMedia;
+            if (entry.type==fourcc('t','f','h','d')) {
+                if(tfhd||entry.size<8||(AV_RB32(entry.data)&1)) return DirectError::Mp4Boxes;
+                tfhd=true;
+                implicit_base|=(AV_RB32(entry.data)&0x020000)==0;
+            } else if (entry.type==fourcc('t','f','d','t')) {
+                if(tfdt||entry.size<8||entry.data[0]>1||entry.size!=(entry.data[0]?12u:8u))
+                    return DirectError::Mp4Boxes;
+                tfdt=true;
+            } else if (entry.type==fourcc('t','r','u','n')) {
+                if(entry.size<8||(!trun&&!(AV_RB32(entry.data)&1))||AV_RB32(entry.data+4)>max_segment_packets)
+                    return DirectError::Mp4Boxes;
+                trun=true;
+            }
+        }
+        if (!tfhd||!tfdt||!trun) return DirectError::Mp4Boxes;
+    }
+    return tracks&&sequence_seen&&(!implicit_base||tracks==1)?DirectError::None:DirectError::Mp4Boxes;
+}
+
+DirectError inspect_mp4(const std::string& init,const std::string& fragment) {
+    const auto* at=reinterpret_cast<const uint8_t*>(init.data());
+    size_t remaining=init.size();
+    Box box;
+    bool ftyp=false,moov=false,mvex=false;
+    while(remaining) {
+        if(!read_box(at,remaining,box)) return DirectError::Mp4Boxes;
+        if(encryption_box(box.type)) return DirectError::EncryptedMedia;
+        if(box.type==fourcc('f','t','y','p')) {
+            if(ftyp||moov||box.size<8) return DirectError::Mp4Boxes;
+            ftyp=true;
+        } else if(box.type==fourcc('m','o','o','v')) {
+            if(!ftyp||moov) return DirectError::Mp4Boxes;
+            moov=true;
+            const auto error=inspect_boxes(box.data,box.size,0,mvex);
+            if(error!=DirectError::None) return error;
+        } else if(box.type!=fourcc('f','r','e','e')&&box.type!=fourcc('s','k','i','p')) return DirectError::Mp4Boxes;
+    }
+    if(!ftyp||!moov||!mvex) return DirectError::Mp4Boxes;
+    at=reinterpret_cast<const uint8_t*>(fragment.data());remaining=fragment.size();
+    bool awaiting_data=false;
+    unsigned fragments=0;
+    uint32_t previous_sequence=0;
+    while(remaining) {
+        if(!read_box(at,remaining,box)) return DirectError::Mp4Boxes;
+        if(encryption_box(box.type)) return DirectError::EncryptedMedia;
+        if(box.type==fourcc('m','o','o','f')) {
+            if(awaiting_data||fragments>=128) return DirectError::Mp4Boxes;
+            uint32_t sequence=0;
+            const auto error=inspect_fragment(box,sequence);
+            if(error!=DirectError::None) return error;
+            if(fragments&&sequence<=previous_sequence) return DirectError::Mp4Boxes;
+            previous_sequence=sequence;
+            awaiting_data=true;
+        } else if(box.type==fourcc('m','d','a','t')) {
+            if(!awaiting_data||!box.size) return DirectError::Mp4Boxes;
+            awaiting_data=false;
+            ++fragments;
+        } else if(box.type!=fourcc('s','t','y','p')&&box.type!=fourcc('s','i','d','x')&&
+                  box.type!=fourcc('e','m','s','g')&&box.type!=fourcc('p','r','f','t')&&
+                  box.type!=fourcc('f','r','e','e')&&box.type!=fourcc('s','k','i','p')&&
+                  box.type!=fourcc('m','f','r','a')) return DirectError::Mp4Boxes;
+    }
+    return fragments&&!awaiting_data?DirectError::None:DirectError::Mp4Boxes;
 }
 
 bool prefer_variant(double candidate, double selected) {
@@ -191,9 +418,15 @@ DirectError direct_parse_playlist(const std::string& text, const std::string& ba
     std::string line;
     if (!std::getline(lines, line) || (line != "#EXTM3U" && line != "#EXTM3U\r")) return DirectError::PlaylistSyntax;
     bool master = false, end = false, waiting_variant = false;
-    double bandwidth = 0, selected_bandwidth = 0;
+    struct Variant { std::string url, audio; double bandwidth; };
+    std::vector<Variant> candidates;
+    std::map<std::string,bool> audio_groups;
+    std::string variant_audio;
+    double bandwidth = 0;
     int64_t duration = 0;
     unsigned variants = 0;
+    unsigned init=0, period=0;
+    HlsRange next_range;
     while (std::getline(lines, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
@@ -203,23 +436,56 @@ DirectError direct_parse_playlist(const std::string& text, const std::string& ba
             const auto url = HlsRelay::resolve(base, line);
             if (url.empty()) return DirectError::PlaylistSyntax;
             if (master) {
-                if (prefer_variant(bandwidth, selected_bandwidth)) {
-                    playlist.variant = url;
-                    selected_bandwidth = bandwidth;
-                }
+                candidates.push_back({url,variant_audio,bandwidth});
                 waiting_variant = false;
             } else {
                 if (playlist.segments.size() >= 4096 || playlist.duration_ns > 24 * 60 * 60 * second - duration)
                     return DirectError::StreamLimit;
-                playlist.segments.push_back({url, playlist.duration_ns, duration});
+                if (period&&!init) return DirectError::PlaylistDiscontinuity;
+                if (!resolve_range(next_range,url,playlist.segments)) return DirectError::PlaylistByteRange;
+                DirectSegment segment;
+                segment.url=url;segment.start_ns=playlist.duration_ns;segment.duration_ns=duration;
+                segment.range=next_range;segment.init=init;segment.period=period;
+                playlist.segments.push_back(std::move(segment));
+                next_range={};
                 playlist.duration_ns += duration;
                 duration = 0;
             }
         } else if (starts(line, "#EXT-X-STREAM-INF:")) {
-            if (end || duration || waiting_variant || !playlist.segments.empty()) return DirectError::PlaylistSyntax;
+            if (end || duration || waiting_variant || init || period || next_range.length || !playlist.segments.empty()) return DirectError::PlaylistSyntax;
             if (++variants > 32) return DirectError::StreamLimit;
             master = waiting_variant = true;
             bandwidth = variant_bandwidth(line);
+            variant_audio=attribute(line,"AUDIO");
+        } else if (starts(line,"#EXT-X-MEDIA:")) {
+            if (attribute(line,"TYPE")=="AUDIO") {
+                const auto group=attribute(line,"GROUP-ID");
+                if (group.empty()||group.size()>128||audio_groups.size()>=64) return DirectError::PlaylistSyntax;
+                audio_groups[group] |= attribute(line,"URI").empty();
+            }
+        } else if (starts(line,"#EXT-X-MAP:")) {
+            if (master||end) return DirectError::PlaylistSyntax;
+            DirectInitSegment map;
+            playlist.diagnostic_tag="#EXT-X-MAP";
+            if (!map_attributes(line,map.url,map.range)) return DirectError::PlaylistSyntax;
+            map.url=HlsRelay::resolve(base,map.url);
+            if (map.url.empty()) return DirectError::PlaylistSyntax;
+            if (map.range.length>1024*1024||!resolve_range(map.range,map.url,playlist.segments))
+                return DirectError::PlaylistByteRange;
+            const auto prior=std::find_if(playlist.maps.begin(),playlist.maps.end(),[&](const DirectInitSegment& other){
+                return map.url==other.url&&map.range==other.range;
+            });
+            if (prior==playlist.maps.end()) {
+                if (playlist.maps.size()>=64) return DirectError::StreamLimit;
+                playlist.maps.push_back(std::move(map));init=unsigned(playlist.maps.size());
+            } else init=unsigned(prior-playlist.maps.begin()+1);
+        } else if (starts(line,"#EXT-X-BYTERANGE:")) {
+            if (master||end||next_range.length||!parse_range(line.substr(sizeof("#EXT-X-BYTERANGE:")-1),next_range))
+                return DirectError::PlaylistByteRange;
+        } else if (line=="#EXT-X-DISCONTINUITY") {
+            if (master||end||period>=64) return DirectError::PlaylistDiscontinuity;
+            playlist.diagnostic_tag=line;
+            ++period;
         } else if (starts(line, "#EXTINF:")) {
             double parsed = 0;
             if (master || end || duration || !decimal(line.substr(8, line.find(',') - 8), parsed) || parsed < 0.01)
@@ -233,7 +499,7 @@ DirectError direct_parse_playlist(const std::string& text, const std::string& ba
                    line == "#EXT-X-KEY:METHOD=NONE" || starts(line, "#EXT-X-VERSION:") ||
                    starts(line, "#EXT-X-TARGETDURATION:") || starts(line, "#EXT-X-MEDIA-SEQUENCE:") ||
                    starts(line, "#EXT-X-PLAYLIST-TYPE:") || starts(line, "#EXT-X-PROGRAM-DATE-TIME:") ||
-                   starts(line, "#EXT-X-MEDIA:") || starts(line, "#EXT-X-I-FRAME-STREAM-INF:")) {
+                   starts(line, "#EXT-X-I-FRAME-STREAM-INF:")) {
             continue;
         } else {
             if (!starts(line, "#EXT-X-")) continue; // HLS clients ignore other extended comments.
@@ -243,14 +509,11 @@ DirectError direct_parse_playlist(const std::string& text, const std::string& ba
             if (tag == "#EXT-X-KEY" || tag == "#EXT-X-SESSION-KEY") {
                 playlist.diagnostic_tag = tag; return DirectError::PlaylistEncryption;
             }
-            if (tag == "#EXT-X-MAP" || tag == "#EXT-X-I-FRAMES-ONLY") {
+            if (tag == "#EXT-X-I-FRAMES-ONLY") {
                 playlist.diagnostic_tag = tag; return DirectError::PlaylistInitSegment;
             }
             if (tag == "#EXT-X-BYTERANGE") {
                 playlist.diagnostic_tag = tag; return DirectError::PlaylistByteRange;
-            }
-            if (tag == "#EXT-X-DISCONTINUITY") {
-                playlist.diagnostic_tag = tag; return DirectError::PlaylistDiscontinuity;
             }
             if (tag == "#EXT-X-GAP" || tag == "#EXT-X-PART" || tag == "#EXT-X-SKIP" ||
                 tag == "#EXT-X-PRELOAD-HINT" || tag == "#EXT-X-CONTENT-STEERING" || tag == "#EXT-X-DEFINE") {
@@ -261,37 +524,81 @@ DirectError direct_parse_playlist(const std::string& text, const std::string& ba
             if (playlist.diagnostic_tag.empty()) playlist.diagnostic_tag = tag;
         }
     }
-    if (waiting_variant || duration) return DirectError::PlaylistSyntax;
-    if (master) return playlist.variant.empty() ? DirectError::PlaylistVariant : DirectError::None;
-    if (playlist.segments.empty()) return DirectError::PlaylistSyntax;
+    if (waiting_variant || duration || next_range.length) return DirectError::PlaylistSyntax;
+    if (master) {
+        bool external_audio=false;
+        double selected=0;
+        for (const auto& variant : candidates) {
+            if (!variant.audio.empty()) {
+                const auto group=audio_groups.find(variant.audio);
+                if (group==audio_groups.end()||!group->second) { external_audio=true; continue; }
+            }
+            if (prefer_variant(variant.bandwidth,selected)) {
+                playlist.variant=variant.url;selected=variant.bandwidth;
+            }
+        }
+        return !playlist.variant.empty()?DirectError::None:external_audio?DirectError::SeparateAudio:DirectError::PlaylistVariant;
+    }
+    if (playlist.segments.empty()) return period?DirectError::PlaylistDiscontinuity:DirectError::PlaylistSyntax;
     return end ? DirectError::None : DirectError::PlaylistLive;
 }
 
-DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& cancelled,
+DirectError direct_demux_segment(const std::string& data, const std::string& init, const std::atomic<bool>& cancelled,
                             AudioDecoder& audio, int width, int height, DirectDemuxedSegment& segment) {
     segment = DirectDemuxedSegment();
     const TimestampWarnings warnings(segment.ffmpeg_timestamp_warnings);
     if (cancelled) return DirectError::FetchCancelled;
     if (data.size() > max_segment_bytes) return DirectError::StreamLimit;
-    // Match the container even when it has a misleading URL suffix or MIME
-    // type. The ARM build exposes only the in-memory MPEG-TS demuxer.
-    const auto probe_size = std::min(data.size(), size_t(64 * 1024));
-    std::vector<uint8_t> prefix(probe_size + AVPROBE_PADDING_SIZE, 0);
-    std::copy_n(data.begin(), probe_size, prefix.begin());
-    AVProbeData probe = {};
-    probe.filename = "";
-    probe.buf = prefix.data();
-    probe.buf_size = int(probe_size);
-    const auto* input = av_probe_input_format3(&probe, 1, &segment.probe_score);
-    if (!input || std::strcmp(input->name, "mpegts")) {
-        if (data.size() >= 8 && (!data.compare(4, 4, "ftyp") || !data.compare(4, 4, "styp") ||
-                                 !data.compare(4, 4, "moof"))) segment.container = "iso-bmff";
-        return DirectError::SegmentContainer;
+    const bool mp4=!init.empty();
+    if (mp4) {
+        segment.container="fmp4";
+        if (init.size()>1024*1024) return DirectError::StreamLimit;
+        const auto result=inspect_mp4(init,data);
+        if(result!=DirectError::None) return result;
+    } else {
+        // Match MPEG-TS even with a misleading suffix or MIME type.
+        const auto probe_size = std::min(data.size(), size_t(64 * 1024));
+        std::vector<uint8_t> prefix(probe_size + AVPROBE_PADDING_SIZE, 0);
+        std::copy_n(data.begin(), probe_size, prefix.begin());
+        AVProbeData probe = {};
+        probe.filename = "";
+        probe.buf = prefix.data();
+        probe.buf_size = int(probe_size);
+        const auto* input = av_probe_input_format3(&probe, 1, &segment.probe_score);
+        if (!input || std::strcmp(input->name, "mpegts")) {
+            if (data.size() >= 8 && (!data.compare(4, 4, "styp") || !data.compare(4, 4, "moof") ||
+                                   !data.compare(4, 4, "sidx"))) {
+                segment.container = "fmp4";
+                return DirectError::PlaylistInitSegment;
+            }
+            if (data.size() >= 8 && !data.compare(4, 4, "ftyp")) segment.container = "iso-bmff";
+            return DirectError::SegmentContainer;
+        }
+        segment.container = "mpegts";
     }
-    segment.container = "mpegts";
-    SegmentReader reader(data, cancelled);
+    SegmentReader reader(init, data, cancelled);
     Demuxer demux;
-    if (!demux.open(reader)) return cancelled ? DirectError::FetchCancelled : DirectError::DemuxOpen;
+    if (!demux.open(reader,mp4)) return cancelled ? DirectError::FetchCancelled : DirectError::DemuxOpen;
+    if (mp4) {
+        segment.tracks=demux.format->nb_streams;
+        if (segment.tracks!=2) return DirectError::Mp4Track;
+        unsigned videos=0,audios=0;
+        for (unsigned i=0;i<segment.tracks;++i) {
+            const auto& par=*demux.format->streams[i]->codecpar;
+            if (par.codec_type==AVMEDIA_TYPE_VIDEO) {
+                ++videos;segment.video_codec=par.codec_id;
+                if(par.codec_id!=AV_CODEC_ID_H264||(par.codec_tag!=MKTAG('a','v','c','1')&&par.codec_tag!=MKTAG('a','v','c','3')))
+                    return DirectError::VideoCodec;
+                if(!par.extradata||par.extradata_size<7||par.extradata_size>65536||
+                   par.extradata[0]!=1||(par.extradata[4]&3)==2) return DirectError::Mp4Config;
+            } else if(par.codec_type==AVMEDIA_TYPE_AUDIO) {
+                ++audios;segment.audio_codec=par.codec_id;
+                if(par.codec_id!=AV_CODEC_ID_AAC||par.codec_tag!=MKTAG('m','p','4','a')) return DirectError::AudioCodec;
+                if(!mp4_aac_lc(par).sample_rate) return DirectError::Mp4Config;
+            }
+        }
+        if(videos!=1||audios!=1) return DirectError::Mp4Track;
+    }
     const bool continuing = width != 0;
     segment.width = width;
     segment.height = height;
@@ -321,6 +628,8 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
         else segment.audio_codec = stream.codecpar->codec_id;
         if (packet.size <= 0 || size_t(packet.size) > max_packet_bytes) return DirectError::StreamLimit;
         if (packet.flags & AV_PKT_FLAG_CORRUPT) return DirectError::PacketCorrupt;
+        if (mp4 && (av_packet_get_side_data(&packet,AV_PKT_DATA_ENCRYPTION_INFO,nullptr)||
+                    av_packet_get_side_data(&packet,AV_PKT_DATA_ENCRYPTION_INIT_INFO,nullptr))) return DirectError::EncryptedMedia;
         const AVRational ns = {1, int(second)};
         DirectAccessUnit unit;
         unit.video = video;
@@ -328,6 +637,8 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
             if (stream.codecpar->codec_id != AV_CODEC_ID_H264) return DirectError::VideoCodec;
             if (video_index >= 0 && packet.stream_index != video_index) return DirectError::MultipleTracks;
             video_index = packet.stream_index;
+            if(mp4 && !demux.convert_video(stream)) return DirectError::H264AnnexB;
+            if(packet.size<=0 || size_t(packet.size)>max_packet_bytes) return DirectError::StreamLimit;
             const auto info = inspect_h264(packet.data, size_t(packet.size));
             if (!info.valid) return DirectError::H264AnnexB;
             if (info.width) {
@@ -387,8 +698,8 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
             if (stream.codecpar->codec_id != AV_CODEC_ID_AAC) return DirectError::AudioCodec;
             if (audio_index >= 0 && packet.stream_index != audio_index) return DirectError::MultipleTracks;
             audio_index = packet.stream_index;
-            const auto adts = adts_aac_lc(packet);
-            if (!adts.sample_rate) return DirectError::AacAdts;
+            const auto adts = mp4?mp4_aac_lc(*stream.codecpar):adts_aac_lc(packet);
+            if (!adts.sample_rate) return mp4?DirectError::Mp4Config:DirectError::AacAdts;
             if (segment.aac_sample_rate && (segment.aac_sample_rate != adts.sample_rate ||
                                             segment.aac_channels != adts.channels)) return DirectError::TrackChange;
             segment.aac_sample_rate = adts.sample_rate;
@@ -396,6 +707,7 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
             const AVRational sample_time = {1, adts.sample_rate};
             // MPEG-TS timestamps the PES. Splitting ADTS access units can leave
             // subsequent frames without a timestamp until the next PES anchor.
+            if(mp4 && packet.pts==AV_NOPTS_VALUE) return timestamp_error(false,"missing-pts");
             if (packet.pts != AV_NOPTS_VALUE) {
                 audio_pts_anchor = av_rescale_q(packet.pts, stream.time_base, ns);
                 audio_samples = 0;
@@ -406,7 +718,11 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
             last_audio_pts = unit.pts_ns;
             audio_samples += 1024;
             unit.duration_ns = av_rescale_q(1024, sample_time, ns);
-            if (!audio.decode_adts(packet.data, size_t(packet.size), unit.data))
+            const auto& par=*stream.codecpar;
+            const bool decoded=mp4?audio.decode_mp4_aac(packet.data,size_t(packet.size),par.extradata,
+                size_t(par.extradata_size),adts.sample_rate,adts.channels,unit.data):
+                audio.decode_adts(packet.data,size_t(packet.size),unit.data);
+            if (!decoded)
                 return DirectError::AacDecode;
             if (unit.data.empty()) {
                 // The first Mux ADTS packet carries encoder data and consumes
@@ -433,6 +749,7 @@ DirectError direct_demux_ts(const std::string& data, const std::atomic<bool>& ca
     }
     if (cancelled) return DirectError::FetchCancelled;
     if (result != AVERROR_EOF) return DirectError::DemuxRead;
+    if (mp4 && (video_index<0||audio_index<0)) return DirectError::Mp4Track;
     if (video_index < 0) return DirectError::MissingH264;
     if (!segment.video_packets) return segment.idr ? DirectError::H264Configuration : DirectError::H264Keyframe;
     if (audio_index < 0) return DirectError::MissingAac;

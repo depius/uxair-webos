@@ -21,21 +21,24 @@ constexpr unsigned preroll_packets[] = {60, 100};
 
 DirectError fetch_error(const HlsFetch& fetch) {
     if (fetch.cancelled) return DirectError::FetchCancelled;
+    if (fetch.range_rejected) return DirectError::RangeResponse;
     return fetch.limit_exceeded ? DirectError::StreamLimit : DirectError::FetchFailed;
 }
 
 void log_segment(const DirectDemuxedSegment& media, DirectError result, size_t number) {
-    std::fprintf(stderr, "[direct-hls] stage=segment-demux segment=%zu reason=%s container=%s probe-score=%d "
+    std::fprintf(stderr, "[direct-hls] stage=%s segment=%zu reason=%s container=%s probe-score=%d "
         "video-codec=%d audio-codec=%d h264-profile=%d pixel-format=%s geometry=%dx%d aac-rate=%d aac-channels=%d "
         "video-packets=%u audio-packets=%u idr=%d first-idr=%d sps-pps=%d first-video-au=%d first-pcm-bytes=%zu aac-without-pcm=%u "
-        "timestamps=%s timestamp-problem=%s pts-before-dts=%u tied-dts=%u inferred-first-dts=%u ffmpeg-timestamp-warnings=%u\n",
+        "timestamps=%s timestamp-problem=%s pts-before-dts=%u tied-dts=%u inferred-first-dts=%u ffmpeg-timestamp-warnings=%u tracks=%u\n",
+        media.container[0] == 'f' ? "fragment-demux" : "segment-demux",
         number, direct_error_name(result), media.container, media.probe_score, media.video_codec, media.audio_codec,
         media.h264_profile, media.pixel_format, media.width, media.height, media.aac_sample_rate, media.aac_channels,
         media.video_packets, media.audio_packets, int(media.idr), int(media.starts_with_idr), int(media.sps_pps),
         int(media.video_packets > 0), media.first_pcm_bytes, media.aac_without_pcm,
         result == DirectError::VideoTimestamp || result == DirectError::AudioTimestamp ? "invalid" :
             result == DirectError::None ? "valid" : "incomplete",
-        media.timestamp_problem, media.reordered, media.tied_dts, media.inferred_dts, media.ffmpeg_timestamp_warnings);
+        media.timestamp_problem, media.reordered, media.tied_dts, media.inferred_dts, media.ffmpeg_timestamp_warnings,
+        media.tracks);
 }
 
 bool fcup_enabled() {
@@ -113,9 +116,11 @@ void DirectBufferstream::download(DirectCommand play) {
             [](int64_t time, const DirectSegment& item) { return time < item.start_ns; });
         --segment;
         AudioDecoder audio;
-        int64_t origin = 0, previous_dts = 0;
+        int64_t origin = 0, previous_dts = 0, previous_audio_pts = 0;
         unsigned prepared = 0;
         int width = 0, height = 0, aac_rate = 0, aac_channels = 0;
+        unsigned loaded_map=0, loaded_period=0;
+        std::string init;
         for (; segment != playlist.segments.end(); ++segment) {
             {
                 std::unique_lock<std::mutex> lock(mutex_);
@@ -124,13 +129,36 @@ void DirectBufferstream::download(DirectCommand play) {
                 if (cancelled_) return;
             }
 
+            bool boundary=prepared&&segment->period!=loaded_period;
+            if (segment->init!=loaded_map) {
+                download_stage_=DirectStage::InitSegment;
+                const auto& map=playlist.maps[segment->init-1];
+                auto response=network_.fetch(map.url,1024*1024,false,map.range);
+                if(cancelled_) return;
+                const auto error=response.status!=200
+                    ? (response.range_rejected||response.limit_exceeded?fetch_error(response):DirectError::InitFetch)
+                    : response.data.empty()?DirectError::PlaylistInitSegment:DirectError::None;
+                if(prepared<3||error!=DirectError::None)
+                    fprintf(stderr,"[direct-hls] stage=init-segment generation=%llu map=%u bytes=%zu range=%d reason=%s\n",
+                            (unsigned long long)play.generation,segment->init,response.data.size(),
+                            int(map.range.length!=0),direct_error_name(error));
+                if(error!=DirectError::None){download_error_=error;return;}
+                boundary|=prepared&&init!=response.data;
+                init.swap(response.data);
+                loaded_map=segment->init;
+            }
+            loaded_period=segment->period;
+            if (boundary) {
+                audio.reset();
+                width=height=aac_rate=aac_channels=0;
+            }
             download_stage_ = DirectStage::SegmentFetch;
-            const auto response = network_.fetch(segment->url, 8 * 1024 * 1024);
+            const auto response = network_.fetch(segment->url, 8 * 1024 * 1024,false,segment->range);
             if (cancelled_) return;
             if (response.status != 200) { download_error_ = fetch_error(response); return; }
             download_stage_ = DirectStage::SegmentDemux;
             std::unique_ptr<Job> job(new Job);
-            const auto result = direct_demux_ts(response.data, cancelled_, audio, width, height, job->segment);
+            const auto result = direct_demux_segment(response.data,init,cancelled_,audio,width,height,job->segment);
             if (cancelled_) return;
             const auto& media = job->segment;
             if (prepared < 3 || result != DirectError::None)
@@ -155,10 +183,20 @@ void DirectBufferstream::download(DirectCommand play) {
                     download_error_ = DirectError::Discontinuity;
                     return;
                 }
+                if (!init.empty()) {
+                    const auto first_audio=std::find_if(media.packets.begin(),media.packets.end(),[](const DirectAccessUnit& packet){return !packet.video;});
+                    const auto audio_gap=first_audio->pts_ns-previous_audio_pts;
+                    if(audio_gap<=0||audio_gap>250000000) { download_error_=DirectError::AudioTimestamp;return; }
+                }
+            }
+            if (!init.empty()) {
+                const auto last_audio=std::find_if(media.packets.rbegin(),media.packets.rend(),[](const DirectAccessUnit& packet){return !packet.video;});
+                previous_audio_pts=last_audio->pts_ns;
             }
             previous_dts = media.last_video_dts_ns;
             job->position_ns = segment->start_ns + std::min(media.skipped_ns, segment->duration_ns);
             job->decoder_origin_ns = origin;
+            job->decoder_boundary=boundary;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 video_demuxed_ += media.video_packets;
@@ -410,6 +448,30 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
 
     // Take the last published batch even when the worker just reached EOF.
     const bool more_available = current_ || take_next();
+    if (opened_ && current_ && current_->decoder_boundary && presented_ && !paused_) {
+        const auto timeline_end=std::min(current_->position_ns-position_ns_,
+            std::max(tracks_[Video].buffered_until,tracks_[Audio].buffered_until));
+        if (clock_ns_+(buffering_?0:now-clock_at_)>=timeline_end) {
+            media_.close();
+#ifdef UXAIR_DIRECT_BUILD
+            if (!media_.direct_released()) {
+                fail(DirectError::CleanupFailed);
+                update_snapshot();
+                return status_;
+            }
+#endif
+            ++decoder_generation_;
+            opened_=presented_=buffering_=eos_=false;
+            tracks_={};
+            preroll_bytes_=0;
+            reported_frames_=1;
+            clock_at_=clock_ns_=preroll_at_=last_feed_at_=running_since_=eos_at_=next_progress_ns_=0;
+            opened_at_=now;
+            status_.state=DirectState::Loading;
+            fprintf(stderr,"[direct-session] stage=decoder-queued generation=%llu decoder=%llu reason=discontinuity\n",
+                    (unsigned long long)status_.generation,(unsigned long long)decoder_generation_);
+        }
+    }
     if (!opened_ && !more_available) status_.stage = download_stage_.load();
     if (!opened_ && more_available) {
         status_.stage = DirectStage::BufferstreamLoad;
@@ -420,6 +482,7 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
         media_.guard_direct_callbacks(direct_native_json_summary);
 #endif
         const auto& media = current_->segment;
+        current_->decoder_boundary=false;
         const auto video_span = media.last_video_dts_ns - media.first_video_dts_ns;
         const int fps = media.video_packets > 1 && video_span < 25000000LL * (media.video_packets - 1) ? 60 : 30;
         std::fprintf(stderr, "[direct-player] stage=create owner=ui generation=%llu decoder=%llu video=H264 max-fps=%d pcm-hz=44100 pcm-channels=2 pcm-format=S16LE\n",
@@ -450,7 +513,7 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
         }
     }
     if (status_.state == DirectState::Error) { update_snapshot(); return status_; }
-    if (opened_ && more_available && (!paused_ || !presented_)) feed_packets(now);
+    if (opened_ && more_available && !current_->decoder_boundary && (!paused_ || !presented_)) feed_packets(now);
     if (status_.state == DirectState::Error) { update_snapshot(); return status_; }
 
     if (opened_ && media_.ready && media_.playing && !presented_ &&

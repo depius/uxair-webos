@@ -178,6 +178,7 @@ c++ -std=c++11 -g -fsanitize=address,undefined -pthread -Isrc \
   $(pkg-config --libs libplist-2.0 libcurl libavformat libavcodec libavutil libswresample) -lcrypto \
   -o build/tests/direct-bufferstream-test
 timeout 110s python3 tests/direct_bufferstream_network_test.py
+timeout 90s python3 tests/direct_bufferstream_fmp4_test.py
 if [[ "${UXAIR_RUN_NATIVE_VIDEO_TEST:-0}" == 1 ]]; then
   timeout 150s python3 tests/direct_bufferstream_public_test.py
 fi

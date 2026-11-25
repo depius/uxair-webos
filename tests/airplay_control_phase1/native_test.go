@@ -154,6 +154,7 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 		readEvent(p, state)
 		if state == "loading" {
 			p.write(p.seal("HTTP/1.1 200 OK\r\nX-Apple-Ses"))
+			time.Sleep(75 * time.Millisecond)
 			p.write(p.seal("sion-ID: " + testSession + "\r\n\r\n"))
 		} else {
 			p.write(p.seal("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
@@ -238,6 +239,13 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	step("p")
 	readEvent(reversePeer, "playing")
 	reversePeer.write(reversePeer.seal("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nx"))
+	requireClosed(reversePeer)
+	reversePeer = makePeer()
+	reversePeer.upgrade()
+	writeQuery(reversePeer, reverse, 101)
+	readEvent(reversePeer, "playing")
+	ack := "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+	reversePeer.write(reversePeer.seal(ack + ack))
 	requireClosed(reversePeer)
 	reversePeer = makePeer()
 	reversePeer.upgrade()
@@ -346,7 +354,7 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 		"reason=proof-rejected", "reason=unsupported-pairing-format", "reason=unsupported-pairing-mode",
 		"reason=record-authentication", "reason=encrypted-http-framing",
 		"ack=accepted fragmented=1", "ack=rejected reason=body-not-empty",
-		"admitted=3 ", "reverse_upgrades=3", "encrypted_active=0",
+		"ack=rejected reason=no-event-outstanding", "admitted=3 ", "reverse_upgrades=4", "encrypted_active=0",
 	} {
 		if !strings.Contains(log, milestone) {
 			t.Errorf("missing native diagnostic %q", milestone)

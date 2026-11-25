@@ -32,6 +32,7 @@ def fixture(root, upstream, name):
         (directory / 'full-media.m3u8').write_text(manifest)
     lines = []
     segments = []
+    count = 7 if upstream == MUX else 2
     for line in manifest.splitlines():
         lines.append(line)
         if not line or line.startswith('#'):
@@ -41,9 +42,9 @@ def fixture(root, upstream, name):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(download(urljoin(urljoin(upstream, name), line), 8 * 1024 * 1024))
         segments.append(line)
-        if len(segments) == 2:
+        if len(segments) == count:
             break
-    assert len(segments) == 2
+    assert len(segments) == count
     (root / name).write_text('\n'.join(lines + ['#EXT-X-ENDLIST', '']))
     return segments
 
@@ -136,5 +137,5 @@ with tempfile.TemporaryDirectory(prefix='uxair-public-hls-') as folder:
     assert 'timestamp-problem=composition-offset' in checked.stdout
     assert 'stage=playlist-parse error=declared-discontinuity' in checked.stdout
     assert 'stage=segment-timeline error=discontinuity' in checked.stdout
-    assert 'stage=playlist-parse error=init-segment-required' in checked.stdout
+    assert 'stage=segment-demux error=invalid-fmp4-boxes' in checked.stdout
     assert 'stage=segment-demux error=unsupported-container' in checked.stdout

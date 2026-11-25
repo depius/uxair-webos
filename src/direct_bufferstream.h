@@ -26,6 +26,7 @@ private:
         DirectDemuxedSegment segment;
         int64_t position_ns = 0;
         int64_t decoder_origin_ns = 0;
+        bool decoder_boundary = false;
     };
     void download(DirectCommand play);
     bool take_next();
