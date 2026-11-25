@@ -21,10 +21,11 @@ bool reordered_pts = false, allow_reordering = false;
 bool pcm_signal = false;
 int expected_width = 1280, expected_height = 720;
 int64_t last_video_pts = -1, last_audio_pts = -1;
-enum class Startup { AfterPreroll, CallbackFirst, NoLoadCallback, NoPlaying, NoFrame, RejectVideo, NoFeed };
+enum class Startup { AfterPreroll, CallbackFirst, NoLoadCallback, NoPlaying, NoFrame, RejectVideo, NoFeed, PauseReplay };
 Startup mode = Startup::AfterPreroll;
 int64_t mock_opened_at = 0;
 bool saw_early_video = false, saw_early_audio = false;
+bool replay_resumed = false;
 }
 
 // Mock the unavailable television URI player. The fallback uses real HLS,
@@ -63,6 +64,7 @@ bool Media::open(const char*, int width, int height, bool audio, int rate, int, 
     play_requested_ = false;
     play_attempts_ = 0;
     mock_opened_at = now;
+    replay_resumed = false;
     saw_early_video = saw_early_audio = false;
     return true;
 }
@@ -73,6 +75,9 @@ FeedResult Media::feed(const void* bytes, size_t size, int64_t pts, bool video) 
     if (mode == Startup::CallbackFirst) assert(ready && play_requested_);
     if (mode == Startup::RejectVideo && video) return FeedResult::Error;
     if (mode == Startup::NoFeed) return FeedResult::Retry;
+    if (mode == Startup::PauseReplay && !replay_resumed &&
+        (video ? feed_video_accepted.load() >= 12 : feed_audio_accepted.load() >= 11))
+        return FeedResult::Retry;
     if (inject_retry) {
         inject_retry = false;
         ++retries;
@@ -111,6 +116,8 @@ void Media::tick() {
     if (!decoder_open) return;
     const auto age = now - mock_opened_at;
     const bool preroll = feed_video_accepted && feed_audio_accepted;
+    if (mode == Startup::PauseReplay && !replay_resumed &&
+        (feed_video_accepted < 12 || feed_audio_accepted < 11)) return;
     if (!ready && mode != Startup::NoLoadCallback &&
         ((mode == Startup::CallbackFirst && age >= 100000000) || (preroll && age >= 400000000))) ready = true;
     if (ready && !play_requested_) {
@@ -126,7 +133,12 @@ void Media::tick() {
     }
 }
 void Media::eos() { ++ends; ended = true; }
-void Media::pause(bool paused) { if (paused) ++pauses; }
+void Media::pause(bool paused) {
+    if (paused) {
+        ++pauses;
+        if (mode == Startup::PauseReplay) assert(feed_video_accepted == 12 && feed_audio_accepted == 11);
+    } else if (mode == Startup::PauseReplay) replay_resumed = true;
+}
 void Media::close() { if (decoder_open) { ++closes; decoder_open = false; } ready = playing = play_requested_ = false; }
 
 static void public_samples(const std::string& base) {
@@ -170,6 +182,42 @@ static void public_samples(const std::string& base) {
         assert(false && "public HLS pipeline did not reach a terminal outcome");
     };
     run("/apple/master.m3u8", 960, 720, DirectError::None);
+    // Reproduce the B7's pause at the first frame with both TS segments in
+    // flight and the exact accepted packet counts from the hardware trace.
+    mode = Startup::PauseReplay;
+    expected_width = 640;
+    expected_height = 480;
+    DirectCommand play;
+    play.kind = DirectCommandKind::Play;
+    play.uri = base + "/apple/gear2/prog_index.m3u8";
+    assert(player.open(play, now, nullptr));
+    DirectCommand rate;
+    rate.kind = DirectCommandKind::Pause;
+    assert(player.control(rate, now));
+    DirectSnapshot frozen;
+    for (unsigned i = 0; i < 400; ++i) {
+        frozen = player.tick(now += 20000000);
+        assert(frozen.state != DirectState::Error);
+        if (frozen.state == DirectState::Paused) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    }
+    assert(frozen.state == DirectState::Paused && frozen.frame_observed && frozen.audio_fed && frozen.buffer_bytes);
+    const auto after_pause = player.tick(now += 12000000000LL);
+    assert(after_pause.state == DirectState::Paused && after_pause.position == frozen.position);
+    rate.kind = DirectCommandKind::Resume;
+    assert(player.control(rate, now));
+    auto resumed = player.tick(now += 8000000);
+    assert(resumed.state != DirectState::Error && "first tick after long pause must not reuse the old frame deadline");
+    const auto playback_opens = opens;
+    for (unsigned i = 0; i < 1400 && resumed.state != DirectState::Ended; ++i) {
+        resumed = player.tick(now += 20000000);
+        assert(resumed.state != DirectState::Error && opens == playback_opens);
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    }
+    assert(resumed.state == DirectState::Ended && resumed.position >= 19.8 && reordered_pts && pcm_signal);
+    assert(player.close());
+    puts("PASS: 640x480 resumes after a long pause at 12 video and 11 audio feeds, with no decoder reopen");
+    mode = Startup::AfterPreroll;
     run("/apple/gear2/prog_index.m3u8", 640, 480, DirectError::None);
     run("/mux/master.m3u8", 1280, 720, DirectError::None);
     run("/apple/bad-timestamp.m3u8", 640, 480, DirectError::VideoTimestamp);
