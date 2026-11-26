@@ -14,6 +14,7 @@
 #include <chrono>
 #include <iterator>
 #include <cerrno>
+#include <cctype>
 static const size_t manifest_limit=262144,segment_limit=8*1024*1024;
 void HlsRelay::trace(const char *stage,int code,long http){
     if(diagnostic_records_.load()<64&&diagnostic_records_.fetch_add(1)<64)
@@ -105,10 +106,45 @@ static curl_socket_t open_socket(void *ctx,curlsocktype purpose,struct curl_sock
 static int progress(void *ctx,curl_off_t,curl_off_t,curl_off_t,curl_off_t){return !static_cast<std::atomic<bool>*>(ctx)->load();}
 std::string HlsRelay::resolve(const std::string& base,const std::string& relative){
     CURLU *u=curl_url();if(!u)return {};std::string out;
-    if(curl_url_set(u,CURLUPART_URL,base.c_str(),0)==CURLUE_OK&&curl_url_set(u,CURLUPART_URL,relative.c_str(),0)==CURLUE_OK){char *p=nullptr;if(curl_url_get(u,CURLUPART_URL,&p,0)==CURLUE_OK){out=p;curl_free(p);}}
+    const unsigned flags=direct_uri_valid(relative)?CURLU_PATH_AS_IS:0;
+    if(curl_url_set(u,CURLUPART_URL,base.c_str(),CURLU_PATH_AS_IS)==CURLUE_OK&&curl_url_set(u,CURLUPART_URL,relative.c_str(),flags)==CURLUE_OK){char *p=nullptr;if(curl_url_get(u,CURLUPART_URL,&p,0)==CURLUE_OK){out=p;curl_free(p);}}
     curl_url_cleanup(u);return direct_uri_valid(out)?out:std::string();
 }
-HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest,HlsRange range){
+
+static std::string http_origin(const std::string& uri) {
+    auto* url=curl_url();
+    if(!url) return {};
+    char *scheme=nullptr,*host=nullptr,*port=nullptr;
+    std::string origin;
+    if(curl_url_set(url,CURLUPART_URL,uri.c_str(),0)==CURLUE_OK &&
+       curl_url_get(url,CURLUPART_SCHEME,&scheme,0)==CURLUE_OK &&
+       curl_url_get(url,CURLUPART_HOST,&host,0)==CURLUE_OK &&
+       curl_url_get(url,CURLUPART_PORT,&port,CURLU_DEFAULT_PORT)==CURLUE_OK) {
+        origin=std::string(scheme)+"://"+host+":"+port;
+        std::transform(origin.begin(),origin.end(),origin.begin(),[](unsigned char c){return char(std::tolower(c));});
+    }
+    curl_free(scheme);curl_free(host);curl_free(port);curl_url_cleanup(url);
+    return origin;
+}
+
+void HlsRelay::set_request_origin(const std::string& uri,uint64_t generation) {
+    // Called before starting this run's workers. Share only cookies issued by
+    // the original media origin. A redirect cannot expand their HTTP origin.
+    request_origin_=http_origin(uri);
+    generation_=generation;
+    cookie_share_=curl_share_init();
+    if(!cookie_share_) return;
+    curl_share_setopt(cookie_share_,CURLSHOPT_LOCKFUNC,+[](CURL*,curl_lock_data data,curl_lock_access,void* mutex) {
+        if(data==CURL_LOCK_DATA_COOKIE) static_cast<std::mutex*>(mutex)->lock();
+    });
+    curl_share_setopt(cookie_share_,CURLSHOPT_UNLOCKFUNC,+[](CURL*,curl_lock_data data,void* mutex) {
+        if(data==CURL_LOCK_DATA_COOKIE) static_cast<std::mutex*>(mutex)->unlock();
+    });
+    curl_share_setopt(cookie_share_,CURLSHOPT_USERDATA,&cookie_mutex_);
+    curl_share_setopt(cookie_share_,CURLSHOPT_SHARE,CURL_LOCK_DATA_COOKIE);
+}
+
+HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest,HlsRange range,const char* role){
     HlsFetch result;std::string current=uri;const auto began=std::chrono::steady_clock::now();
     if (range.length && (range.length>std::min(limit,segment_limit)||range.offset>uint64_t(INT64_MAX)-range.length)) {
         result.range_rejected=true; return result;
@@ -118,6 +154,11 @@ HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest,HlsRa
         if(remaining<=0){result.status=504;break;}
         if(!direct_uri_valid(current)){trace("invalid-url",0);break;}
         CURL *curl=curl_easy_init();if(!curl)break;WriteBuffer buffer;buffer.limit=std::min(limit,segment_limit);
+        const bool same_origin=!request_origin_.empty() && http_origin(current)==request_origin_;
+        if(same_origin && cookie_share_) {
+            curl_easy_setopt(curl,CURLOPT_SHARE,cookie_share_);
+            curl_easy_setopt(curl,CURLOPT_COOKIEFILE,"");
+        }
         std::string request_range;
         if (range.length) {
             buffer.limit=size_t(range.length);
@@ -128,6 +169,7 @@ HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest,HlsRa
             curl_easy_setopt(curl,CURLOPT_HEADERDATA,&buffer);
         }
         curl_easy_setopt(curl,CURLOPT_URL,current.c_str());curl_easy_setopt(curl,CURLOPT_PROTOCOLS_STR,"http,https");
+        curl_easy_setopt(curl,CURLOPT_PATH_AS_IS,1L);
         curl_easy_setopt(curl,CURLOPT_PROXY,"");curl_easy_setopt(curl,CURLOPT_NETRC,CURL_NETRC_IGNORED);
         curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,0L);curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT_MS,3000L);curl_easy_setopt(curl,CURLOPT_TIMEOUT_MS,remaining);
         curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);curl_easy_setopt(curl,CURLOPT_IPRESOLVE,CURL_IPRESOLVE_V4);
@@ -141,9 +183,25 @@ HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest,HlsRa
         curl_easy_setopt(curl,CURLOPT_NOPROGRESS,0L);curl_easy_setopt(curl,CURLOPT_XFERINFOFUNCTION,progress);curl_easy_setopt(curl,CURLOPT_XFERINFODATA,&running_);
         curl_easy_setopt(curl,CURLOPT_USERAGENT,"UxAir/1.4");
         auto code=curl_easy_perform(curl);long status=0;curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);
+        result.http_status=int(status);
         char *location=nullptr,*type=nullptr;curl_easy_getinfo(curl,CURLINFO_REDIRECT_URL,&location);curl_easy_getinfo(curl,CURLINFO_CONTENT_TYPE,&type);
         std::string next=location?location:"";result.type=type?type:"application/octet-stream";
+        struct curl_slist* cookies=nullptr;
+        if(same_origin&&cookie_share_) curl_easy_getinfo(curl,CURLINFO_COOKIELIST,&cookies);
+        unsigned stored=0;
+        for(auto* item=cookies;item&&stored<=64;item=item->next) ++stored;
+        if(stored>64) curl_easy_setopt(curl,CURLOPT_COOKIELIST,"ALL");
+        const bool auth=status==401||status==403;
+        if((requests.load()<24||auth||code!=CURLE_OK) && diagnostic_records_.load()<64)
+            fprintf(stderr,"[hls-fetch] generation=%llu request=%s status=%ld code=%d redirects=%d origin=%s query=%d "
+                    "cookie-store=%d supplied-headers=0 cancelled=%d retry=%s\n",
+                    (unsigned long long)generation_,role?role:manifest?"manifest":"segment",status,int(code),redirect,
+                    request_origin_.empty()?"unset":same_origin?"same":"cross",
+                    int(current.find('?')!=std::string::npos),cookies!=nullptr,int(!running_.load()),
+                    auth?"denied":"none");
+        curl_slist_free_all(cookies);
         curl_easy_cleanup(curl);++requests;trace(manifest?"manifest-fetch":"segment-fetch",int(code),status);
+        if(auth){result.status=int(status);break;}
         if(code!=CURLE_OK){
             result.limit_exceeded=buffer.exceeded||code==CURLE_FILESIZE_EXCEEDED;
             result.range_rejected=range.length&&status!=0&&(status!=206||!buffer.range_match||buffer.other_encoding||buffer.data.size()!=range.length);
@@ -160,7 +218,7 @@ HlsFetch HlsRelay::fetch(const std::string& uri,size_t limit,bool manifest,HlsRa
         if(range.length && (status!=206||!buffer.range_match||buffer.other_encoding||buffer.data.size()!=range.length)){
             result.range_rejected=true;break;
         }
-        if(!range.length&&status!=200){result.status=status==404||status==403?int(status):502;break;}
+        if(!range.length&&status!=200){result.status=status==404?404:502;break;}
         result.status=200;result.data.swap(buffer.data);result.url=current;bytes+=result.data.size();return result;
     }
     if(sender_manifest&&manifest&&running_&&(result.status==403||result.status==404)){auto playlist=sender_manifest(uri);if(!playlist.empty()&&playlist.size()<=manifest_limit){result.status=200;result.data=playlist;result.url=uri;result.type="application/vnd.apple.mpegurl";return result;}}
@@ -314,6 +372,8 @@ void HlsRelay::stop(){
     int fd=listener_.load();if(fd>=0)shutdown(fd,SHUT_RDWR);
     {std::lock_guard<std::mutex> lock(clients_mutex_);for(int client:clients_)shutdown(client,SHUT_RDWR);}
     for(auto& worker:workers_)if(worker.joinable())worker.join();workers_.clear();
+    if(cookie_share_) { curl_share_cleanup(cookie_share_);cookie_share_=nullptr; }
+    request_origin_.clear();generation_=0;
     fd=listener_.exchange(-1);if(fd>=0)close(fd);
     if(active)fprintf(stderr,"[hls-relay] stage=stopped native_requests=%llu upstream_fetches=%llu bytes=%llu failures=%llu\n",
         (unsigned long long)incoming_requests.load(),(unsigned long long)requests.load(),(unsigned long long)bytes.load(),(unsigned long long)failures.load());

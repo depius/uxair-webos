@@ -464,7 +464,7 @@ static int uxair_dispatch_direct(raop_conn_t *conn, http_request_t *request,
     const char *type = "text/parameters";
     const char *data = http_request_get_data(request, &length);
     status = uxair_direct_request(raop->callbacks.cls, owner, method, http_request_get_url(request),
-        http_request_get_header(request, "Content-Type"), data, length, &output, &output_length, &type, reason, NULL, 0);
+        http_request_get_header(request, "Content-Type"), data, length, &output, &output_length, &type, reason, NULL, 0, conn->wire_id);
     *result = uxair_response(protocol, cseq, status);
     if (*result) {
         http_response_add_header(*result, "Content-Type", type);

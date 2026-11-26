@@ -32,7 +32,8 @@ enum class DirectError { None, Busy, RelayStart, Payload, AcbCreate, AcbInitiali
     MissingH264, MissingAac, VideoCodec, AudioCodec, MultipleTracks, H264AnnexB, H264Keyframe,
     H264Configuration, H264Format, AacAdts, AacDecode, VideoTimestamp, AudioTimestamp, PacketCorrupt,
     TrackChange, DownloadWorker, FetchCancelled, AacNoPcm, StartupFetchTimeout, InitialFeedTimeout, FirstFrameTimeout,
-    InitFetch, Mp4Boxes, Mp4Track, Mp4Config, SeparateAudio, EncryptedMedia, RangeResponse };
+    InitFetch, Mp4Boxes, Mp4Track, Mp4Config, SeparateAudio, EncryptedMedia, RangeResponse,
+    HttpUnauthorized, HttpForbidden, FetchTimeout, HevcProfile, HevcConfiguration };
 const char *direct_stage_name(DirectStage);
 const char *direct_error_name(DirectError);
 struct DirectSnapshot {
@@ -41,6 +42,13 @@ struct DirectSnapshot {
     DirectBackend backend=DirectBackend::None;
     DirectError fallback_reason=DirectError::None;
     bool seekable=false, backend_loaded=false, frame_observed=false, audio_fed=false, natural_end=false;
+    bool ready_to_play=false, backend_running=false;
+    double loaded_start=0, loaded_end=0;
+    uint64_t decoder_generation=0;
+    int64_t frame_age_ms=-1, feed_age_ms=-1, active_ms=0;
+    const char *codec="unknown", *container="unknown";
+    int upstream_http=0;
+    DirectOrigin stop_origin=DirectOrigin::None;
     uint64_t media_gets=0,buffer_bytes=0;
     uint64_t callbacks=0,relay_requests=0,upstream_fetches=0,downloaded_bytes=0,relay_failures=0;
     int last_callback=-1;int64_t last_callback_value=0;
@@ -70,7 +78,9 @@ class DirectSession {
     uint64_t generation_=0;
     int64_t handoff_until_ms_=0;
     bool stop_queued_=false;
-    unsigned lifecycle_records_=0;
+    DirectOrigin pending_stop_origin_=DirectOrigin::None;
+    unsigned lifecycle_records_=0, property_records_=0, control_connection_=0;
+    bool reverse_failed_=false, terminal_reported_=true, initial_paused_=false;
     unsigned backend_attempts_=0, backend_loads_=0, backend_failures_=0, backend_cancellations_=0, video_starts_=0, audio_starts_=0;
     DirectBackend pending_backend_=DirectBackend::None;
     bool frame_reported_=false, audio_reported_=false;
@@ -78,6 +88,7 @@ class DirectSession {
     void backend_outcome_locked(BackendOutcome outcome);
     void event_locked(DirectState state);
     void stop_locked(DirectOrigin origin);
+    void terminal_locked(const DirectSnapshot& status, DirectOrigin origin);
 public:
     ~DirectSession();
     bool bind_reverse(const std::string&,int fd,uintptr_t token);
@@ -85,11 +96,11 @@ public:
     int take_encrypted_event(uintptr_t token,std::string& body,uint64_t& generation);
     void cancel_fetch();
     bool check_timeout(int64_t now_ms);
-    void connection_lost(uintptr_t token);
+    void connection_lost(uintptr_t token,bool reverse_failure=false);
     std::string sender_manifest(const std::string& uri);
     DirectReply request(const std::string& owner,const std::string& method,const std::string& target,
                         const std::string& type,const std::string& body,bool busy=false,
-                        const std::string& controller={},uintptr_t token=0);
+                        const std::string& controller={},uintptr_t token=0,unsigned connection=0);
     bool take(DirectCommand& command);
     bool is_current(uint64_t generation);
     bool publish(DirectSnapshot snapshot);

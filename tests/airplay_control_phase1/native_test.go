@@ -237,6 +237,10 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	other.socket.Close()
 	writeQuery(a, "POST /scrub?position=1.5 HTTP/1.1\r\n\r\n", 200)
 	step("p")
+	if body := writeQuery(a, query, 200); !bytes.Contains(body, []byte("<key>loadedTimeRanges</key><array><dict>")) ||
+		!bytes.Contains(body, []byte("<key>rate</key><real>1</real>")) {
+		t.Fatal("native playback state omitted the ready backend rate or accepted range")
+	}
 	readEvent(reversePeer, "playing")
 	reversePeer.write(reversePeer.seal("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nx"))
 	requireClosed(reversePeer)
@@ -261,6 +265,10 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	writeQuery(a, "POST /rate?value=0 HTTP/1.1\r\n\r\n", 200)
 	step("a")
 	event(reversePeer, "paused")
+	if body := writeQuery(a, query, 200); !bytes.Contains(body, []byte("<key>rate</key><real>0</real>")) ||
+		!bytes.Contains(body, []byte("<key>readyToPlay</key><true/>")) {
+		t.Fatal("native playback state lost paused readiness")
+	}
 	writeQuery(a, "POST /rate?value=1 HTTP/1.1\r\n\r\n", 200)
 	step("r")
 	event(reversePeer, "playing")
@@ -295,6 +303,9 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 		return fmt.Sprintf("POST /action HTTP/1.1\r\nContent-Type: text/x-apple-plist+xml\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
 	}
 	writeQuery(a, remove("phase3-test-item"), 409)
+	writeQuery(a, "POST /rate?value=0 HTTP/1.1\r\n\r\n", 200)
+	step("a")
+	event(reversePeer, "paused")
 	writeQuery(a, remove("phase3-next-item"), 200)
 	step("m")
 	event(reversePeer, "stopped")
@@ -386,6 +397,7 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 		"ack=rejected reason=no-event-outstanding", "ack=rejected reason=trailing-data",
 		"admitted=4 ", "reverse_upgrades=4", "encrypted_active=0",
 		"reason=stale-play-connection", "stage=replace-requested", "outstanding=0",
+		"stop-class=sender-remove", "action=playlistRemove status=409", "property=isInterestedInDateRange status=200",
 	} {
 		if !strings.Contains(log, milestone) {
 			t.Errorf("missing native diagnostic %q", milestone)

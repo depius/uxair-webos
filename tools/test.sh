@@ -174,7 +174,7 @@ timeout 15s python3 tests/native_timeout_test.py
 c++ -std=c++11 -g -fsanitize=address,undefined -pthread -DUXAIR_DIRECT_BUILD -Isrc \
   $(pkg-config --cflags libplist-2.0 libcurl libavformat libavcodec libavutil libswresample) \
   tests/direct_bufferstream_test.cpp src/direct_playback.cpp src/direct_native_diag.cpp src/direct_bufferstream.cpp src/direct_hls.cpp \
-  src/direct_video.cpp src/hls_relay.cpp src/audio.cpp src/h264.cpp \
+  src/direct_video.cpp src/hls_relay.cpp src/audio.cpp src/h264.cpp src/hevc_stream.cpp src/hevc_sample.cpp \
   $(pkg-config --libs libplist-2.0 libcurl libavformat libavcodec libavutil libswresample) -lcrypto \
   -o build/tests/direct-bufferstream-test
 timeout 110s python3 tests/direct_bufferstream_network_test.py

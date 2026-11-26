@@ -7,7 +7,9 @@ struct HevcFrameInfo {
     bool waiting_configuration=false, configuration_complete=false;
     bool valid=false, keyframe=false, configuration_changed=false, has_aud=false;
     bool has_vps=false, has_sps=false, has_pps=false;
+    bool parameter_sets_updated=false;
     int width=0, height=0, profile=0, bit_depth=0;
+    int vcl_type=-1;
 };
 
 // UxPlay delivers one Annex B access unit per mirror callback. Parameter sets

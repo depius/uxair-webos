@@ -1,6 +1,7 @@
 #include "direct_playback.h"
 #include "audio.h"
 #include "h264.h"
+#include "hevc_stream.h"
 
 #include <algorithm>
 #include <cassert>
@@ -20,6 +21,8 @@ bool inject_retry = true;
 bool reordered_pts = false, allow_reordering = false;
 bool pcm_signal = false;
 int expected_width = 1280, expected_height = 720;
+MirrorCodec expected_codec = MirrorCodec::H264;
+HevcStream hevc_feed;
 int64_t last_video_pts = -1, last_audio_pts = -1;
 enum class Startup { AfterPreroll, CallbackFirst, NoLoadCallback, NoPlaying, NoFrame, RejectVideo, NoFeed, PauseReplay };
 Startup mode = Startup::AfterPreroll;
@@ -55,7 +58,8 @@ Media::~Media() { close(); }
 
 bool Media::open(const char*, int width, int height, bool audio, int rate, int, int, int, MirrorCodec codec, int, bool) {
     assert(!native_open && !decoder_open && width == expected_width && height == expected_height &&
-           audio && rate == 44100 && codec == MirrorCodec::H264);
+           audio && rate == 44100 && codec == expected_codec);
+    hevc_feed.reset();
     decoder_open = true;
     ++opens;
     last_video_pts = last_audio_pts = -1;
@@ -90,10 +94,16 @@ FeedResult Media::feed(const void* bytes, size_t size, int64_t pts, bool video) 
     }
     if (video) {
         saw_early_video |= !ready;
-        const auto info = inspect_h264(static_cast<const uint8_t*>(bytes), size);
-        assert(info.valid && info.picture);
-        if (!feed_video_accepted)
-            assert(info.keyframe && info.width == expected_width && info.pps && !info.configuration.empty());
+        if(expected_codec==MirrorCodec::ExperimentalHevc) {
+            const auto info=hevc_feed.inspect(static_cast<const uint8_t*>(bytes),size);
+            assert(supported_hevc_mirror_profile(info) && info.width==expected_width && info.height==expected_height);
+            if(!feed_video_accepted) assert(info.keyframe && info.has_aud && info.has_vps && info.has_sps && info.has_pps);
+        } else {
+            const auto info = inspect_h264(static_cast<const uint8_t*>(bytes), size);
+            assert(info.valid && info.picture);
+            if (!feed_video_accepted)
+                assert(info.keyframe && info.width == expected_width && info.pps && !info.configuration.empty());
+        }
         if (pts <= last_video_pts) {
             assert(allow_reordering);
             reordered_pts = true;
@@ -265,7 +275,8 @@ static void replacement_samples(const std::string& base) {
     };
     const std::string a = "https://one.example/clip/media.m3u8", b = "https://two.example/silent/media.m3u8";
     const std::string b_ts = "https://two.example/silent-ts/media.m3u8";
-    const auto start = [&](const std::string& url, int width, int height, double position = 0, bool paused = false) {
+    const auto start = [&](const std::string& url, int width, int height, double position = 0, bool paused = false,
+                           MirrorCodec codec = MirrorCodec::H264) {
         const auto previous = playback.snapshot();
         DirectCommand command;
         assert(session.take(command) && command.kind==DirectCommandKind::Play && command.uri==url &&
@@ -276,6 +287,7 @@ static void replacement_samples(const std::string& base) {
         command.uri=base+url.substr(url.find('/',8));
         expected_width=width;
         expected_height=height;
+        expected_codec=codec;
         assert(playback.open(command,now,session));
         if (previous.generation && previous.generation!=command.generation)
             assert(!session.publish(previous));
@@ -370,6 +382,28 @@ static void replacement_samples(const std::string& base) {
     control("/scrub?position=4.6");
     assert(wait_for(DirectState::Playing,4.1).frame_observed && opens==before+1);
     assert(playback.close() && opens==closes);
+    const std::string alignment="https://one.example/startup-align.m3u8";
+    assert(play(alignment,"retained-fetch").queued);
+    start(alignment,640,480);
+    const auto aligned_opens=opens;
+    control("/scrub?position=4.5");
+    const auto aligned=wait_for(DirectState::Playing,4.1);
+    assert(aligned.frame_observed && aligned.backend_running && aligned.ready_to_play &&
+           aligned.loaded_end>aligned.position && aligned.upstream_fetches>=4 && opens==aligned_opens+1);
+    assert(playback.close() && opens==closes);
+    const std::string hevc="https://two.example/hevc/media.m3u8";
+    assert(play(a,"avc").queued);
+    start(a,640,480);
+    assert(wait_for(DirectState::Playing,.1).frame_observed);
+    for(const char* item:{"hevc-a","hevc-b"}) {
+        assert(play(hevc,item).queued);
+        start(hevc,640,480,0,false,MirrorCodec::ExperimentalHevc);
+        assert(wait_for(DirectState::Playing,.25).frame_observed);
+    }
+    assert(play(a,"avc-again").queued);
+    start(a,640,480);
+    assert(wait_for(DirectState::Playing,.1).frame_observed);
+    assert(playback.close() && opens==closes);
     puts("PASS: live media replacement, 1080p, paused startup, rapid switching, in-flight fetch, seek and control handoff");
 }
 
@@ -440,6 +474,18 @@ static void fmp4_samples(const std::string& base) {
     run("/bad-range-response.m3u8", DirectError::RangeResponse, 0);
     run("/ignored-range.m3u8", DirectError::RangeResponse, 0);
     run("/oversized.m3u8", DirectError::StreamLimit, 0);
+    run("/cookie-entry?sig=PRIVATE", DirectError::None, 1);
+    run("/cross-entry?sig=PRIVATE", DirectError::None, 1);
+    run("/cookie-target?sig=PRIVATE", DirectError::HttpForbidden, 0);
+    run("/expired?sig=PRIVATE", DirectError::HttpForbidden, 0);
+    run("/unauthorized", DirectError::HttpUnauthorized, 0);
+    run("/av1/media.m3u8", DirectError::VideoCodec, 0);
+    run("/main10/media.m3u8", DirectError::HevcProfile, 0);
+    run("/codec-master.m3u8", DirectError::None, 1);
+    expected_codec=MirrorCodec::ExperimentalHevc;
+    run("/fallback-master.m3u8", DirectError::None, 1);
+    run("/hevc/media.m3u8", DirectError::None, 2, true);
+    expected_codec=MirrorCodec::H264;
     puts("PASS: fMP4 H.264/AAC-LC, B-frames, byte ranges, pause, seek, discontinuity, map change and rejection paths");
     replacement_samples(base);
 }

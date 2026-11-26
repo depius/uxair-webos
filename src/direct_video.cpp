@@ -26,7 +26,8 @@ const char *direct_error_name(DirectError e) {
         "missing-h264","missing-aac","unsupported-video-codec","unsupported-audio-codec","multiple-av-tracks","invalid-h264-annex-b","missing-idr",
         "missing-sps-pps","unsupported-h264-format","unsupported-aac-adts","aac-decode","video-timestamp","audio-timestamp","corrupt-packet",
         "track-change","download-worker","fetch-cancelled","missing-aac-pcm","startup-fetch-timeout","initial-feed-timeout","first-frame-timeout",
-        "init-fetch","invalid-fmp4-boxes","unsupported-fmp4-tracks","invalid-fmp4-codec-config","separate-audio-rendition","encrypted-media","range-response"};
+        "init-fetch","invalid-fmp4-boxes","unsupported-fmp4-tracks","invalid-fmp4-codec-config","separate-audio-rendition","encrypted-media","range-response",
+        "http-401","http-403","fetch-timeout","unsupported-hevc-profile","invalid-hevc-configuration"};
     const unsigned n=unsigned(e);return n<sizeof(names)/sizeof(*names)?names[n]:"unknown";
 }
 const char *direct_backend_name(DirectBackend backend) {
@@ -260,7 +261,7 @@ static DirectReply set_property(const char *path, const std::string& body) {
 }
 
 DirectReply DirectSession::request(const std::string& owner,const std::string& method,const std::string& target,
-        const std::string& type,const std::string& body,bool busy,const std::string& controller,uintptr_t token) {
+        const std::string& type,const std::string& body,bool busy,const std::string& controller,uintptr_t token,unsigned connection) {
     DirectReply reply;
     if(owner.empty()||owner.size()>128||owner.find_first_of("\r\n")!=std::string::npos||target.size()>256||body.size()>524288)return reply;
     std::lock_guard<std::mutex> lock(mutex_);
@@ -307,18 +308,33 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
                 const auto* id=uuid?plist_get_string_ptr(uuid,&length):nullptr;
                 const bool matches=play_connection_ && id && length && length==media_uuid_.size() &&
                     !memcmp(id,media_uuid_.data(),size_t(length));
+                if(property_records_++<128)
+                    fprintf(stderr,"[direct-control] generation=%llu state=%s action=playlistRemove status=%d transition=%s\n",
+                            (unsigned long long)generation_,direct_state_name(snapshot_.state),matches?200:409,matches?"stop":"none");
                 if(!matches){reply.status=409;reply.reason="media-item-conflict";plist_free(root);return reply;}
             }
             command.origin=DirectOrigin::SenderRemove;
         } else {
             reply.status=501;
             reply.reason=kind=="playlistInsert"?"playlist-insert-unsupported":"unsupported-action";
+            if(command.encrypted&&property_records_++<128)
+                fprintf(stderr,"[direct-control] generation=%llu state=%s action=%s status=501 transition=none\n",
+                        (unsigned long long)generation_,direct_state_name(snapshot_.state),
+                        kind=="playlistInsert"?"playlistInsert":"unknown");
             plist_free(root);
             return reply;
         }
         plist_free(root);
     } else if(method=="PUT" && uxair_control_path(target.c_str(),"/setProperty")) {
-        return set_property(target.c_str(),body);
+        auto result=set_property(target.c_str(),body);
+        if(command.encrypted&&property_records_++<128) {
+            const auto query=target.find('?');
+            const auto name=query==std::string::npos?nullptr:uxair_known_property(target.c_str()+query+1);
+            fprintf(stderr,"[direct-control] generation=%llu state=%s property=%s status=%d reason=%s transition=none\n",
+                    (unsigned long long)generation_,direct_state_name(snapshot_.state),name?name:"unknown",
+                    result.status,result.reason?result.reason:"none");
+        }
+        return result;
     } else if((method=="GET"||method=="POST"||method=="PUT")&&(target.compare(0,13,"/getProperty?")==0||target.compare(0,13,"/setProperty?")==0)) {
         const auto key=target.substr(13);
         if((method=="GET"||method=="POST")&&target.compare(0,13,"/getProperty?")==0&&(key=="playbackPosition"||key=="duration"||key=="rate")) {
@@ -354,10 +370,11 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
             if(free==retired_play_connections_.end()){reply.status=503;reply.reason="play-handoff-limit";return reply;}
             *free=play_connection_;
         }
-        if(command.encrypted) play_connection_=token;
         handoff_until_ms_=0;
         const bool duplicate=replacing&&!stop_queued_&&command.encrypted&&!item.empty()&&item==media_uuid_;
         if(duplicate) {
+            play_connection_=token;
+            control_connection_=connection;
             reply.status=200;reply.reason="duplicate-play";
             if (lifecycle_records_++<64)
                 fprintf(stderr,"[direct-session] stage=media-identity generation=%llu result=duplicate\n",
@@ -366,6 +383,7 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         }
         if(!command.encrypted&&!commands_.empty()){reply.status=503;return reply;}
         if(replacing) {
+            terminal_locked(snapshot_,stop_queued_?pending_stop_origin_:DirectOrigin::Replacement);
             backend_outcome_locked(BackendOutcome::Cancelled);
             events_.clear(); // Keep only an already transmitted event on the reverse socket.
             if (lifecycle_records_++<64)
@@ -376,6 +394,11 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         commands_.clear();
         stop_queued_=false;
         command.kind=DirectCommandKind::Play;owner_=owner;controller_=controller;media_uuid_=std::move(item);
+        play_connection_=command.encrypted?token:0;
+        control_connection_=connection;
+        reverse_failed_=false;
+        terminal_reported_=false;
+        initial_paused_=command.start_paused;
         command.generation=++generation_;command.origin=DirectOrigin::SenderPlay;
         command.admitted_ms=last_request_ms_;
         command.replacement=replacing;
@@ -415,7 +438,28 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
             reply.body="<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>"+diagnostic_plist(snapshot_)+"</dict></plist>";return reply;}
         std::ostringstream out;
         if(target=="/scrub")out<<"duration: "<<snapshot_.duration<<"\nposition: "<<snapshot_.position<<"\n";
-        else {reply.type="text/x-apple-plist+xml";out<<"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>duration</key><real>"<<snapshot_.duration<<"</real><key>position</key><real>"<<snapshot_.position<<"</real><key>rate</key><real>"<<(snapshot_.state==DirectState::Playing?1:0)<<"</real><key>readyToPlay</key><"<<(snapshot_.state==DirectState::Playing||snapshot_.state==DirectState::Paused?"true":"false")<<"/><key>playbackBufferEmpty</key><"<<((snapshot_.state==DirectState::Loading||snapshot_.state==DirectState::Buffering)?"true":"false")<<"/><key>playbackBufferFull</key><false/><key>playbackLikelyToKeepUp</key><"<<(snapshot_.state==DirectState::Playing?"true":"false")<<"/><key>loadedTimeRanges</key><array/><key>seekableTimeRanges</key><array>"<<((command.encrypted?snapshot_.seekable:snapshot_.duration>0)?"<dict><key>start</key><real>0</real><key>duration</key><real>"+std::to_string(snapshot_.duration)+"</real></dict>":"")<<"</array></dict></plist>";}
+        else {
+            reply.type="text/x-apple-plist+xml";
+            const bool native=snapshot_.backend!=DirectBackend::Bufferstream;
+            const bool live=live_media(snapshot_.state);
+            const bool running=live && (native?snapshot_.state==DirectState::Playing:snapshot_.backend_running);
+            const bool ready=live && (native?(running||snapshot_.state==DirectState::Paused):snapshot_.ready_to_play);
+            const auto range=[&](const char* name,double start,double end) {
+                out<<"<key>"<<name<<"</key><array>";
+                if (end>start) out<<"<dict><key>start</key><real>"<<start<<"</real><key>duration</key><real>"
+                                  <<end-start<<"</real></dict>";
+                out<<"</array>";
+            };
+            out<<"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>duration</key><real>"<<snapshot_.duration
+               <<"</real><key>position</key><real>"<<snapshot_.position<<"</real><key>rate</key><real>"<<int(running)
+               <<"</real><key>readyToPlay</key><"<<(ready?"true":"false")
+               <<"/><key>playbackBufferEmpty</key><"<<((live&&(!ready||snapshot_.state==DirectState::Buffering))?"true":"false")
+               <<"/><key>playbackBufferFull</key><false/><key>playbackLikelyToKeepUp</key><"
+               <<(running&&(native||snapshot_.loaded_end>snapshot_.position)?"true":"false")<<"/>";
+            range("loadedTimeRanges",snapshot_.loaded_start,ready?snapshot_.loaded_end:0);
+            range("seekableTimeRanges",0,live&&(command.encrypted?snapshot_.seekable:snapshot_.duration>0)?snapshot_.duration:0);
+            out<<"</dict></plist>";
+        }
         reply.body=out.str();
         if(target=="/playback-info"){const auto end=reply.body.rfind("</dict></plist>");if(end!=std::string::npos)reply.body.insert(end,diagnostic_plist(snapshot_));}
         reply.status=200;return reply;
@@ -463,6 +507,7 @@ bool DirectSession::is_current(uint64_t generation) {
 void DirectSession::stop_locked(DirectOrigin origin) {
     if(stop_queued_) return;
     stop_queued_=true;
+    pending_stop_origin_=origin;
     handoff_until_ms_=0;
     commands_.clear();
     DirectCommand stop;
@@ -470,6 +515,27 @@ void DirectSession::stop_locked(DirectOrigin origin) {
     stop.origin=origin;
     stop.generation=generation_;
     commands_.push_back(stop);
+}
+
+void DirectSession::terminal_locked(const DirectSnapshot& status,DirectOrigin origin) {
+    if(terminal_reported_) return;
+    terminal_reported_=true;
+    const auto error=status.error;
+    const bool unsupported=error==DirectError::VideoCodec||error==DirectError::HevcProfile||
+        error==DirectError::SeparateAudio||error==DirectError::PlaylistLive||
+        error==DirectError::PlaylistEncryption||error==DirectError::EncryptedMedia;
+    const char* result=unsupported?"unsupported":error!=DirectError::None?"failed":
+        origin==DirectOrigin::SenderDisconnect||origin==DirectOrigin::ReceiverTimeout?"interrupted":
+        origin==DirectOrigin::Replacement?"replaced":status.natural_end?"completed":"stopped";
+    fprintf(stderr,"[direct-session-terminal] generation=%llu decoder=%llu conn=%u result=%s stop-class=%s stage=%s error=%s "
+            "codec=%s container=%s geometry=%ux%u initial-rate=%d backend=%s running=%d presented=%d active-ms=%lld "
+            "frame-age-ms=%lld feed-age-ms=%lld http=%d reverse=%s\n",
+            (unsigned long long)generation_,(unsigned long long)status.decoder_generation,control_connection_,
+            result,origin!=DirectOrigin::None?direct_origin_name(origin):status.natural_end?"eos":direct_error_name(error),
+            direct_stage_name(status.stage),direct_error_name(error),status.codec,status.container,status.width,status.height,
+            int(!initial_paused_),direct_backend_name(status.backend),int(status.backend_running),int(status.frame_observed),
+            (long long)status.active_ms,(long long)status.frame_age_ms,(long long)status.feed_age_ms,
+            status.upstream_http,encrypted_reverse_?"attached":reverse_failed_?"failed":"detached");
 }
 const char *direct_state_name(DirectState s){switch(s){case DirectState::Loading:case DirectState::Buffering:return "loading";case DirectState::Playing:return "playing";case DirectState::Paused:return "paused";case DirectState::Ended:case DirectState::Idle:return "stopped";default:return "stopped";}}
 void DirectSession::event_locked(DirectState state) {
@@ -530,6 +596,7 @@ bool DirectSession::publish(DirectSnapshot s){
                 direct_state_name(s.state),direct_stage_name(s.stage),direct_error_name(s.error),(unsigned long long)s.generation,
                 int(s.frame_observed),int(s.audio_fed));
     if(s.state==DirectState::Idle||s.state==DirectState::Ended||s.state==DirectState::Error){
+        terminal_locked(s,s.stop_origin);
         play_connection_=0;handoff_until_ms_=0;stop_queued_=false;media_uuid_.clear();
         if(!reverse_running_&&!encrypted_reverse_){owner_.clear();controller_.clear();}
         commands_.clear();
@@ -539,6 +606,7 @@ bool DirectSession::publish(DirectSnapshot s){
 DirectSnapshot DirectSession::snapshot(){std::lock_guard<std::mutex> l(mutex_);return snapshot_;}
 void DirectSession::summarize() {
     std::lock_guard<std::mutex> lock(mutex_);
+    terminal_locked(snapshot_,stop_queued_?pending_stop_origin_:DirectOrigin::Local);
     if(!backend_attempts_)return;
     backend_outcome_locked(BackendOutcome::Cancelled);
     fprintf(stderr,"[direct-session-summary] backend_load_attempts=%u backend_loaded=%u backend_load_failures=%u backend_load_cancellations=%u "
@@ -596,12 +664,13 @@ void DirectSession::reverse_loop(){
         if(!reverse_running_)connection_lost(reverse_token_);
     }
 }
-void DirectSession::connection_lost(uintptr_t token) {
+void DirectSession::connection_lost(uintptr_t token,bool reverse_failure) {
     std::lock_guard<std::mutex> lock(mutex_);
     if(!token) return;
     const auto retired=std::find(retired_play_connections_.begin(),retired_play_connections_.end(),token);
     if(retired!=retired_play_connections_.end()){*retired=0;return;}
     if(token==encrypted_reverse_) {
+        reverse_failed_=reverse_failure;
         encrypted_reverse_=0;
         events_.clear();
         if(!play_connection_ && snapshot_.state!=DirectState::Loading &&
@@ -638,7 +707,7 @@ std::string DirectSession::sender_manifest(const std::string& url){
     char *xml=nullptr;uint32_t len=0;plist_to_xml(root,&xml,&len);plist_free(root);if(xml){events_.push_back({std::string(xml,len),generation_});free(xml);}event_cv_.notify_all();
     event_cv_.wait_for(l,std::chrono::seconds(3),[&]{return pending_done_||!reverse_running_;});const auto result=pending_data_;pending_data_.clear();pending_id_=0;pending_url_.clear();return result;
 }
-void DirectSession::reset(bool keep_reverse){if(!keep_reverse)close_reverse();std::lock_guard<std::mutex> l(mutex_);backend_outcome_locked(BackendOutcome::Cancelled);commands_.clear();if(!keep_reverse){owner_.clear();controller_.clear();events_.clear();reverse_token_=encrypted_reverse_=0;retired_play_connections_={};}play_connection_=0;handoff_until_ms_=0;stop_queued_=false;media_uuid_.clear();++generation_;snapshot_=DirectSnapshot();pending_done_=true;event_cv_.notify_all();}
+void DirectSession::reset(bool keep_reverse){if(!keep_reverse)close_reverse();std::lock_guard<std::mutex> l(mutex_);terminal_locked(snapshot_,stop_queued_?pending_stop_origin_:DirectOrigin::Local);backend_outcome_locked(BackendOutcome::Cancelled);commands_.clear();if(!keep_reverse){owner_.clear();controller_.clear();events_.clear();reverse_token_=encrypted_reverse_=0;retired_play_connections_={};}play_connection_=0;handoff_until_ms_=0;stop_queued_=false;media_uuid_.clear();++generation_;snapshot_=DirectSnapshot();pending_done_=true;event_cv_.notify_all();}
 
 bool DirectSession::check_timeout(int64_t now_ms) {
     std::lock_guard<std::mutex> lock(mutex_);

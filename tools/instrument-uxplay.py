@@ -270,8 +270,9 @@ def instrument_raop(source, direct_enabled=True):
         '        uxair_trace_summary(&raop->wire, raop->port, "listener-stop");\n')
     return replace_once(source, '    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");',
         '    uxair_video_cipher_log_close(conn);\n'
+        '    uxair_direct_lost(raop->callbacks.cls,(unsigned long)conn,conn->video_crypto.reverse &&\n'
+        '        conn->video_crypto.close_reason && strcmp(conn->video_crypto.close_reason,"reverse-session-ended"));\n'
         '    uxair_video_pairing_clear(conn);\n'
-        '    uxair_direct_lost(raop->callbacks.cls,(unsigned long)conn);\n'
         '    logger_log(raop->logger, LOGGER_DEBUG, "Destroying connection");')
 
 

@@ -1,6 +1,7 @@
 #include "direct_hls.h"
 #include "audio.h"
 #include "h264.h"
+#include "hevc_stream.h"
 #include "hls_relay.h"
 
 extern "C" {
@@ -70,8 +71,11 @@ std::string attribute(const std::string& line, const char* key) {
     return {};
 }
 
-double variant_bandwidth(const std::string& tag) {
+double variant_bandwidth(const std::string& tag, unsigned& preference) {
     const auto codecs = attribute(tag, "CODECS");
+    preference=1; // Undeclared codec, confirm from the initialization data.
+    const auto range=attribute(tag,"VIDEO-RANGE");
+    if(!range.empty() && range!="SDR") return 0;
     if (!codecs.empty()) {
         const auto comma = codecs.find(',');
         if (comma == std::string::npos || codecs.find(',', comma + 1) != std::string::npos) return 0;
@@ -82,9 +86,12 @@ double variant_bandwidth(const std::string& tag) {
         };
         const auto first_codec = trim(codecs.substr(0, comma));
         const auto second_codec = trim(codecs.substr(comma + 1));
-        const auto avc = [](const std::string& codec) { return starts(codec,"avc1.")||starts(codec,"avc3."); };
-        if (!((avc(first_codec) && second_codec == "mp4a.40.2") ||
-              (first_codec == "mp4a.40.2" && avc(second_codec)))) return 0;
+        const auto& video=first_codec=="mp4a.40.2"?second_codec:first_codec;
+        const auto& audio=first_codec=="mp4a.40.2"?first_codec:second_codec;
+        if (audio!="mp4a.40.2") return 0;
+        if(starts(video,"avc1.")||starts(video,"avc3.")) preference=3;
+        else if(starts(video,"hvc1.1.")||starts(video,"hev1.1.")) preference=2;
+        else return 0;
     }
     if (!attribute(tag, "VIDEO").empty()) return 0;
     const auto resolution = attribute(tag, "RESOLUTION");
@@ -222,14 +229,19 @@ struct Demuxer {
         return avformat_open_input(&format, nullptr, input, nullptr) == 0 && (packet = av_packet_alloc());
     }
 
-    bool convert_video(const AVStream& stream) {
+    bool init_video(const AVStream& stream) {
         if (!annex_b) {
-            const auto* filter=av_bsf_get_by_name("h264_mp4toannexb");
+            const auto* filter=av_bsf_get_by_name(stream.codecpar->codec_id==AV_CODEC_ID_HEVC?
+                                                 "hevc_mp4toannexb":"h264_mp4toannexb");
             if (!filter||av_bsf_alloc(filter,&annex_b)<0||
                 avcodec_parameters_copy(annex_b->par_in,stream.codecpar)<0) return false;
             annex_b->time_base_in=stream.time_base;
             if (av_bsf_init(annex_b)<0) return false;
         }
+        return true;
+    }
+    bool convert_video(const AVStream& stream) {
+        if(!init_video(stream)) return false;
         return av_bsf_send_packet(annex_b,packet)==0&&av_bsf_receive_packet(annex_b,packet)==0;
     }
 };
@@ -296,7 +308,11 @@ DirectError inspect_boxes(const uint8_t* at, size_t length, unsigned depth, bool
         case fourcc('t','r','a','k'): case fourcc('m','d','i','a'): case fourcc('m','i','n','f'):
         case fourcc('s','t','b','l'): break;
         case fourcc('s','t','s','d'): skip=8; break;  // full box and entry count
-        case fourcc('a','v','c','1'): case fourcc('a','v','c','3'): skip=78; break;
+        case fourcc('d','v','c','C'): case fourcc('d','v','v','C'): case fourcc('d','v','w','C'):
+        case fourcc('d','v','h','1'): case fourcc('d','v','h','e'):
+        case fourcc('m','d','c','v'): case fourcc('c','l','l','i'): return DirectError::HevcProfile;
+        case fourcc('a','v','c','1'): case fourcc('a','v','c','3'):
+        case fourcc('h','v','c','1'): case fourcc('h','e','v','1'): skip=78; break;
         case fourcc('m','p','4','a'):
             if (child.size<28 || AV_RB16(child.data+8)!=0) return DirectError::Mp4Config;
             skip=28;
@@ -417,11 +433,12 @@ DirectError direct_parse_playlist(const std::string& text, const std::string& ba
     std::string line;
     if (!std::getline(lines, line) || (line != "#EXTM3U" && line != "#EXTM3U\r")) return DirectError::PlaylistSyntax;
     bool master = false, end = false, waiting_variant = false;
-    struct Variant { std::string url, audio; double bandwidth; };
+    struct Variant { std::string url, audio; double bandwidth; unsigned preference; };
     std::vector<Variant> candidates;
     std::map<std::string,bool> audio_groups;
     std::string variant_audio;
     double bandwidth = 0;
+    unsigned preference = 0;
     int64_t duration = 0;
     unsigned variants = 0;
     unsigned init=0, period=0;
@@ -435,7 +452,7 @@ DirectError direct_parse_playlist(const std::string& text, const std::string& ba
             const auto url = HlsRelay::resolve(base, line);
             if (url.empty()) return DirectError::PlaylistSyntax;
             if (master) {
-                candidates.push_back({url,variant_audio,bandwidth});
+                candidates.push_back({url,variant_audio,bandwidth,preference});
                 waiting_variant = false;
             } else {
                 if (playlist.segments.size() >= 4096 || playlist.duration_ns > 24 * 60 * 60 * second - duration)
@@ -454,7 +471,7 @@ DirectError direct_parse_playlist(const std::string& text, const std::string& ba
             if (end || duration || waiting_variant || init || period || next_range.length || !playlist.segments.empty()) return DirectError::PlaylistSyntax;
             if (++variants > 32) return DirectError::StreamLimit;
             master = waiting_variant = true;
-            bandwidth = variant_bandwidth(line);
+            bandwidth = variant_bandwidth(line,preference);
             variant_audio=attribute(line,"AUDIO");
         } else if (starts(line,"#EXT-X-MEDIA:")) {
             if (attribute(line,"TYPE")=="AUDIO") {
@@ -527,16 +544,23 @@ DirectError direct_parse_playlist(const std::string& text, const std::string& ba
     if (waiting_variant || duration || next_range.length) return DirectError::PlaylistSyntax;
     if (master) {
         bool external_audio=false;
-        double selected=0;
+        const Variant* selected=nullptr;
+        const Variant* alternate=nullptr;
+        const auto preferable=[](const Variant& a,const Variant* b) {
+            return !b||a.preference>b->preference||
+                (a.preference==b->preference&&prefer_variant(a.bandwidth,b->bandwidth));
+        };
         for (const auto& variant : candidates) {
             if (!variant.audio.empty()) {
                 const auto group=audio_groups.find(variant.audio);
                 if (group==audio_groups.end()||!group->second) { external_audio=true; continue; }
             }
-            if (prefer_variant(variant.bandwidth,selected)) {
-                playlist.variant=variant.url;selected=variant.bandwidth;
-            }
+            if(variant.bandwidth<=0||(selected&&variant.url==selected->url)) continue;
+            if(preferable(variant,selected)){alternate=selected;selected=&variant;}
+            else if(preferable(variant,alternate)) alternate=&variant;
         }
+        if(selected) playlist.variant=selected->url;
+        if(alternate) playlist.alternate=alternate->url;
         return !playlist.variant.empty()?DirectError::None:external_audio?DirectError::SeparateAudio:DirectError::PlaylistVariant;
     }
     if (playlist.segments.empty()) return period?DirectError::PlaylistDiscontinuity:DirectError::PlaylistSyntax;
@@ -578,15 +602,41 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
     }
     SegmentReader reader(init, data, cancelled);
     Demuxer demux;
+    HevcStream hevc;
+    bool discard_hevc_rasl=false;
     if (!demux.open(reader,mp4)) return cancelled ? DirectError::FetchCancelled : DirectError::DemuxOpen;
     if (mp4) {
         segment.tracks=demux.format->nb_streams;
         if (segment.tracks!=2) return DirectError::Mp4Track;
         unsigned videos=0,audios=0;
         for (unsigned i=0;i<segment.tracks;++i) {
-            const auto& par=*demux.format->streams[i]->codecpar;
+            const auto& stream=*demux.format->streams[i];
+            const auto& par=*stream.codecpar;
             if (par.codec_type==AVMEDIA_TYPE_VIDEO) {
                 ++videos;segment.video_codec=par.codec_id;
+                segment.video_codec_name=avcodec_get_name(par.codec_id);
+                segment.hevc=par.codec_id==AV_CODEC_ID_HEVC;
+                if(segment.hevc) {
+                    const auto* conf=par.extradata;
+                    if((par.codec_tag!=MKTAG('h','v','c','1')&&par.codec_tag!=MKTAG('h','e','v','1'))||
+                        par.color_trc==AVCOL_TRC_SMPTE2084||par.color_trc==AVCOL_TRC_ARIB_STD_B67)
+                        return DirectError::HevcProfile;
+                    if(!conf||par.extradata_size<23||par.extradata_size>65536||conf[0]!=1)
+                        return DirectError::HevcConfiguration;
+                    segment.h264_profile=conf[1]&31;
+                    segment.h264_level=conf[12];
+                    if((conf[1]&0xdf)!=1||(conf[16]&3)!=1||(conf[17]&7)||(conf[18]&7))
+                        return DirectError::HevcProfile;
+                    if(!demux.init_video(stream)) return DirectError::HevcConfiguration;
+                    const auto& annex=*demux.annex_b->par_out;
+                    const auto config=hevc.inspect(annex.extradata,size_t(annex.extradata_size));
+                    if(!config.configuration_complete) return DirectError::HevcConfiguration;
+                    if(config.profile!=1||config.bit_depth!=8||config.width>1920||config.height>1080)
+                        return DirectError::HevcProfile;
+                    segment.h264_profile=config.profile;
+                    segment.pixel_format="yuv420p";
+                    continue;
+                }
                 if(par.codec_id!=AV_CODEC_ID_H264||(par.codec_tag!=MKTAG('a','v','c','1')&&par.codec_tag!=MKTAG('a','v','c','3')))
                     return DirectError::VideoCodec;
                 if(!par.extradata||par.extradata_size<7||par.extradata_size>65536||
@@ -626,7 +676,10 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
         const bool video = stream.codecpar->codec_type == AVMEDIA_TYPE_VIDEO;
         const bool is_audio = stream.codecpar->codec_type == AVMEDIA_TYPE_AUDIO;
         if (!video && !is_audio) { av_packet_unref(&packet); continue; }
-        if (video) segment.video_codec = stream.codecpar->codec_id;
+        if (video) {
+            segment.video_codec = stream.codecpar->codec_id;
+            segment.video_codec_name = avcodec_get_name(stream.codecpar->codec_id);
+        }
         else segment.audio_codec = stream.codecpar->codec_id;
         if (packet.size <= 0 || size_t(packet.size) > max_packet_bytes) return DirectError::StreamLimit;
         if (packet.flags & AV_PKT_FLAG_CORRUPT) return DirectError::PacketCorrupt;
@@ -638,34 +691,66 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
         DirectAccessUnit unit;
         unit.video = video;
         if (video) {
-            if (stream.codecpar->codec_id != AV_CODEC_ID_H264) return DirectError::VideoCodec;
+            if (stream.codecpar->codec_id != (segment.hevc?AV_CODEC_ID_HEVC:AV_CODEC_ID_H264)) return DirectError::VideoCodec;
             if (video_index >= 0 && packet.stream_index != video_index) return DirectError::MultipleTracks;
             video_index = packet.stream_index;
-            if(mp4 && !demux.convert_video(stream)) return DirectError::H264AnnexB;
+            if(mp4 && !demux.convert_video(stream)) return segment.hevc?DirectError::HevcConfiguration:DirectError::H264AnnexB;
             if(packet.size<=0 || size_t(packet.size)>max_packet_bytes) return DirectError::StreamLimit;
-            const auto info = inspect_h264(packet.data, size_t(packet.size));
-            if (!info.valid) return DirectError::H264AnnexB;
-            if (info.width) {
-                segment.h264_profile = int(info.profile);
-                segment.pixel_format = info.chroma == 1 && info.bit_depth == 8 ? "yuv420p" : "other";
-                if (info.height > 1080 || info.width > 1920 || info.chroma != 1 || info.bit_depth != 8)
-                    return DirectError::H264Format;
-                if (segment.width && (info.width != segment.width || info.height != segment.height))
+            bool keyframe=false, in_band_configuration=false;
+            if(segment.hevc) {
+                const auto info=hevc.inspect(packet.data,size_t(packet.size));
+                if(info.vcl_type<0 && info.waiting_configuration && info.configuration_complete) {
+                    av_packet_unref(&packet);
+                    continue;
+                }
+                if(!info.valid) return DirectError::HevcConfiguration;
+                if(info.parameter_sets_updated) return DirectError::TrackChange;
+                if(!supported_hevc_mirror_profile(info)||info.width>1920||info.height>1080)
+                    return DirectError::HevcProfile;
+                if(segment.width&&(segment.width!=info.width||segment.height!=info.height))
                     return DirectError::TrackChange;
-                segment.width = info.width;
-                segment.height = info.height;
+                segment.width=info.width;
+                segment.height=info.height;
+                keyframe=info.keyframe;
+                const bool rasl=info.vcl_type==8||info.vcl_type==9;
+                if(discard_hevc_rasl&&rasl){av_packet_unref(&packet);continue;}
+                if(info.vcl_type!=6&&info.vcl_type!=7)
+                    discard_hevc_rasl=!continuing&&!segment.video_packets&&info.vcl_type==21;
+                if(keyframe) {
+                    bool added=false;
+                    unit.data.assign(packet.data,packet.data+packet.size);
+                    if(!hevc.prepend_missing_parameter_sets(unit.data,info,added)||!ensure_hevc_aud(unit.data,info.has_aud))
+                        return DirectError::HevcConfiguration;
+                    segment.sps_pps=true;
+                    if(segment.hevc_rap<0) segment.hevc_rap=info.vcl_type;
+                }
+            } else {
+                const auto info = inspect_h264(packet.data, size_t(packet.size));
+                if (!info.valid) return DirectError::H264AnnexB;
+                if (info.width) {
+                    segment.h264_profile = int(info.profile);
+                    segment.pixel_format = info.chroma == 1 && info.bit_depth == 8 ? "yuv420p" : "other";
+                    if (info.height > 1080 || info.width > 1920 || info.chroma != 1 || info.bit_depth != 8)
+                        return DirectError::H264Format;
+                    if (segment.width && (info.width != segment.width || info.height != segment.height))
+                        return DirectError::TrackChange;
+                    segment.width = info.width;
+                    segment.height = info.height;
+                }
+                if (!info.configuration.empty()) {
+                    if (info.width && info.pps) configuration.clear();
+                    if (configuration.size() + info.configuration.size() > 65536) return DirectError::StreamLimit;
+                    configuration.insert(configuration.end(), info.configuration.begin(), info.configuration.end());
+                    have_sps |= info.width != 0;
+                    have_pps |= info.pps;
+                    segment.sps_pps |= have_sps && have_pps;
+                }
+                if (!info.picture) { av_packet_unref(&packet); continue; }
+                keyframe=info.keyframe;
+                in_band_configuration=info.width && info.pps;
             }
-            if (!info.configuration.empty()) {
-                if (info.width && info.pps) configuration.clear();
-                if (configuration.size() + info.configuration.size() > 65536) return DirectError::StreamLimit;
-                configuration.insert(configuration.end(), info.configuration.begin(), info.configuration.end());
-                have_sps |= info.width != 0;
-                have_pps |= info.pps;
-                segment.sps_pps |= have_sps && have_pps;
-            }
-            if (!info.picture) { av_packet_unref(&packet); continue; }
-            segment.idr |= info.keyframe;
-            if (!continuing && !segment.video_packets && (!info.keyframe || !segment.sps_pps)) {
+            segment.idr |= keyframe;
+            if (!continuing && !segment.video_packets && (!keyframe || !segment.sps_pps)) {
                 if (leading_dts == AV_NOPTS_VALUE && packet.dts != AV_NOPTS_VALUE) {
                     leading_dts = av_rescale_q(packet.dts, stream.time_base, ns);
                     if (leading_dts < -second || leading_dts > max_timestamp)
@@ -679,7 +764,7 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
             if (packet.dts == AV_NOPTS_VALUE) {
                 // A random-access IDR can start the decode timeline at its
                 // own PTS. Subsequent decode times still have to keep order.
-                if (continuing || segment.video_packets || !info.keyframe) return timestamp_error(true, "missing-dts");
+                if (continuing || segment.video_packets || !keyframe) return timestamp_error(true, "missing-dts");
                 unit.dts_ns = unit.pts_ns;
                 ++segment.inferred_dts;
             } else {
@@ -691,16 +776,19 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
             if (segment.video_packets && unit.dts_ns == segment.last_video_dts_ns) ++segment.tied_dts;
             if (!segment.video_packets) {
                 segment.first_video_dts_ns = unit.dts_ns;
-                segment.starts_with_idr = info.keyframe;
+                segment.starts_with_idr = keyframe;
                 first_video_pts = unit.pts_ns;
             }
             if (unit.pts_ns < unit.dts_ns) ++segment.reordered;
             segment.last_video_dts_ns = unit.dts_ns;
             ++segment.video_packets;
-            if (!(info.width && info.pps)) unit.data.swap(configuration);
-            configuration.clear();
-            have_sps = have_pps = false;
-            unit.data.insert(unit.data.end(), packet.data, packet.data + packet.size);
+            if(!segment.hevc) {
+                if (!in_band_configuration) unit.data.swap(configuration);
+                configuration.clear();
+                have_sps = have_pps = false;
+            }
+            if (!segment.hevc || unit.data.empty())
+                unit.data.insert(unit.data.end(), packet.data, packet.data + packet.size);
         } else {
             if (stream.codecpar->codec_id != AV_CODEC_ID_AAC) return DirectError::AudioCodec;
             if (audio_index >= 0 && packet.stream_index != audio_index) return DirectError::MultipleTracks;
@@ -778,7 +866,8 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
     if (result != AVERROR_EOF) return DirectError::DemuxRead;
     if (mp4 && (video_index<0||audio_index<0)) return DirectError::Mp4Track;
     if (video_index < 0) return DirectError::MissingH264;
-    if (!segment.video_packets) return segment.idr ? DirectError::H264Configuration : DirectError::H264Keyframe;
+    if (!segment.video_packets) return segment.hevc?DirectError::HevcConfiguration:
+        segment.idr?DirectError::H264Configuration:DirectError::H264Keyframe;
     if (audio_index < 0) return DirectError::MissingAac;
     if (!segment.audio_packets) return DirectError::AacNoPcm;
     if (leading_dts != AV_NOPTS_VALUE) {

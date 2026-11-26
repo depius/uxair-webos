@@ -20,6 +20,7 @@ struct DirectInitSegment { std::string url; HlsRange range; };
 
 struct DirectPlaylist {
     std::string variant;
+    std::string alternate;
     std::string diagnostic_tag;
     std::vector<DirectSegment> segments;
     std::vector<DirectInitSegment> maps;
@@ -48,6 +49,9 @@ struct DirectDemuxedSegment {
     size_t bytes = 0;
     const char* container = "unknown";
     const char* pixel_format = "unknown";
+    const char* video_codec_name = "unknown";
+    bool hevc = false;
+    int hevc_rap = -1;
     const char* timestamp_problem = "none";
     int probe_score = 0, video_codec = -1, audio_codec = -1, h264_profile = 0, h264_level = 0;
     unsigned video_packets = 0, audio_packets = 0, reordered = 0, tied_dts = 0, inferred_dts = 0;

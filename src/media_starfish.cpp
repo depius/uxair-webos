@@ -193,8 +193,8 @@ bool Media::open(const char *app_id, int width, int height, bool audio, int rate
     fprintf(stderr,"[media-identity] acb-app-id=%s starfish-app-id=%s source=shared-runtime-id\n",app_id,app_id);
 #ifdef UXAIR_DIRECT_BUILD
     if (direct_load_shape_) {
-        fprintf(stderr, "[direct-player] load-schema api=StarfishMediaAPIs::Load contract=BUFFERSTREAM acb-role=MSE source=demuxed-hls video=H264 audio=PCM uri=absent request-plugins=absent fields=%s\n",
-                direct_load_shape_(payload.c_str()).c_str());
+        fprintf(stderr, "[direct-player] load-schema api=StarfishMediaAPIs::Load contract=BUFFERSTREAM acb-role=MSE source=demuxed-hls video=%s audio=PCM uri=absent request-plugins=absent fields=%s\n",
+                codec==MirrorCodec::ExperimentalHevc?"H265":"H264",direct_load_shape_(payload.c_str()).c_str());
         {
             std::lock_guard<std::mutex> lock(direct_callback_mutex);
             if (++next_direct_generation == 0) ++next_direct_generation;

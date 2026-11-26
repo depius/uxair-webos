@@ -17,16 +17,24 @@ ROOT = Path(__file__).resolve().parents[1]
 HEADER = '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:2\n#EXT-X-PLAYLIST-TYPE:VOD\n'
 
 
-def generate(directory, rate, seconds, video=True, split_tracks=False, silent_1080p=False):
+def generate(directory, rate, seconds, video=True, split_tracks=False, silent_1080p=False, codec='avc'):
     directory.mkdir()
     audio = f'anullsrc=cl=stereo:r={rate}' if silent_1080p else f'sine=frequency=440:sample_rate={rate}'
     command = ['ffmpeg', '-nostdin', '-v', 'error', '-f', 'lavfi',
                '-i', audio, '-ac', '2', '-c:a', 'aac', '-profile:a', 'aac_low']
     if video:
-        geometry = '1920x1080' if silent_1080p else '640x480'
+        geometry = '160x96' if codec == 'av1' else '1920x1080' if silent_1080p else '640x480'
         command[4:4] = ['-f', 'lavfi', '-i', f'testsrc2=size={geometry}:rate=30']
-        command += ['-c:v', 'libx264', '-threads:v', '2', '-preset', 'veryfast', '-profile:v', 'high',
-                    '-pix_fmt', 'yuv420p', '-bf', '2', '-g', '60', '-sc_threshold', '0']
+        if codec in ('hevc', 'main10'):
+            command += ['-c:v', 'libx265', '-preset', 'ultrafast', '-tag:v', 'hvc1',
+                        '-x265-params', 'log-level=error:pools=none:frame-threads=1:keyint=60:min-keyint=60:scenecut=0:open-gop=0:bframes=2',
+                        '-profile:v', 'main10' if codec == 'main10' else 'main',
+                        '-pix_fmt', 'yuv420p10le' if codec == 'main10' else 'yuv420p']
+        elif codec == 'av1':
+            command += ['-c:v', 'libaom-av1', '-cpu-used', '8', '-threads:v', '2', '-g', '60', '-pix_fmt', 'yuv420p']
+        else:
+            command += ['-c:v', 'libx264', '-threads:v', '2', '-preset', 'veryfast', '-profile:v', 'high',
+                        '-pix_fmt', 'yuv420p', '-bf', '2', '-g', '60', '-sc_threshold', '0']
     command += ['-t', str(seconds), '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0',
                 '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init.mp4',
                 '-hls_segment_filename', 'part%d.m4s', 'media.m3u8']
@@ -49,7 +57,34 @@ class FixtureServer(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         url = urlsplit(self.path)
+        if url.path in ('/cookie-entry', '/cross-entry'):
+            assert url.query == 'sig=PRIVATE'
+            self.send_response(302)
+            location = 'cookie-target?sig=PRIVATE' if url.path == '/cookie-entry' else self.server.cross
+            self.send_header('Location', location)
+            self.send_header('Set-Cookie', 'media-auth=SECRET; Path=/; HttpOnly')
+            self.end_headers()
+            return
+        if url.path in ('/cookie-target', '/cross-target'):
+            assert url.query == 'sig=PRIVATE'
+            cookie = self.headers.get('Cookie', '')
+            if url.path == '/cross-target':
+                assert not cookie, 'media cookie escaped to another origin'
+            elif cookie != 'media-auth=SECRET':
+                self.send_error(403)
+                return
+            self.path = '/cookie-media.m3u8'
+        if url.path in ('/expired', '/unauthorized'):
+            self.send_error(403 if url.path == '/expired' else 401)
+            return
         if url.path == '/redirect':
+            self.send_response(302)
+            self.send_header('Location', '/clip/media.m3u8')
+            self.end_headers()
+            return
+        if url.path == '/startup-align.m3u8':
+            self.server.align_requests += 1
+            time.sleep(.35)
             self.send_response(302)
             self.send_header('Location', '/clip/media.m3u8')
             self.end_headers()
@@ -84,6 +119,9 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     generate(root / 'next', 44100, 4, split_tracks=True)
     generate(root / 'audio', 44100, 4, video=False)
     generate(root / 'silent', 44100, 4, silent_1080p=True)
+    generate(root / 'hevc', 44100, 8, codec='hevc')
+    generate(root / 'main10', 44100, 2, codec='main10')
+    generate(root / 'av1', 44100, 2, codec='av1')
     (root / 'silent-ts').mkdir()
     subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', '../silent/media.m3u8',
                     '-c', 'copy', '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0', 'media.m3u8'],
@@ -103,6 +141,17 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
                                      variant('muxed', 'redirect') + external +
                                      '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="muxed",NAME="Embedded"\n')
     (root / 'separate.m3u8').write_text('#EXTM3U\n' + variant('external', 'clip/media.m3u8') + external)
+    (root / 'cookie-media.m3u8').write_text((clip / 'media.m3u8').read_text().replace('"init.mp4"', '"clip/init.mp4"').replace('\npart', '\nclip/part'))
+    def codec_variant(uri, codecs, rate, video_range='SDR'):
+        return f'#EXT-X-STREAM-INF:BANDWIDTH={rate},CODECS="{codecs},mp4a.40.2",VIDEO-RANGE={video_range}\n{uri}\n'
+    avc = 'avc1.64001f'
+    hevc = 'hvc1.1.6.L93.B0'
+    (root / 'codec-master.m3u8').write_text('#EXTM3U\n' + codec_variant('hevc/media.m3u8', hevc, 1200000) +
+                                         codec_variant('av1/media.m3u8', 'av01.0.05M.08', 2000000) +
+                                         codec_variant('main10/media.m3u8', 'hvc1.2.4.L93.B0', 2200000, 'PQ') +
+                                         codec_variant('clip/media.m3u8', avc, 600000))
+    (root / 'fallback-master.m3u8').write_text('#EXTM3U\n' + codec_variant('av1/media.m3u8', avc, 700000) +
+                                            codec_variant('hevc/media.m3u8', hevc, 750000))
 
     prefix = b'unused!'
     init_bytes = (clip / 'init.mp4').read_bytes()
@@ -145,27 +194,38 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
         route.connect(('192.0.2.1', 9))
         ip = route.getsockname()[0]
-    with http.server.ThreadingHTTPServer((ip, 0), functools.partial(FixtureServer, directory=root)) as server:
+    handler = functools.partial(FixtureServer, directory=root)
+    with http.server.ThreadingHTTPServer((ip, 0), handler) as server, http.server.ThreadingHTTPServer((ip, 0), handler) as other:
         server.packed = packed
+        server.cross = f'http://{ip}:{other.server_port}/cross-target?sig=PRIVATE'
         server.requests = Counter()
         server.slow_requests = 0
+        server.align_requests = 0
         thread = threading.Thread(target=server.serve_forever)
+        cross = threading.Thread(target=other.serve_forever)
         thread.start()
+        cross.start()
         try:
             checked = subprocess.run(['build/tests/direct-bufferstream-test',
                                       f'http://{ip}:{server.server_port}', '--fmp4'],
-                                     timeout=45, cwd=ROOT, env=dict(os.environ, UXAIR_DIRECT_LAN=ip),
+                                     timeout=65, cwd=ROOT, env=dict(os.environ, UXAIR_DIRECT_LAN=ip),
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         finally:
             server.shutdown()
+            other.shutdown()
             thread.join()
+            cross.join()
         print(checked.stdout, end='')
         checked.check_returncode()
         assert {key: n for key, n in server.requests.items() if key[0] == '/ranges.bin'} == requests
         assert server.slow_requests == 1
+        assert server.align_requests == 1
     for rate in (22050, 44100):
         assert re.search(rf'container=fmp4 .*aac-rate={rate} aac-channels=2 .*sps-pps=1 .*'
                          r'first-pcm-bytes=[1-9]\d* .*timestamps=valid .*tracks=2', checked.stdout)
     assert re.search(r'aac-rate=44100 .*timestamps=valid .*fragments=2', checked.stdout)
     assert 'stage=manifest-cancelled' in checked.stdout and 'stage=replace-completed' in checked.stdout
-    assert 'token=PRIVATE' not in checked.stdout and 'http://' not in checked.stdout
+    assert 'video-codec-id=225 video-codec-name=av1' in checked.stdout
+    assert 'video-codec-name=hevc' in checked.stdout and 'stage=variant-fallback' in checked.stdout
+    assert 'stage=manifest-fetch error=http-401' in checked.stdout and 'stage=manifest-fetch error=http-403' in checked.stdout
+    assert 'PRIVATE' not in checked.stdout and 'SECRET' not in checked.stdout and 'http://' not in checked.stdout

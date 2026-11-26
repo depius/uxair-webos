@@ -606,6 +606,8 @@ int main(int argc,char **argv) {
             status.state=released?DirectState::Ended:DirectState::Error;
             status.error=released?DirectError::None:DirectError::CleanupFailed;
         }
+        status.stop_origin=origin;
+        status.active_ms=direct_play_ms;
         const bool terminal_published=!replacement && receiver.direct.publish(status);
         if(terminal_published || !released) {
             receiver.release_direct(released);
@@ -694,6 +696,7 @@ int main(int argc,char **argv) {
                 direct_tick=now;
                 const bool abort=stop || action==Action::Back || action==Action::Exit || action==Action::Quit;
                 auto status=abort?direct_player.snapshot():direct_player.tick(now);
+                status.active_ms=direct_play_ms;
                 status.natural_end=!abort&&status.state==DirectState::Ended;
                 if(abort ||
                    status.state==DirectState::Ended || status.state==DirectState::Error) {

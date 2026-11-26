@@ -109,7 +109,7 @@ static http_response_t *uxair_encrypted_route(raop_conn_t *conn, http_request_t 
         *route = play?"play":"direct";
         status=uxair_direct_request(conn->raop->callbacks.cls,conn->video_pair_owner,method,path,
             http_request_get_header(request,"Content-Type"),body,n,&output,&output_length,&content_type,
-            &reason,conn->video_controller,(unsigned long)conn);
+            &reason,conn->video_controller,(unsigned long)conn,conn->wire_id);
         if (play && status==200 && (!reason || strcmp(reason,"duplicate-play"))) ++conn->raop->wire.admitted;
         if (play && status!=200 && !conn->video_crypto.admission_logged)
             fprintf(stderr,"[direct-session] conn=%u admission=rejected status=%d reason=%s\n",

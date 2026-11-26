@@ -41,20 +41,21 @@ HevcFrameInfo HevcStream::inspect(const uint8_t *data, size_t size) {
                 width=parsed.width;height=parsed.height;profile=parsed.profile;bit_depth=parsed.bit_depth;
                 sps_vps_id=parsed.vps_id;sps_id=parsed.sps_id;
                 result.has_sps=true;
-                if(sps!=nal) {sps.swap(nal);changed=true;}
+                if(sps!=nal) {sps.swap(nal);changed=result.parameter_sets_updated=true;}
             } else if(type==32) {
                 if(nal.size()<3) return HevcFrameInfo{};
                 vps_id=nal[2]>>4;
                 result.has_vps=true;
-                if(vps!=nal) {vps.swap(nal);changed=true;}
+                if(vps!=nal) {vps.swap(nal);changed=result.parameter_sets_updated=true;}
             } else {
                 int pps_id;
                 if(!hevc_probe::parse_pps_ids(nal.data(),nal.size(),pps_id,pps_sps_id)) return HevcFrameInfo{};
                 result.has_pps=true;
-                if(pps!=nal) {pps.swap(nal);changed=true;}
+                if(pps!=nal) {pps.swap(nal);changed=result.parameter_sets_updated=true;}
             }
         } else if(type<=31) {
             vcl=true;
+            if(result.vcl_type<0) result.vcl_type=type;
             if(type>=16 && type<=21) result.keyframe=true;
         }
         if(end==size) break;

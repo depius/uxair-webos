@@ -378,7 +378,9 @@ void Receiver::release_direct(bool released) {
     direct_embedded_audio=false;
     direct_cleanup_failed=!released;
 }
-extern "C" void uxair_direct_lost(void *context,unsigned long token){self(context).direct.connection_lost(uintptr_t(token));}
+extern "C" void uxair_direct_lost(void *context,unsigned long token,int reverse_failure){
+    self(context).direct.connection_lost(uintptr_t(token),reverse_failure!=0);
+}
 extern "C" int uxair_direct_encrypted_reverse(void *context,const char *owner,const unsigned char *key,unsigned long token) {
     return self(context).direct.bind_encrypted_reverse(owner,std::string(reinterpret_cast<const char*>(key),32),uintptr_t(token));
 }
@@ -390,13 +392,13 @@ extern "C" int uxair_direct_next_event(void *context,unsigned long token,char *o
     memcpy(output,event.data(),event.size());
     return int(event.size());
 }
-extern "C" int uxair_direct_request(void *context,const char *owner,const char *method,const char *target,const char *type,const char *body,int length,char **output,int *size,const char **mime,const char **reason,const unsigned char *key,unsigned long token) {
+extern "C" int uxair_direct_request(void *context,const char *owner,const char *method,const char *target,const char *type,const char *body,int length,char **output,int *size,const char **mime,const char **reason,const unsigned char *key,unsigned long token,unsigned connection) {
     Receiver& r=self(context);
     if(length<0||length>524288||(!body&&length))return 413;
     const bool play=target && !strcmp(target,"/play") && method && !strcmp(method,"POST");
     const char *blocked=play?r.direct_block_reason(key!=nullptr):nullptr;
     auto response=r.direct.request(owner?owner:"",method?method:"",target?target:"",type?type:"",body?std::string(body,size_t(length)):"",
-        blocked!=nullptr,key?std::string(reinterpret_cast<const char*>(key),32):std::string(),uintptr_t(token));
+        blocked!=nullptr,key?std::string(reinterpret_cast<const char*>(key),32):std::string(),uintptr_t(token),connection);
     *reason=response.reason;
     *size=int(response.body.size());*output=nullptr;
     if(*size){*output=static_cast<char*>(malloc(size_t(*size)));if(!*output){*size=0;return 500;}memcpy(*output,response.body.data(),size_t(*size));}

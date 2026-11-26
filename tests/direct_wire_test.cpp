@@ -414,6 +414,10 @@ int main(int argc, char **argv) {
                         snapshot.duration=12;
                         snapshot.backend_loaded=true;
                         snapshot.seekable=snapshot.frame_observed=snapshot.audio_fed=true;
+                        snapshot.ready_to_play=true;
+                        snapshot.backend_running=step!='h';
+                        snapshot.loaded_start=action.position;
+                        snapshot.loaded_end=action.position+0.25;
                     } else {
                         snapshot.state=DirectState::Error;
                         snapshot.error=DirectError::FetchFailed;
@@ -422,9 +426,11 @@ int main(int argc, char **argv) {
                 } else if(step=='a') {
                     assert(action.kind==DirectCommandKind::Pause);
                     snapshot.state=DirectState::Paused;
+                    snapshot.backend_running=false;
                 } else if(step=='r') {
                     assert(action.kind==DirectCommandKind::Resume);
                     snapshot.state=DirectState::Playing;
+                    snapshot.backend_running=true;
                 } else if(step=='s') {
                     assert(action.kind==DirectCommandKind::Seek && action.position==4);
                     snapshot.position=action.position;
@@ -432,6 +438,7 @@ int main(int argc, char **argv) {
                     assert((step=='t'||step=='m') && action.kind==DirectCommandKind::Stop);
                     assert(action.origin==(step=='m'?DirectOrigin::SenderRemove:DirectOrigin::SenderStop));
                     snapshot.state=DirectState::Ended;
+                    snapshot.stop_origin=action.origin;
                     receiver.release_direct(true);
                 }
                 receiver.direct.publish(snapshot);

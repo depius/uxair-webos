@@ -39,7 +39,7 @@ private:
     void backend_pause(bool pause, DirectOrigin origin);
     void start_running(int64_t now);
     void progress_log(const char* stage, const char* reason, int64_t now);
-    void update_snapshot();
+    void update_snapshot(int64_t now);
 
     HlsRelay network_;
     DirectSession* session_ = nullptr;
@@ -51,7 +51,11 @@ private:
     std::atomic<int64_t> duration_ns_{0};
     std::atomic<DirectError> download_error_{DirectError::None};
     std::atomic<DirectStage> download_stage_{DirectStage::ManifestFetch};
+    std::atomic<int> download_http_{0};
+    std::atomic<const char*> download_codec_{"unknown"}, download_container_{"unknown"};
     std::mutex mutex_;
+    bool initial_target_selected_=false, initial_seek_set_=false;
+    double initial_seek_position_=0;
     std::condition_variable slot_;
     std::unique_ptr<Job> pending_, current_;
     struct FeedTrack {

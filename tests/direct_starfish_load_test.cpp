@@ -33,9 +33,9 @@ static std::string string_field(plist_t dict, const char *key) {
 int main() {
     Media media;
     media.guard_direct_callbacks(direct_native_json_summary);
-    const auto open = [&] {
+    const auto open = [&](MirrorCodec codec=MirrorCodec::H264) {
         return media.open(UXAIR_DEV_APP_ID, 1280, 720, true, 44100, 2097152,
-                          1920, 1080, MirrorCodec::H264, 60);
+                          1920, 1080, codec, 60);
     };
     StarfishMediaAPIs::load_exception = "No such node (plugins)";
     assert(!open() && media.open_failure() == MediaOpenFailure::StarfishLoad);
@@ -93,7 +93,8 @@ int main() {
     plist_free(root);
 
     media.close();
-    assert(open() && !media.ready && media.frames==0);
+    assert(open(MirrorCodec::ExperimentalHevc) && !media.ready && media.frames==0);
+    assert(StarfishMediaAPIs::payload.find("\"video\":\"H265\"")!=std::string::npos);
     callback(PF_EVENT_TYPE_STR_STATE_UPDATE__LOADCOMPLETED, 0, nullptr, live_context);
     callback(PF_EVENT_TYPE_FRAMEREADY, 0, nullptr, live_context);
     callback(PF_EVENT_TYPE_INT_ERROR, 0, nullptr, live_context);
