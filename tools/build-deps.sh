@@ -62,5 +62,14 @@ if [[ "${1:-}" == --direct ]] && { [ "$build_stamp" != "$previous_stamp" ] || [ 
      make -j6
      make install) >build/logs/curl.log 2>&1
 fi
+if [[ "${1:-}" == --direct ]]; then
+    # Diagnostics in the B7 capture use the pinned SDK numbering. Host test
+    # distributions can use a different FFmpeg enum and should test names.
+    "$CC" $CFLAGS -I"$prefix/include" -x c -fsyntax-only - <<'EOF'
+#include <libavcodec/codec_id.h>
+_Static_assert(AV_CODEC_ID_HEVC == 173, "Unexpected HEVC ID in bundled FFmpeg");
+_Static_assert(AV_CODEC_ID_AV1 == 225, "Unexpected AV1 ID in bundled FFmpeg");
+EOF
+fi
 printf '%s\n' "$build_stamp" > "$prefix/build-config.sha256"
 echo "Dependencies ready in $prefix"

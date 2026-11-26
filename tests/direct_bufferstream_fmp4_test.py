@@ -25,9 +25,10 @@ def generate(directory, rate, seconds, video=True, split_tracks=False, silent_10
     if video:
         geometry = '160x96' if codec == 'av1' else '1920x1080' if silent_1080p else '640x480'
         command[4:4] = ['-f', 'lavfi', '-i', f'testsrc2=size={geometry}:rate=30']
-        if codec in ('hevc', 'main10'):
+        if codec in ('hevc', 'cra', 'main10'):
+            open_gop = int(codec == 'cra')
             command += ['-c:v', 'libx265', '-preset', 'ultrafast', '-tag:v', 'hvc1',
-                        '-x265-params', 'log-level=error:pools=none:frame-threads=1:keyint=60:min-keyint=60:scenecut=0:open-gop=0:bframes=2',
+                        '-x265-params', f'log-level=error:pools=none:frame-threads=1:keyint=60:min-keyint=60:scenecut=0:open-gop={open_gop}:bframes=2',
                         '-profile:v', 'main10' if codec == 'main10' else 'main',
                         '-pix_fmt', 'yuv420p10le' if codec == 'main10' else 'yuv420p']
         elif codec == 'av1':
@@ -120,6 +121,7 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     generate(root / 'audio', 44100, 4, video=False)
     generate(root / 'silent', 44100, 4, silent_1080p=True)
     generate(root / 'hevc', 44100, 8, codec='hevc')
+    generate(root / 'cra', 44100, 8, codec='cra')
     generate(root / 'main10', 44100, 2, codec='main10')
     generate(root / 'av1', 44100, 2, codec='av1')
     (root / 'silent-ts').mkdir()
@@ -176,6 +178,8 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     head = init('clip/init.mp4') + entry('clip/part0.m4s') + entry('clip/part1.m4s')
     playlist('boundary', head + '#EXT-X-DISCONTINUITY\n' + entry('clip/part0.m4s') + entry('clip/part1.m4s'))
     playlist('changed-map', head + init('next/init.mp4') + entry('next/part0.m4s') + entry('next/part1.m4s'))
+    playlist('hevc-boundary', init('hevc/init.mp4') + entry('hevc/part0.m4s') + entry('hevc/part1.m4s') +
+             '#EXT-X-DISCONTINUITY\n' + init('cra/init.mp4') + entry('cra/part0.m4s') + entry('cra/part1.m4s'))
     playlist('missing-map', entry('clip/part0.m4s'))
     playlist('missing-init', init('absent.mp4') + entry('clip/part0.m4s'))
     (root / 'bad.m4s').write_bytes(struct.pack('>I4s', 1000, b'moof'))
@@ -225,7 +229,8 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
                          r'first-pcm-bytes=[1-9]\d* .*timestamps=valid .*tracks=2', checked.stdout)
     assert re.search(r'aac-rate=44100 .*timestamps=valid .*fragments=2', checked.stdout)
     assert 'stage=manifest-cancelled' in checked.stdout and 'stage=replace-completed' in checked.stdout
-    assert 'video-codec-id=225 video-codec-name=av1' in checked.stdout
-    assert 'video-codec-name=hevc' in checked.stdout and 'stage=variant-fallback' in checked.stdout
+    assert re.search(r'video-codec-id=\d+ video-codec-name=av1', checked.stdout)
+    assert re.search(r'video-codec-name=hevc hevc-rap=21', checked.stdout)
+    assert 'stage=variant-fallback' in checked.stdout
     assert 'stage=manifest-fetch error=http-401' in checked.stdout and 'stage=manifest-fetch error=http-403' in checked.stdout
     assert 'PRIVATE' not in checked.stdout and 'SECRET' not in checked.stdout and 'http://' not in checked.stdout

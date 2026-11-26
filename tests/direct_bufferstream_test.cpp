@@ -485,6 +485,8 @@ static void fmp4_samples(const std::string& base) {
     expected_codec=MirrorCodec::ExperimentalHevc;
     run("/fallback-master.m3u8", DirectError::None, 1);
     run("/hevc/media.m3u8", DirectError::None, 2, true);
+    run("/cra/media.m3u8", DirectError::None, 2, true);
+    run("/hevc-boundary.m3u8", DirectError::None, 2);
     expected_codec=MirrorCodec::H264;
     puts("PASS: fMP4 H.264/AAC-LC, B-frames, byte ranges, pause, seek, discontinuity, map change and rejection paths");
     replacement_samples(base);

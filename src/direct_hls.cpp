@@ -625,7 +625,7 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
                         return DirectError::HevcConfiguration;
                     segment.h264_profile=conf[1]&31;
                     segment.h264_level=conf[12];
-                    if((conf[1]&0xdf)!=1||(conf[16]&3)!=1||(conf[17]&7)||(conf[18]&7))
+                    if((conf[1]&0xdf)!=1||(conf[16]&3)!=1||(conf[17]&7)||(conf[18]&7)||!conf[12]||conf[12]>153)
                         return DirectError::HevcProfile;
                     if(!demux.init_video(stream)) return DirectError::HevcConfiguration;
                     const auto& annex=*demux.annex_b->par_out;

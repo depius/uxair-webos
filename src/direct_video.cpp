@@ -279,6 +279,9 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         }
     }
     last_request_ms_=direct_now_ms();
+    const bool native=snapshot_.backend!=DirectBackend::Bufferstream;
+    const bool running=live_media(snapshot_.state) &&
+        (native?snapshot_.state==DirectState::Playing:snapshot_.backend_running);
     if(method=="POST"&&target=="/action") {
         if(command.encrypted && body.size()>16384){reply.status=413;return reply;}
         plist_t root=nullptr;
@@ -338,7 +341,7 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
     } else if((method=="GET"||method=="POST"||method=="PUT")&&(target.compare(0,13,"/getProperty?")==0||target.compare(0,13,"/setProperty?")==0)) {
         const auto key=target.substr(13);
         if((method=="GET"||method=="POST")&&target.compare(0,13,"/getProperty?")==0&&(key=="playbackPosition"||key=="duration"||key=="rate")) {
-            std::ostringstream out;out<<"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>value</key><real>"<<(key=="duration"?snapshot_.duration:key=="rate"?(snapshot_.state==DirectState::Playing?1:0):snapshot_.position)<<"</real></dict></plist>";
+            std::ostringstream out;out<<"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>value</key><real>"<<(key=="duration"?snapshot_.duration:key=="rate"?int(running):snapshot_.position)<<"</real></dict></plist>";
             reply.body=out.str();reply.type="text/x-apple-plist+xml";reply.status=200;return reply;
         }
         // Do not acknowledge subtitle, rate-boundary or playlist mutation features we do not implement.
@@ -440,9 +443,7 @@ DirectReply DirectSession::request(const std::string& owner,const std::string& m
         if(target=="/scrub")out<<"duration: "<<snapshot_.duration<<"\nposition: "<<snapshot_.position<<"\n";
         else {
             reply.type="text/x-apple-plist+xml";
-            const bool native=snapshot_.backend!=DirectBackend::Bufferstream;
             const bool live=live_media(snapshot_.state);
-            const bool running=live && (native?snapshot_.state==DirectState::Playing:snapshot_.backend_running);
             const bool ready=live && (native?(running||snapshot_.state==DirectState::Paused):snapshot_.ready_to_play);
             const auto range=[&](const char* name,double start,double end) {
                 out<<"<key>"<<name<<"</key><array>";
@@ -529,13 +530,14 @@ void DirectSession::terminal_locked(const DirectSnapshot& status,DirectOrigin or
         origin==DirectOrigin::Replacement?"replaced":status.natural_end?"completed":"stopped";
     fprintf(stderr,"[direct-session-terminal] generation=%llu decoder=%llu conn=%u result=%s stop-class=%s stage=%s error=%s "
             "codec=%s container=%s geometry=%ux%u initial-rate=%d backend=%s running=%d presented=%d active-ms=%lld "
-            "frame-age-ms=%lld feed-age-ms=%lld http=%d reverse=%s\n",
+            "frame-age-ms=%lld feed-age-ms=%lld http=%d reverse=%s reverse-failure=%d\n",
             (unsigned long long)generation_,(unsigned long long)status.decoder_generation,control_connection_,
             result,origin!=DirectOrigin::None?direct_origin_name(origin):status.natural_end?"eos":direct_error_name(error),
             direct_stage_name(status.stage),direct_error_name(error),status.codec,status.container,status.width,status.height,
-            int(!initial_paused_),direct_backend_name(status.backend),int(status.backend_running),int(status.frame_observed),
+            int(!initial_paused_),direct_backend_name(status.backend),int(status.backend_running),
+            int(frame_reported_||status.frame_observed),
             (long long)status.active_ms,(long long)status.frame_age_ms,(long long)status.feed_age_ms,
-            status.upstream_http,encrypted_reverse_?"attached":reverse_failed_?"failed":"detached");
+            status.upstream_http,encrypted_reverse_?"attached":reverse_failed_?"failed":"detached",int(reverse_failed_));
 }
 const char *direct_state_name(DirectState s){switch(s){case DirectState::Loading:case DirectState::Buffering:return "loading";case DirectState::Playing:return "playing";case DirectState::Paused:return "paused";case DirectState::Ended:case DirectState::Idle:return "stopped";default:return "stopped";}}
 void DirectSession::event_locked(DirectState state) {
@@ -670,7 +672,7 @@ void DirectSession::connection_lost(uintptr_t token,bool reverse_failure) {
     const auto retired=std::find(retired_play_connections_.begin(),retired_play_connections_.end(),token);
     if(retired!=retired_play_connections_.end()){*retired=0;return;}
     if(token==encrypted_reverse_) {
-        reverse_failed_=reverse_failure;
+        reverse_failed_|=reverse_failure;
         encrypted_reverse_=0;
         events_.clear();
         if(!play_connection_ && snapshot_.state!=DirectState::Loading &&
