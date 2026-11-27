@@ -73,24 +73,30 @@ std::string attribute(const std::string& line, const char* key) {
 
 double variant_bandwidth(const std::string& tag, unsigned& preference) {
     const auto codecs = attribute(tag, "CODECS");
-    preference=1; // Undeclared codec, confirm from the initialization data.
+    preference=2; // Undeclared codec, confirm from the initialization data.
     const auto range=attribute(tag,"VIDEO-RANGE");
     if(!range.empty() && range!="SDR") return 0;
     if (!codecs.empty()) {
         const auto comma = codecs.find(',');
-        if (comma == std::string::npos || codecs.find(',', comma + 1) != std::string::npos) return 0;
+        if (comma != std::string::npos && codecs.find(',', comma + 1) != std::string::npos) return 0;
         const auto trim = [](const std::string& codec) {
             const auto start = codec.find_first_not_of(" \t");
             return start == std::string::npos ? std::string() :
                 codec.substr(start, codec.find_last_not_of(" \t") - start + 1);
         };
         const auto first_codec = trim(codecs.substr(0, comma));
-        const auto second_codec = trim(codecs.substr(comma + 1));
-        const auto& video=first_codec=="mp4a.40.2"?second_codec:first_codec;
-        const auto& audio=first_codec=="mp4a.40.2"?first_codec:second_codec;
-        if (audio!="mp4a.40.2") return 0;
-        if(starts(video,"avc1.")||starts(video,"avc3.")) preference=3;
-        else if(starts(video,"hvc1.1.")||starts(video,"hev1.1.")) preference=2;
+        const auto second_codec = comma==std::string::npos?std::string():trim(codecs.substr(comma + 1));
+        const auto is_video=[](const std::string& codec) {
+            return starts(codec,"avc1.")||starts(codec,"avc3.")||starts(codec,"hvc1.1.")||starts(codec,"hev1.1.");
+        };
+        const bool first_video=is_video(first_codec);
+        const auto& video=first_video?first_codec:second_codec;
+        const auto& audio=first_video?second_codec:first_codec;
+        if(!is_video(video)||is_video(audio)) return 0;
+        const bool supported_audio=audio=="mp4a.40.2"||audio=="mp4a.40.34"||
+            audio=="mp4a.6B"||audio=="mp4a.6b"||audio=="mp4a.69"||audio=="mp3"||audio=="ac-3"||audio=="ec-3";
+        if(starts(video,"avc1.")||starts(video,"avc3.")) preference=supported_audio?5:3;
+        else if(starts(video,"hvc1.1.")||starts(video,"hev1.1.")) preference=supported_audio?4:1;
         else return 0;
     }
     if (!attribute(tag, "VIDEO").empty()) return 0;
@@ -247,6 +253,9 @@ struct Demuxer {
 };
 
 struct AdtsFormat { int sample_rate; int channels; };
+bool compatible_audio(AVCodecID id) {
+    return id==AV_CODEC_ID_AAC||id==AV_CODEC_ID_MP3||id==AV_CODEC_ID_AC3||id==AV_CODEC_ID_EAC3;
+}
 constexpr int aac_rates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000,
                              22050, 16000, 12000, 11025, 8000, 7350};
 
@@ -567,8 +576,9 @@ DirectError direct_parse_playlist(const std::string& text, const std::string& ba
     return end ? DirectError::None : DirectError::PlaylistLive;
 }
 
-DirectError direct_demux_segment(const std::string& data, const std::string& init, const std::atomic<bool>& cancelled,
-                            AudioDecoder& audio, int width, int height, DirectDemuxedSegment& segment) {
+DirectError direct_demux_segment(const std::string& data,const std::string& init,const std::atomic<bool>& cancelled,
+                               AudioDecoder& aac,HlsAudioDecoder& audio,int width,int height,
+                               bool mute,bool drain,DirectDemuxedSegment& segment) {
     segment = DirectDemuxedSegment();
     const TimestampWarnings warnings(segment.ffmpeg_timestamp_warnings);
     if (cancelled) return DirectError::FetchCancelled;
@@ -604,10 +614,12 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
     Demuxer demux;
     HevcStream hevc;
     bool discard_hevc_rasl=false;
+    const AVStream* decoded_stream=nullptr;
+    if(mute) segment.audio_fallback="audio-disabled";
     if (!demux.open(reader,mp4)) return cancelled ? DirectError::FetchCancelled : DirectError::DemuxOpen;
     if (mp4) {
         segment.tracks=demux.format->nb_streams;
-        if (segment.tracks!=2) return DirectError::Mp4Track;
+        if (!segment.tracks||segment.tracks>2) return DirectError::Mp4Track;
         unsigned videos=0,audios=0;
         for (unsigned i=0;i<segment.tracks;++i) {
             const auto& stream=*demux.format->streams[i];
@@ -644,11 +656,16 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
                 segment.h264_level = par.extradata[3];
             } else if(par.codec_type==AVMEDIA_TYPE_AUDIO) {
                 ++audios;segment.audio_codec=par.codec_id;
-                if(par.codec_id!=AV_CODEC_ID_AAC||par.codec_tag!=MKTAG('m','p','4','a')) return DirectError::AudioCodec;
-                if(!mp4_aac_lc(par).sample_rate) return DirectError::Mp4Config;
+                segment.audio_codec_name=avcodec_get_name(par.codec_id);
+                if(!compatible_audio(par.codec_id)) segment.audio_fallback="unsupported-audio-codec";
+                else if((par.codec_id==AV_CODEC_ID_AAC &&
+                         (par.codec_tag!=MKTAG('m','p','4','a')||!mp4_aac_lc(par).sample_rate)) ||
+                        (par.codec_id==AV_CODEC_ID_AC3&&par.codec_tag!=MKTAG('a','c','-','3')) ||
+                        (par.codec_id==AV_CODEC_ID_EAC3&&par.codec_tag!=MKTAG('e','c','-','3')))
+                    segment.audio_fallback="invalid-audio-config";
             }
         }
-        if(videos!=1||audios!=1) return DirectError::Mp4Track;
+        if(videos!=1||audios>1) return DirectError::Mp4Track;
     }
     const bool continuing = width != 0;
     segment.width = width;
@@ -664,6 +681,21 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
     int64_t last_audio_pts = AV_NOPTS_VALUE;
     int audio_samples = 0;
     unsigned aac_without_pcm = 0;
+    const unsigned frames_at_start=audio.frames;
+    std::vector<HlsPcm> pcm_blocks;
+    // Add only decoded, timestamped PCM. Audio fallback removes any PCM from
+    // the segment before it becomes visible to the playback thread.
+    const auto save_pcm=[&](std::vector<uint8_t>& buffer,int64_t pts) {
+        if(buffer.size()>max_segment_bytes-segment.bytes) return false;
+        DirectAccessUnit pcm;
+        pcm.pts_ns=pcm.dts_ns=pts;
+        pcm.duration_ns=av_rescale_q(buffer.size()/4,AVRational{1,44100},AVRational{1,int(second)});
+        pcm.data.swap(buffer);
+        segment.bytes+=pcm.data.size();
+        if(!segment.audio_packets++) segment.first_pcm_bytes=pcm.data.size();
+        segment.packets.push_back(std::move(pcm));
+        return true;
+    };
     const auto timestamp_error = [&](bool video, const char* reason) {
         segment.timestamp_problem = reason;
         return video ? DirectError::VideoTimestamp : DirectError::AudioTimestamp;
@@ -680,13 +712,30 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
             segment.video_codec = stream.codecpar->codec_id;
             segment.video_codec_name = avcodec_get_name(stream.codecpar->codec_id);
         }
-        else segment.audio_codec = stream.codecpar->codec_id;
-        if (packet.size <= 0 || size_t(packet.size) > max_packet_bytes) return DirectError::StreamLimit;
-        if (packet.flags & AV_PKT_FLAG_CORRUPT) return DirectError::PacketCorrupt;
+        else {
+            segment.audio_codec=stream.codecpar->codec_id;
+            segment.audio_codec_name=avcodec_get_name(stream.codecpar->codec_id);
+            ++segment.audio_input_packets;
+            if(audio_index>=0 && packet.stream_index!=audio_index) return DirectError::MultipleTracks;
+            audio_index=packet.stream_index;
+        }
         if (mp4 && (av_packet_get_side_data(&packet,AV_PKT_DATA_ENCRYPTION_INFO,nullptr)||
                     av_packet_get_side_data(&packet,AV_PKT_DATA_ENCRYPTION_INIT_INFO,nullptr))) return DirectError::EncryptedMedia;
-        if (mp4 && av_packet_get_side_data(&packet, AV_PKT_DATA_NEW_EXTRADATA, nullptr))
-            return DirectError::Mp4Config;
+        const bool new_config=mp4 && av_packet_get_side_data(&packet,AV_PKT_DATA_NEW_EXTRADATA,nullptr);
+        const bool oversized=packet.size<=0||size_t(packet.size)>max_packet_bytes;
+        const bool corrupt=packet.flags&AV_PKT_FLAG_CORRUPT;
+        if(video) {
+            if(new_config) return DirectError::Mp4Config;
+            if(oversized) return DirectError::StreamLimit;
+            if(corrupt) return DirectError::PacketCorrupt;
+        } else {
+            if(!segment.audio_fallback) {
+                if(new_config) segment.audio_fallback="audio-track-change";
+                else if(oversized||corrupt) segment.audio_fallback="invalid-audio-packet";
+                else if(!compatible_audio(stream.codecpar->codec_id)) segment.audio_fallback="unsupported-audio-codec";
+            }
+            if(segment.audio_fallback) {av_packet_unref(&packet);continue;}
+        }
         const AVRational ns = {1, int(second)};
         DirectAccessUnit unit;
         unit.video = video;
@@ -790,13 +839,31 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
             if (!segment.hevc || unit.data.empty())
                 unit.data.insert(unit.data.end(), packet.data, packet.data + packet.size);
         } else {
-            if (stream.codecpar->codec_id != AV_CODEC_ID_AAC) return DirectError::AudioCodec;
-            if (audio_index >= 0 && packet.stream_index != audio_index) return DirectError::MultipleTracks;
-            audio_index = packet.stream_index;
+            if(stream.codecpar->codec_id!=AV_CODEC_ID_AAC) {
+                decoded_stream=&stream;
+                segment.audio_fallback=audio.decode(stream,&packet,pcm_blocks);
+                segment.aac_sample_rate=audio.rate;
+                segment.aac_channels=audio.channels;
+                if(!segment.audio_fallback) {
+                    ++segment.audio_decoded_packets;
+                    for(auto& block:pcm_blocks)
+                        if(!save_pcm(block.data,block.time_ns)) return DirectError::StreamLimit;
+                }
+                av_packet_unref(&packet);
+                continue;
+            }
             const auto adts = mp4?mp4_aac_lc(*stream.codecpar):adts_aac_lc(packet);
-            if (!adts.sample_rate) return mp4?DirectError::Mp4Config:DirectError::AacAdts;
+            if (!adts.sample_rate) {
+                segment.audio_fallback=mp4?"invalid-audio-config":"invalid-adts";
+                av_packet_unref(&packet);
+                continue;
+            }
             if (segment.aac_sample_rate && (segment.aac_sample_rate != adts.sample_rate ||
-                                            segment.aac_channels != adts.channels)) return DirectError::TrackChange;
+                                            segment.aac_channels != adts.channels)) {
+                segment.audio_fallback="audio-track-change";
+                av_packet_unref(&packet);
+                continue;
+            }
             segment.aac_sample_rate = adts.sample_rate;
             segment.aac_channels = adts.channels;
             const AVRational sample_time = {1, adts.sample_rate};
@@ -816,11 +883,15 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
             audio_samples += 1024;
             unit.duration_ns = av_rescale_q(1024, sample_time, ns);
             const auto& par=*stream.codecpar;
-            const bool decoded=mp4?audio.decode_mp4_aac(packet.data,size_t(packet.size),par.extradata,
+            const bool decoded=mp4?aac.decode_mp4_aac(packet.data,size_t(packet.size),par.extradata,
                 size_t(par.extradata_size),adts.sample_rate,adts.channels,unit.data):
-                audio.decode_adts(packet.data,size_t(packet.size),unit.data);
-            if (!decoded)
-                return DirectError::AacDecode;
+                aac.decode_adts(packet.data,size_t(packet.size),unit.data);
+            if (!decoded) {
+                segment.audio_fallback="aac-decode";
+                av_packet_unref(&packet);
+                continue;
+            }
+            ++segment.audio_decoded_packets;
             // MOV can attach leading and trailing AAC trim for priming and
             // edits. The shared decoder takes raw bytes, so apply it to PCM.
             size_t trim_size = 0;
@@ -844,7 +915,7 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
                 // The first Mux ADTS packet carries encoder data and consumes
                 // a timestamp slot, while AAC returns success with no frame.
                 ++segment.aac_without_pcm;
-                if (++aac_without_pcm > 8) return DirectError::AacNoPcm;
+                if (++aac_without_pcm > 8) segment.audio_fallback="no-audio-pcm";
                 av_packet_unref(&packet);
                 continue;
             }
@@ -864,12 +935,27 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
     }
     if (cancelled) return DirectError::FetchCancelled;
     if (result != AVERROR_EOF) return DirectError::DemuxRead;
-    if (mp4 && (video_index<0||audio_index<0)) return DirectError::Mp4Track;
+    if (mp4 && video_index<0) return DirectError::Mp4Track;
     if (video_index < 0) return DirectError::MissingH264;
     if (!segment.video_packets) return segment.hevc?DirectError::HevcConfiguration:
         segment.idr?DirectError::H264Configuration:DirectError::H264Keyframe;
-    if (audio_index < 0) return DirectError::MissingAac;
-    if (!segment.audio_packets) return DirectError::AacNoPcm;
+    if(drain && decoded_stream && !segment.audio_fallback) {
+        segment.audio_fallback=audio.decode(*decoded_stream,nullptr,pcm_blocks);
+        if(!segment.audio_fallback)
+            for(auto& block:pcm_blocks)
+                if(!save_pcm(block.data,block.time_ns)) return DirectError::StreamLimit;
+    }
+    segment.audio_frames=decoded_stream?audio.frames-frames_at_start:segment.audio_packets;
+    if(segment.audio_fallback) {
+        const auto end=std::remove_if(segment.packets.begin(),segment.packets.end(),[&](const DirectAccessUnit& unit) {
+            if(unit.video) return false;
+            segment.bytes-=unit.data.size();
+            return true;
+        });
+        segment.packets.erase(end,segment.packets.end());
+        segment.audio_packets=0;
+        segment.first_pcm_bytes=0;
+    }
     if (leading_dts != AV_NOPTS_VALUE) {
         segment.skipped_ns = std::max(int64_t(0), segment.first_video_dts_ns - leading_dts);
         const auto keep = std::remove_if(segment.packets.begin(), segment.packets.end(), [&](const DirectAccessUnit& unit) {
@@ -879,8 +965,9 @@ DirectError direct_demux_segment(const std::string& data, const std::string& ini
             return true;
         });
         segment.packets.erase(keep, segment.packets.end());
-        if (!segment.audio_packets) return DirectError::MissingAac;
     }
+    if(!segment.audio_packets&&!segment.audio_fallback)
+        segment.audio_fallback=audio_index<0?"no-audio-track":"no-audio-pcm";
     std::stable_sort(segment.packets.begin(), segment.packets.end(), [](const DirectAccessUnit& a, const DirectAccessUnit& b) {
         return a.dts_ns < b.dts_ns;
     });

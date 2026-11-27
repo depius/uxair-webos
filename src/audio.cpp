@@ -3,9 +3,13 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/channel_layout.h>
 #include <libswresample/swresample.h>
+#ifdef UXAIR_DIRECT_BUILD
+#include <libavformat/avformat.h>
+#endif
 }
 #include <cstdio>
 #include <cstring>
+#include <utility>
 namespace { constexpr unsigned adts_aac = 9, mp4_aac = 10; }
 AudioDecoder::~AudioDecoder() { reset(); }
 void AudioDecoder::reset() {
@@ -87,3 +91,111 @@ bool AudioDecoder::decode_packet(unsigned codec, const uint8_t *data, size_t siz
     av_frame_free(&frame); av_packet_free(&packet);
     return ok;
 }
+
+#ifdef UXAIR_DIRECT_BUILD
+HlsAudioDecoder::~HlsAudioDecoder() { reset(); }
+
+void HlsAudioDecoder::reset() {
+    swr_free(&resampler_);
+    avcodec_free_context(&context_);
+    clock_started_=false;
+    origin_=input_samples_=output_samples_=0;
+    rate=channels=0;
+    frames=0;
+    format_=-1;
+}
+
+const char* HlsAudioDecoder::decode(const AVStream& stream,const AVPacket* packet,std::vector<HlsPcm>& blocks) {
+    blocks.clear();
+    const auto& parameters=*stream.codecpar;
+    if(!context_) {
+        if(!packet) return nullptr;
+        const auto* codec=avcodec_find_decoder(parameters.codec_id);
+        if(!codec) return "decoder-unavailable";
+        context_=avcodec_alloc_context3(codec);
+        if(!context_ || avcodec_parameters_to_context(context_,&parameters)<0) return "decoder-init";
+        context_->pkt_timebase=stream.time_base;
+        context_->max_samples=32768;
+        context_->err_recognition=AV_EF_CRCCHECK|AV_EF_EXPLODE;
+        if(avcodec_open2(context_,codec,nullptr)<0) return "decoder-init";
+    }
+    if(context_->codec_id!=parameters.codec_id || av_cmp_q(context_->pkt_timebase,stream.time_base))
+        return "audio-track-change";
+    if(avcodec_send_packet(context_,packet)<0) return "decode-error";
+    AVFrame* frame=av_frame_alloc();
+    if(!frame) return "frame-allocation";
+    constexpr AVRational nanoseconds={1,1000000000};
+    constexpr AVRational pcm_time={1,44100};
+    const auto convert=[&](const uint8_t** data,int samples) {
+        const int capacity=swr_get_out_samples(resampler_,samples);
+        if(capacity<0 || capacity>16384 || blocks.size()>=16) return false;
+        if(!capacity) return true;
+        HlsPcm block;
+        block.time_ns=origin_+av_rescale_q(output_samples_,pcm_time,nanoseconds);
+        block.data.resize(size_t(capacity)*4);
+        uint8_t* output=block.data.data();
+        const int count=swr_convert(resampler_,&output,capacity,data,samples);
+        if(count<0) return false;
+        if(count) {
+            output_samples_+=count;
+            block.data.resize(size_t(count)*4);
+            blocks.push_back(std::move(block));
+        }
+        return true;
+    };
+    const char* error=nullptr;
+    int64_t previous_frame_pts=AV_NOPTS_VALUE;
+    for (;;) {
+        const int result=avcodec_receive_frame(context_,frame);
+        if(result==AVERROR(EAGAIN)||result==AVERROR_EOF) break;
+        if(result<0 || (frame->flags&AV_FRAME_FLAG_CORRUPT)) {error="decode-error";break;}
+        auto& layout=frame->ch_layout;
+        const int incoming_rate=frame->sample_rate;
+        if(frame->nb_samples<=0 || frame->nb_samples>4096 || incoming_rate<8000 || incoming_rate>96000 ||
+           layout.nb_channels<1 || layout.nb_channels>8 || !av_channel_layout_check(&layout)) {
+            error="unsupported-audio-layout";break;
+        }
+        if(layout.order==AV_CHANNEL_ORDER_UNSPEC) {
+            if(layout.nb_channels>2) {error="unsupported-audio-layout";break;}
+            av_channel_layout_default(&layout,layout.nb_channels);
+        }
+        if(layout.order!=AV_CHANNEL_ORDER_NATIVE) {error="unsupported-audio-layout";break;}
+        const AVRational source_time={1,incoming_rate};
+        const int64_t pts=frame->pts==AV_NOPTS_VALUE?AV_NOPTS_VALUE:
+            av_rescale_q(frame->pts,stream.time_base,nanoseconds);
+        if(pts!=AV_NOPTS_VALUE && (pts< -1000000000LL || pts>172800000000000LL)) {
+            error="audio-timestamp";break;
+        }
+        if(!clock_started_) {
+            if(pts==AV_NOPTS_VALUE) {av_frame_unref(frame);continue;}
+            origin_=pts;clock_started_=true;
+        } else if(pts!=AV_NOPTS_VALUE && pts!=previous_frame_pts) {
+            const auto expected=origin_+av_rescale_q(input_samples_,source_time,nanoseconds);
+            // Missing timestamps after the first anchor use the exact sample
+            // count. A larger jump needs an HLS discontinuity and a new clock.
+            if(pts<expected-5000000 || pts>expected+5000000) {error="audio-timestamp";break;}
+        }
+        if(!resampler_) {
+            AVChannelLayout stereo=AV_CHANNEL_LAYOUT_STEREO;
+            if(swr_alloc_set_opts2(&resampler_,&stereo,AV_SAMPLE_FMT_S16,44100,&layout,
+                                  static_cast<AVSampleFormat>(frame->format),incoming_rate,0,nullptr)<0 ||
+               !resampler_ || swr_init(resampler_)<0) {
+                error="resampler-init";break;
+            }
+            rate=incoming_rate;channels=layout.nb_channels;format_=frame->format;channel_mask_=layout.u.mask;
+        } else if(incoming_rate!=rate || layout.u.mask!=channel_mask_ || frame->format!=format_) {
+            error="audio-track-change";break;
+        }
+        if(!convert(const_cast<const uint8_t**>(frame->extended_data),frame->nb_samples)) {
+            error="resampler-convert";break;
+        }
+        input_samples_+=frame->nb_samples;
+        previous_frame_pts=pts;
+        ++frames;
+        av_frame_unref(frame);
+    }
+    if(!packet && !error && resampler_ && !convert(nullptr,0)) error="resampler-drain";
+    av_frame_free(&frame);
+    return error;
+}
+#endif

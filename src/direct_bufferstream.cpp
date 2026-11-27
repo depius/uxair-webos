@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace {
 constexpr int64_t second = 1000000000;
@@ -138,10 +139,12 @@ void DirectBufferstream::download(DirectCommand play) {
             auto segment = std::upper_bound(playlist.segments.begin(), playlist.segments.end(), target,
                 [](int64_t time, const DirectSegment& item) { return time < item.start_ns; });
             --segment;
-            AudioDecoder audio;
+            AudioDecoder aac;
+            HlsAudioDecoder audio;
+            bool mute=false;
             int64_t origin = 0, previous_dts = 0, previous_audio_pts = 0;
             unsigned prepared = 0;
-            int width = 0, height = 0, aac_rate = 0, aac_channels = 0;
+            int width = 0, height = 0, audio_rate = 0, audio_channels = 0, audio_codec=-1;
             unsigned loaded_map=0, loaded_period=0;
             std::string init;
             for (; segment != playlist.segments.end(); ++segment) {
@@ -173,8 +176,9 @@ void DirectBufferstream::download(DirectCommand play) {
                 }
                 loaded_period=segment->period;
                 if (boundary) {
+                    aac.reset();
                     audio.reset();
-                    width=height=aac_rate=aac_channels=0;
+                    width=height=audio_rate=audio_channels=0;
                 }
                 download_stage_ = DirectStage::SegmentFetch;
                 const auto response = network_.fetch(segment->url, 8 * 1024 * 1024,false,segment->range);
@@ -183,9 +187,41 @@ void DirectBufferstream::download(DirectCommand play) {
                 if (response.status != 200) { download_error_ = fetch_error(response); return; }
                 download_stage_ = DirectStage::SegmentDemux;
                 std::unique_ptr<Job> job(new Job);
-                const auto result = direct_demux_segment(response.data,init,cancelled_,audio,width,height,job->segment);
+                const auto next=segment+1;
+                const bool final_segment=next==playlist.segments.end();
+                const bool drain=final_segment || next->period!=segment->period;
+                auto result=direct_demux_segment(response.data,init,cancelled_,aac,audio,width,height,mute,drain,job->segment);
                 if (cancelled_) return;
+                const auto& detected=job->segment;
+                const char* audio_failure=detected.audio_fallback;
+                if(!audio_failure&&width&&audio_codec>=0 &&
+                    (detected.audio_codec!=audio_codec||detected.aac_sample_rate!=audio_rate||detected.aac_channels!=audio_channels))
+                    audio_failure="audio-track-change";
+                const bool ends_without_audio=final_segment && segment->duration_ns<=250000000 && width &&
+                    !detected.audio_packets && audio_failure &&
+                    (!strcmp(audio_failure,"no-audio-pcm")||!strcmp(audio_failure,"no-audio-track"));
+                if(result==DirectError::None && audio_failure && !mute && !ends_without_audio) {
+                    mute=true;
+                    const auto* source_codec=detected.audio_codec_name;
+                    const int source_channels=detected.aac_channels, source_rate=detected.aac_sample_rate;
+                    // The audio track is part of the Starfish Load contract.
+                    // Retire an already started A/V decoder only at a usable
+                    // video random-access point. Reuse the downloaded bytes.
+                    if(width) {
+                        boundary=true;
+                        width=height=0;
+                        result=direct_demux_segment(response.data,init,cancelled_,aac,audio,0,0,true,false,job->segment);
+                    }
+                    aac.reset();
+                    audio.reset();
+                    fprintf(stderr,"[direct-hls-audio] generation=%llu source-codec=%s source-channels=%d source-rate=%d "
+                            "output-format=none conversion=unsupported fallback=%s reason=%s\n",
+                            (unsigned long long)play.generation,source_codec,source_channels,source_rate,
+                            result==DirectError::None?"video-only":"fatal",audio_failure);
+                }
+                if(cancelled_) return;
                 const auto& media = job->segment;
+                job->audio_enabled=!mute;
                 download_codec_=media.video_codec_name;
                 download_container_=media.container;
                 if (prepared < 3 || result != DirectError::None)
@@ -202,6 +238,13 @@ void DirectBufferstream::download(DirectCommand play) {
                     download_error_ = result;
                     return;
                 }
+                if(!mute && (prepared==0||boundary)) {
+                    fprintf(stderr,"[direct-hls-audio] generation=%llu source-codec=%s source-channels=%d source-rate=%d "
+                            "output-format=s16le-stereo-44100 conversion=decode-pcm fallback=none "
+                            "audio-demuxed=%u audio-decoded=%u frames-converted=%u\n",
+                            (unsigned long long)play.generation,media.audio_codec_name,media.aac_channels,media.aac_sample_rate,
+                            media.audio_input_packets,media.audio_decoded_packets,media.audio_frames);
+                }
                 ++prepared;
                 download_stage_ = DirectStage::SegmentTimeline;
                 if (!width) {
@@ -209,25 +252,22 @@ void DirectBufferstream::download(DirectCommand play) {
                     for (const auto& packet : media.packets) origin = std::min(origin, packet.pts_ns);
                     width = media.width;
                     height = media.height;
-                    aac_rate = media.aac_sample_rate;
-                    aac_channels = media.aac_channels;
+                    audio_rate = media.aac_sample_rate;
+                    audio_channels = media.aac_channels;
+                    audio_codec=media.audio_codec;
                 } else {
-                    if (media.aac_sample_rate != aac_rate || media.aac_channels != aac_channels) {
-                        download_error_ = DirectError::TrackChange;
-                        return;
-                    }
                     const auto gap = media.first_video_dts_ns - previous_dts;
                     if (gap <= 0 || gap > 250000000) {
                         download_error_ = DirectError::Discontinuity;
                         return;
                     }
-                    if (!init.empty()) {
+                    if (!init.empty() && media.audio_packets) {
                         const auto first_audio=std::find_if(media.packets.begin(),media.packets.end(),[](const DirectAccessUnit& packet){return !packet.video;});
                         const auto audio_gap=first_audio->pts_ns-previous_audio_pts;
                         if(audio_gap<=0||audio_gap>250000000) { download_error_=DirectError::AudioTimestamp;return; }
                     }
                 }
-                if (!init.empty()) {
+                if (!init.empty() && media.audio_packets) {
                     const auto last_audio=std::find_if(media.packets.rbegin(),media.packets.rend(),[](const DirectAccessUnit& packet){return !packet.video;});
                     previous_audio_pts=last_audio->pts_ns;
                 }
@@ -287,11 +327,19 @@ bool DirectBufferstream::fail(DirectError error) {
 
 DirectError DirectBufferstream::startup_error() const {
     if (!opened_) return DirectError::StartupFetchTimeout;
-    if (!tracks_[Video].accepted || !tracks_[Audio].accepted) return DirectError::InitialFeedTimeout;
+    if (!feeds_ready()) return DirectError::InitialFeedTimeout;
     if (!media_.ready) return DirectError::LoadTimeout;
     if (!media_.play_accepted()) return DirectError::PlayRejected;
     if (!media_.playing) return DirectError::PlayingTimeout;
     return DirectError::FirstFrameTimeout;
+}
+
+bool DirectBufferstream::feeds_ready() const {
+    return tracks_[Video].accepted && (!audio_enabled_||tracks_[Audio].accepted);
+}
+
+int64_t DirectBufferstream::buffered_until() const {
+    return audio_enabled_?std::min(tracks_[Video].buffered_until,tracks_[Audio].buffered_until):tracks_[Video].buffered_until;
 }
 
 void DirectBufferstream::start_running(int64_t now) {
@@ -346,7 +394,8 @@ void DirectBufferstream::progress_log(const char* stage, const char* reason, int
     fprintf(stderr,"[direct-session] stage=%s reason=%s generation=%llu decoder=%llu desired-rate=%d pause=%s backend=%s "
             "frames=%u frame-age-ms=%lld feed-age-ms=%lld active-ms=%lld playhead-ms=%lld video-buffer-ms=%lld audio-buffer-ms=%lld "
             "segments-prepared=%u v-demuxed=%u a-demuxed=%u fetch=%s fetch-done=%d v-queue=%zu a-queue=%zu v-submitted=%u a-submitted=%u v-accepted=%u a-accepted=%u "
-            "v-retries=%u a-retries=%u next-v-dts-ns=%lld next-a-dts-ns=%lld last-v-dts-ns=%lld last-v-pts-ns=%lld last-a-pts-ns=%lld audio-underruns=%u\n",
+            "v-retries=%u a-retries=%u next-v-dts-ns=%lld next-a-dts-ns=%lld last-v-dts-ns=%lld last-v-pts-ns=%lld last-a-pts-ns=%lld "
+            "audio-underruns=%u audio-enabled=%d av-feed-delta-ms=%lld\n",
             stage,reason,(unsigned long long)status_.generation,(unsigned long long)decoder_generation_,
             int(!paused_),direct_origin_name(paused_?pause_origin_:buffering_?DirectOrigin::Buffering:DirectOrigin::None),
             backend_paused?"paused":media_.playing?"playing":media_.ready?"ready":"starting",
@@ -355,7 +404,8 @@ void DirectBufferstream::progress_log(const char* stage, const char* reason, int
             direct_stage_name(download_stage_.load()),int(finished_.load()),
             queued[Video],queued[Audio],video.attempts,audio.attempts,video.accepted,audio.accepted,video.retries,audio.retries,
             (long long)next_dts[Video],(long long)next_dts[Audio],
-            (long long)video.last_dts,(long long)video.last_pts,(long long)audio.last_pts,audio_underruns_);
+            (long long)video.last_dts,(long long)video.last_pts,(long long)audio.last_pts,audio_underruns_,int(audio_enabled_),
+            video.accepted&&audio.accepted?(long long)(video.last_pts-audio.last_pts)/1000000:-1LL);
 }
 
 void DirectBufferstream::feed_packets(int64_t now) {
@@ -477,6 +527,7 @@ void DirectBufferstream::update_snapshot(int64_t now) {
     status_.backend_loaded=opened_&&media_.ready;
     status_.frame_observed=opened_&&media_.frames>0;
     status_.audio_fed=opened_&&media_.feed_audio_accepted>0;
+    status_.audio_enabled=opened_&&audio_enabled_;
     status_.upstream_fetches = network_.requests;
     status_.downloaded_bytes = network_.bytes;
     status_.relay_failures = network_.failures;
@@ -484,8 +535,8 @@ void DirectBufferstream::update_snapshot(int64_t now) {
     status_.position = status_.backend_loaded?std::min(status_.duration,double(position_ns_+clock_ns_)/second):0;
     status_.loaded_start=status_.position;
     status_.loaded_end=status_.backend_loaded?std::min(status_.duration,
-        double(position_ns_+std::min(tracks_[Video].buffered_until,tracks_[Audio].buffered_until))/second):0;
-    status_.ready_to_play=status_.backend_loaded&&tracks_[Video].accepted&&tracks_[Audio].accepted;
+        double(position_ns_+buffered_until())/second):0;
+    status_.ready_to_play=status_.backend_loaded&&feeds_ready();
     status_.seekable=status_.ready_to_play&&status_.duration>0;
     status_.backend_running=presented_&&status_.state==DirectState::Playing&&media_.playing;
     status_.decoder_generation=decoder_generation_;
@@ -575,14 +626,16 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
         media_.guard_direct_callbacks(direct_native_json_summary);
 #endif
         const auto& media = current_->segment;
+        audio_enabled_=current_->audio_enabled;
         status_.codec=media.video_codec_name;
         status_.container=media.container;
         current_->decoder_boundary=false;
         const auto video_span = media.last_video_dts_ns - media.first_video_dts_ns;
         const int fps = media.video_packets > 1 && video_span < 25000000LL * (media.video_packets - 1) ? 60 : 30;
-        std::fprintf(stderr, "[direct-player] stage=create owner=ui generation=%llu decoder=%llu video=%s max-fps=%d pcm-hz=44100 pcm-channels=2 pcm-format=S16LE\n",
-                     (unsigned long long)status_.generation,(unsigned long long)decoder_generation_,media.hevc?"H265":"H264",fps);
-        opened_ = media_.open(UXAIR_APP_ID, status_.width, status_.height, true, 44100,
+        std::fprintf(stderr, "[direct-player] stage=create owner=ui generation=%llu decoder=%llu video=%s max-fps=%d audio=%s\n",
+                     (unsigned long long)status_.generation,(unsigned long long)decoder_generation_,media.hevc?"H265":"H264",fps,
+                     audio_enabled_?"s16le-stereo-44100":"disabled");
+        opened_ = media_.open(UXAIR_APP_ID,status_.width,status_.height,audio_enabled_,44100,
                               2 * 1024 * 1024,1920,1080,media.hevc?MirrorCodec::ExperimentalHevc:MirrorCodec::H264,fps);
         if (!opened_) fail(DirectError::BufferstreamStart);
         // The next tick's time is after the synchronous Load() call.
@@ -614,13 +667,12 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
     if (opened_ && more_available && !current_->decoder_boundary && (!paused_ || !presented_)) feed_packets(now);
     if (status_.state == DirectState::Error) { update_snapshot(now); return status_; }
 
-    if (opened_ && media_.ready && media_.playing && !presented_ &&
-        media_.frames && media_.feed_video_accepted && media_.feed_audio_accepted) {
+    if (opened_ && media_.ready && media_.playing && !presented_ && media_.frames && feeds_ready()) {
         presented_ = true;
         start_running(now);
         if (paused_) backend_pause(true,pause_origin_);
-        std::fprintf(stderr, "[direct-bufferstream] decoder-progress geometry=%ux%u video=%s audio=AAC-LC\n",
-                     status_.width,status_.height,status_.codec);
+        std::fprintf(stderr, "[direct-bufferstream] decoder-progress geometry=%ux%u video=%s audio=%s\n",
+                     status_.width,status_.height,status_.codec,audio_enabled_?"pcm":"disabled");
         if (play_.replacement && !replacement_reported_) {
             replacement_reported_ = true;
             fprintf(stderr,"[direct-session] stage=replace-completed generation=%llu decoder=%llu elapsed-ms=%lld rate=%d\n",
@@ -628,8 +680,7 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
                     (long long)std::max(int64_t(0),now/1000000-play_.admitted_ms),int(!paused_));
         }
     }
-    startup_paused_ = paused_ && opened_ && !presented_ && media_.ready &&
-                      tracks_[Video].accepted && tracks_[Audio].accepted;
+    startup_paused_ = paused_ && opened_ && !presented_ && media_.ready && feeds_ready();
     if (!presented_ && !startup_paused_ && now - opened_at_ > startup_timeout) {
         const auto reason = startup_error();
         if (reason == DirectError::InitialFeedTimeout) status_.stage = DirectStage::Preroll;
@@ -654,9 +705,9 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
                 eos_at_ = now;
                 media_.eos();
             }
-        } else if (!paused_ && !buffering_ && clock_ns_ >= std::min(tracks_[Video].buffered_until,tracks_[Audio].buffered_until)) {
+        } else if (!paused_ && !buffering_ && clock_ns_ >= buffered_until()) {
             buffering_ = true;
-            if (clock_ns_ >= tracks_[Audio].buffered_until) ++audio_underruns_;
+            if (audio_enabled_ && clock_ns_ >= tracks_[Audio].buffered_until) ++audio_underruns_;
             backend_pause(true,DirectOrigin::Buffering);
             if (control_records_ < 32) progress_log("buffering","waiting-for-segment",now);
         }

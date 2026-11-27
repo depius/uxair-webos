@@ -2,6 +2,7 @@
 from collections import Counter
 import functools
 import http.server
+import json
 import os
 from pathlib import Path
 import re
@@ -17,11 +18,19 @@ ROOT = Path(__file__).resolve().parents[1]
 HEADER = '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:2\n#EXT-X-PLAYLIST-TYPE:VOD\n'
 
 
-def generate(directory, rate, seconds, video=True, split_tracks=False, silent_1080p=False, codec='avc'):
+def generate(directory, rate, seconds, video=True, split_tracks=False, silent_1080p=False, codec='avc',
+             audio_codec='aac', channels=2, container='fmp4'):
     directory.mkdir()
     audio = f'anullsrc=cl=stereo:r={rate}' if silent_1080p else f'sine=frequency=440:sample_rate={rate}'
-    command = ['ffmpeg', '-nostdin', '-v', 'error', '-f', 'lavfi',
-               '-i', audio, '-ac', '2', '-c:a', 'aac', '-profile:a', 'aac_low']
+    command = ['ffmpeg', '-nostdin', '-v', 'error']
+    if audio_codec != 'none':
+        if channels == 6:
+            # Put the signal in the center channel to exercise downmixing.
+            audio = f'aevalsrc=0|0|0.2*sin(2*PI*440*t)|0|0|0:s={rate}:c=5.1'
+        encoders = {'mp3': 'libmp3lame', 'opus': 'libopus'}
+        command += ['-f', 'lavfi', '-i', audio, '-ac', str(channels), '-c:a', encoders.get(audio_codec, audio_codec)]
+        if audio_codec == 'aac':
+            command += ['-profile:a', 'aac_low']
     if video:
         geometry = '160x96' if codec == 'av1' else '1920x1080' if silent_1080p else '640x480'
         command[4:4] = ['-f', 'lavfi', '-i', f'testsrc2=size={geometry}:rate=30']
@@ -36,9 +45,10 @@ def generate(directory, rate, seconds, video=True, split_tracks=False, silent_10
         else:
             command += ['-c:v', 'libx264', '-threads:v', '2', '-preset', 'veryfast', '-profile:v', 'high',
                         '-pix_fmt', 'yuv420p', '-bf', '2', '-g', '60', '-sc_threshold', '0']
-    command += ['-t', str(seconds), '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0',
-                '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init.mp4',
-                '-hls_segment_filename', 'part%d.m4s', 'media.m3u8']
+    command += ['-t', str(seconds), '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0', '-hls_segment_type', container]
+    if container == 'fmp4':
+        command += ['-hls_fmp4_init_filename', 'init.mp4', '-hls_segment_filename', 'part%d.m4s']
+    command += ['media.m3u8']
     if split_tracks:
         command[-1:-1] = ['-hls_segment_options', 'movflags=+separate_moof']
     subprocess.run(command, cwd=directory, check=True, timeout=25)
@@ -124,6 +134,15 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     generate(root / 'cra', 44100, 8, codec='cra')
     generate(root / 'main10', 44100, 2, codec='main10')
     generate(root / 'av1', 44100, 2, codec='av1')
+    generate(root / 'mp3', 32000, 8, audio_codec='mp3', channels=1, container='mpegts')
+    generate(root / 'ac3', 48000, 8, audio_codec='ac3', channels=6, container='mpegts')
+    generate(root / 'eac3', 48000, 8, audio_codec='eac3', channels=6)
+    generate(root / 'video-only', 44100, 8, audio_codec='none')
+    generate(root / 'opus', 48000, 8, audio_codec='opus')
+    clock_source = root / 'clock.mp3'
+    subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(root / 'mp3/media.m3u8'),
+                    '-map', '0:a:0', '-c', 'copy', str(clock_source)], check=True, timeout=12)
+    subprocess.run(['build/tests/direct-bufferstream-test', str(clock_source), '--audio-clock'], cwd=ROOT, check=True, timeout=8)
     (root / 'silent-ts').mkdir()
     subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', '../silent/media.m3u8',
                     '-c', 'copy', '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0', 'media.m3u8'],
@@ -143,6 +162,22 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
                                      variant('muxed', 'redirect') + external +
                                      '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="muxed",NAME="Embedded"\n')
     (root / 'separate.m3u8').write_text('#EXTM3U\n' + variant('external', 'clip/media.m3u8') + external)
+    (root / 'eac3/master.m3u8').write_text('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=950000,CODECS="avc1.64001f,ec-3"\nmedia.m3u8\n')
+    eac3 = root / 'eac3'
+    prefix_length = (eac3 / 'init.mp4').stat().st_size
+    sample = eac3 / 'packet-probe.mp4'
+    sample.write_bytes((eac3 / 'init.mp4').read_bytes() + (eac3 / 'part1.m4s').read_bytes())
+    packets = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', 'a:0',
+                                                  '-show_entries', 'packet=pos', '-of', 'json', str(sample)]))
+    audio_at = int(packets['packets'][0]['pos']) - prefix_length
+    damaged = bytearray((eac3 / 'part1.m4s').read_bytes())
+    assert damaged[audio_at:audio_at+2] == b'\x0b\x77'
+    damaged[audio_at] = 0
+    (eac3 / 'bad.m4s').write_bytes(damaged)
+    playlist('bad-eac3', init('eac3/init.mp4') + entry('eac3/part0.m4s') + entry('eac3/bad.m4s') +
+             entry('eac3/part2.m4s') + entry('eac3/part3.m4s'))
+    eac3_pair=entry('eac3/part0.m4s')+entry('eac3/part1.m4s')
+    playlist('eac3-boundary', init('eac3/init.mp4') + eac3_pair + '#EXT-X-DISCONTINUITY\n' + eac3_pair)
     (root / 'cookie-media.m3u8').write_text((clip / 'media.m3u8').read_text().replace('"init.mp4"', '"clip/init.mp4"').replace('\npart', '\nclip/part'))
     def codec_variant(uri, codecs, rate, video_range='SDR'):
         return f'#EXT-X-STREAM-INF:BANDWIDTH={rate},CODECS="{codecs},mp4a.40.2",VIDEO-RANGE={video_range}\n{uri}\n'
@@ -233,4 +268,9 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     assert re.search(r'video-codec-name=hevc hevc-rap=21', checked.stdout)
     assert 'stage=variant-fallback' in checked.stdout
     assert 'stage=manifest-fetch error=http-401' in checked.stdout and 'stage=manifest-fetch error=http-403' in checked.stdout
+    for codec, channels, rate in [('mp3', 1, 32000), ('ac3', 6, 48000), ('eac3', 6, 48000)]:
+        assert re.search(rf'source-codec={codec} source-channels={channels} source-rate={rate} .*conversion=decode-pcm', checked.stdout)
+    assert re.search(r'source-codec=opus .*fallback=video-only reason=unsupported-audio-codec', checked.stdout)
+    assert re.search(r'source-codec=eac3 .*fallback=video-only reason=decode-error', checked.stdout)
+    assert 'audio=disabled' in checked.stdout
     assert 'PRIVATE' not in checked.stdout and 'SECRET' not in checked.stdout and 'http://' not in checked.stdout

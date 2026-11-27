@@ -8,6 +8,7 @@
 #include "hls_relay.h"
 
 class AudioDecoder;
+class HlsAudioDecoder;
 
 struct DirectSegment {
     std::string url;
@@ -50,12 +51,15 @@ struct DirectDemuxedSegment {
     const char* container = "unknown";
     const char* pixel_format = "unknown";
     const char* video_codec_name = "unknown";
+    const char* audio_codec_name = "none";
+    const char* audio_fallback = nullptr;
     bool hevc = false;
     int hevc_rap = -1;
     const char* timestamp_problem = "none";
     int probe_score = 0, video_codec = -1, audio_codec = -1, h264_profile = 0, h264_level = 0;
     unsigned video_packets = 0, audio_packets = 0, reordered = 0, tied_dts = 0, inferred_dts = 0;
     unsigned aac_without_pcm = 0;
+    unsigned audio_input_packets=0, audio_frames=0, audio_decoded_packets=0;
     unsigned ffmpeg_timestamp_warnings = 0;
     unsigned tracks = 0, fragments = 0;
     size_t first_pcm_bytes = 0;
@@ -63,6 +67,7 @@ struct DirectDemuxedSegment {
 };
 
 DirectError direct_demux_segment(const std::string& data, const std::string& init, const std::atomic<bool>& cancelled,
-                            AudioDecoder& audio, int width, int height, DirectDemuxedSegment& segment);
+                                AudioDecoder& aac,HlsAudioDecoder& audio,int width,int height,
+                                bool mute,bool drain,DirectDemuxedSegment& segment);
 // Install before starting playback threads. Unrelated FFmpeg logs retain the default callback.
 void direct_hls_log_setup();

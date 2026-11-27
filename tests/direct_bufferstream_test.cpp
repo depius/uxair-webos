@@ -3,6 +3,9 @@
 #include "h264.h"
 #include "hevc_stream.h"
 
+extern "C" {
+#include <libavformat/avformat.h>
+}
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -20,6 +23,7 @@ unsigned native_attempts = 0;
 bool inject_retry = true;
 bool reordered_pts = false, allow_reordering = false;
 bool pcm_signal = false;
+bool decoder_audio = true, expect_audio = true, allow_audio_loss = false;
 int expected_width = 1280, expected_height = 720;
 MirrorCodec expected_codec = MirrorCodec::H264;
 HevcStream hevc_feed;
@@ -58,7 +62,8 @@ Media::~Media() { close(); }
 
 bool Media::open(const char*, int width, int height, bool audio, int rate, int, int, int, MirrorCodec codec, int, bool) {
     assert(!native_open && !decoder_open && width == expected_width && height == expected_height &&
-           audio && rate == 44100 && codec == expected_codec);
+           (allow_audio_loss || audio==expect_audio) && rate == 44100 && codec == expected_codec);
+    decoder_audio=audio;
     hevc_feed.reset();
     decoder_open = true;
     ++opens;
@@ -115,6 +120,7 @@ FeedResult Media::feed(const void* bytes, size_t size, int64_t pts, bool video) 
             last_frame_event_ns = now;
         }
     } else {
+        assert(decoder_audio);
         saw_early_audio |= !ready;
         assert(size % 4 == 0 && pts > last_audio_pts);
         if (!pcm_signal) {
@@ -130,7 +136,7 @@ FeedResult Media::feed(const void* bytes, size_t size, int64_t pts, bool video) 
 void Media::tick() {
     if (!decoder_open) return;
     const auto age = now - mock_opened_at;
-    const bool preroll = feed_video_accepted && feed_audio_accepted;
+    const bool preroll = feed_video_accepted && (!decoder_audio || feed_audio_accepted);
     if (mode == Startup::PauseReplay && !replay_resumed &&
         (feed_video_accepted < 12 || feed_audio_accepted < 11)) return;
     if (!ready && mode != Startup::NoLoadCallback &&
@@ -424,7 +430,7 @@ static void fmp4_samples(const std::string& base) {
             const auto snapshot = player.tick(now += 20000000);
             assert(snapshot.buffer_bytes <= 16 * 1024 * 1024);
             if (snapshot.state == DirectState::Playing && snapshot.position > (sought ? 4.3 : .5)) {
-                assert(snapshot.backend_loaded && snapshot.frame_observed && snapshot.audio_fed);
+                assert(snapshot.backend_loaded && snapshot.frame_observed && snapshot.audio_fed==snapshot.audio_enabled);
                 played = true;
                 if (seek && !sought) {
                     command.kind = DirectCommandKind::Pause;
@@ -444,7 +450,9 @@ static void fmp4_samples(const std::string& base) {
             if (snapshot.state == DirectState::Error || snapshot.state == DirectState::Ended) {
                 if (error == DirectError::None) {
                     assert(snapshot.state == DirectState::Ended && played && snapshot.position >= 7.9);
-                    assert(reordered_pts && pcm_signal && std::llabs(last_video_pts - last_audio_pts) < 160000000);
+                    assert(reordered_pts && snapshot.audio_enabled==expect_audio);
+                    if(expect_audio) assert(pcm_signal && std::llabs(last_video_pts - last_audio_pts) < 180000000);
+                    else assert(!snapshot.audio_fed && !pcm_signal);
                 } else {
                     assert(snapshot.state == DirectState::Error && snapshot.error == error);
                 }
@@ -488,11 +496,65 @@ static void fmp4_samples(const std::string& base) {
     run("/cra/media.m3u8", DirectError::None, 2, true);
     run("/hevc-boundary.m3u8", DirectError::None, 2);
     expected_codec=MirrorCodec::H264;
+    run("/mp3/media.m3u8",DirectError::None,2,true);
+    run("/ac3/media.m3u8",DirectError::None,1);
+    run("/eac3/master.m3u8",DirectError::None,2,true);
+    run("/eac3-boundary.m3u8",DirectError::None,2);
+    expect_audio=false;
+    run("/video-only/media.m3u8",DirectError::None,1);
+    run("/opus/media.m3u8",DirectError::None,1);
+    allow_audio_loss=true;
+    run("/bad-eac3.m3u8",DirectError::None,2);
+    allow_audio_loss=false;
+    expect_audio=true;
     puts("PASS: fMP4 H.264/AAC-LC, B-frames, byte ranges, pause, seek, discontinuity, map change and rejection paths");
     replacement_samples(base);
 }
 
+static void audio_clock_sample(const char* path) {
+    AVFormatContext* format=nullptr;
+    assert(avformat_open_input(&format,path,nullptr,nullptr)==0 && avformat_find_stream_info(format,nullptr)>=0);
+    auto* packet=av_packet_alloc();
+    assert(packet && format->nb_streams==1);
+    auto& stream=*format->streams[0];
+    assert(stream.codecpar->codec_id==AV_CODEC_ID_MP3);
+    HlsAudioDecoder decoder;
+    std::vector<HlsPcm> pcm;
+    const auto id=stream.codecpar->codec_id;
+    stream.codecpar->codec_id=AV_CODEC_ID_NONE;
+    assert(av_read_frame(format,packet)==0 && decoder.decode(stream,packet,pcm) && pcm.empty());
+    stream.codecpar->codec_id=id;
+    packet->pts=packet->dts=AV_NOPTS_VALUE;
+    assert(!decoder.decode(stream,packet,pcm) && pcm.empty());
+    av_packet_unref(packet);
+    int64_t start=0, samples=0;
+    const auto check=[&] {
+        for(const auto& block:pcm) {
+            if(!samples) start=block.time_ns;
+            assert(block.time_ns==start+av_rescale_q(samples,AVRational{1,44100},AVRational{1,1000000000}));
+            samples+=block.data.size()/4;
+        }
+    };
+    for(unsigned i=0;i<8;++i) {
+        assert(av_read_frame(format,packet)==0);
+        if(i) packet->pts=packet->dts=AV_NOPTS_VALUE;
+        assert(!decoder.decode(stream,packet,pcm) && !pcm.empty());
+        av_packet_unref(packet);
+        check();
+    }
+    const auto before_drain=samples;
+    assert(!decoder.decode(stream,nullptr,pcm));
+    check();
+    assert(samples>before_drain);
+    decoder.reset();
+    assert(decoder.frames==0);
+    av_packet_free(&packet);
+    avformat_close_input(&format);
+    puts("PASS: MP3 sample clock through missing timestamps, unavailable decoder, EOS drain and reset");
+}
+
 int main(int argc, char** argv) {
+    if(argc==3 && std::string(argv[2])=="--audio-clock") {audio_clock_sample(argv[1]);return 0;}
     assert(argc == 2 || (argc == 3 && (std::string(argv[2]) == "--public" || std::string(argv[2]) == "--fmp4")));
     direct_hls_log_setup();
     const std::string base = argv[1];

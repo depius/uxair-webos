@@ -222,6 +222,11 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	reversePeer.upgrade()
 	writeQuery(reversePeer, reverse, 101)
 	playRequest := plistRequest("POST", "/play", play)
+	step("u")
+	writeQuery(a, playRequest, 409)
+	step("j")
+	writeQuery(a, playRequest, 409)
+	step("l")
 	step("b")
 	writeQuery(a, playRequest, 409)
 	step("i")
@@ -237,6 +242,7 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 	other.socket.Close()
 	writeQuery(a, "POST /scrub?position=1.5 HTTP/1.1\r\n\r\n", 200)
 	step("p")
+	step("y")
 	if body := writeQuery(a, query, 200); !bytes.Contains(body, []byte("<key>loadedTimeRanges</key><array><dict>")) ||
 		!bytes.Contains(body, []byte("<key>rate</key><real>1</real>")) {
 		t.Fatal("native playback state omitted the ready backend rate or accepted range")
@@ -398,6 +404,7 @@ func TestNativeEncryptedDispatcher(t *testing.T) {
 		"admitted=4 ", "reverse_upgrades=4", "encrypted_active=0",
 		"reason=stale-play-connection", "stage=replace-requested", "outstanding=0",
 		"stop-class=sender-remove", "action=playlistRemove status=409", "property=isInterestedInDateRange status=200",
+		"reservation=transport-reserved", "transition=release-idle",
 	} {
 		if !strings.Contains(log, milestone) {
 			t.Errorf("missing native diagnostic %q", milestone)

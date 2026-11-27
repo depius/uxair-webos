@@ -28,6 +28,7 @@ private:
         int64_t interval_start_ns = 0, interval_end_ns = 0;
         int64_t decoder_origin_ns = 0;
         bool decoder_boundary = false;
+        bool audio_enabled = true;
     };
     void download(DirectCommand play);
     bool take_next();
@@ -40,6 +41,8 @@ private:
     void start_running(int64_t now);
     void progress_log(const char* stage, const char* reason, int64_t now);
     void update_snapshot(int64_t now);
+    bool feeds_ready() const;
+    int64_t buffered_until() const;
 
     HlsRelay network_;
     DirectSession* session_ = nullptr;
@@ -68,6 +71,7 @@ private:
     size_t preroll_bytes_ = 0;
     bool opened_ = false, presented_ = false, paused_ = false, buffering_ = false, eos_ = false;
     bool replacement_reported_ = false, startup_paused_ = false;
+    bool audio_enabled_ = true;
     DirectOrigin pause_origin_ = DirectOrigin::None;
     uint64_t decoder_generation_ = 0;
     unsigned control_records_ = 0, progress_records_ = 0, reported_frames_ = 1, audio_underruns_ = 0;

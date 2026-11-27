@@ -17,7 +17,8 @@ mkdir -p "$prefix" build/logs
 if command -v sha256sum >/dev/null; then sha256() { sha256sum "$1"; }; else sha256() { shasum -a 256 "$1"; }; fi
 ffmpeg_input=(--disable-avformat)
 if [[ "${1:-}" == --direct ]]; then
-    ffmpeg_input=(--enable-avformat --enable-demuxer=mpegts,mov --enable-parser=aac --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb)
+    ffmpeg_input=(--enable-avformat --enable-demuxer=mpegts,mov --enable-parser=aac,mpegaudio,ac3
+        --enable-decoder=mp3,ac3,eac3 --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb)
 fi
 build_stamp="$(sha256 "$0" | cut -d ' ' -f 1):${1:-base}"
 previous_stamp="$(cat "$prefix/build-config.sha256" 2>/dev/null || true)"

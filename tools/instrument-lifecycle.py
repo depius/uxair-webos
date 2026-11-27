@@ -31,7 +31,23 @@ def instrument_handler(source):
 def bind_setup(source):
     source = replace(source, """        if (raop->callbacks.report_client_request) {
             raop->callbacks.report_client_request(raop->callbacks.cls, deviceID, model, name, &admit_client);
-        }""", """        const unsigned uxair_epoch = uxair_admit_transport(raop->callbacks.cls, deviceID, model, name, &admit_client);""")
+        }""", """#ifdef UXAIR_DIRECT_BUILD
+        const unsigned uxair_epoch = uxair_admit_bound_transport(raop->callbacks.cls, deviceID, model, name, &admit_client, (uintptr_t)conn);
+#else
+        const unsigned uxair_epoch = uxair_admit_transport(raop->callbacks.cls, deviceID, model, name, &admit_client);
+#endif""")
+    admit_marker = """            return;
+        }
+
+        plist_get_data_val(req_eiv_node, &eiv, &eiv_len);"""
+    source = replace(source,admit_marker,"""            return;
+        }
+#ifdef UXAIR_DIRECT_BUILD
+        conn->uxair_epoch = uxair_epoch;
+        conn->uxair_admitted = true;
+#endif
+
+        plist_get_data_val(req_eiv_node, &eiv, &eiv_len);""")
     anchor = 'conn->raop_ntp, remote, conn->remotelen, aeskey);'
     return replace(source, anchor, anchor + """
         conn->uxair_epoch = uxair_epoch;
@@ -95,6 +111,18 @@ def main():
     source = replace(source, '#include "raop_handlers.h"',
                      '#include "receiver_lifecycle.h"\n#include "uxair_raop_handlers.h"')
     source = replace(source, 'struct raop_conn_s {', 'struct raop_conn_s {\n    unsigned uxair_epoch;\n    bool uxair_admitted;')
+    source = replace(source, """    if (conn->raop_ntp) {
+        raop_ntp_destroy(conn->raop_ntp);
+    }
+
+    if (raop->callbacks.video_flush)""", """    if (conn->raop_ntp) {
+        raop_ntp_destroy(conn->raop_ntp);
+    }
+#ifdef UXAIR_DIRECT_BUILD
+    if (conn->uxair_admitted) uxair_transport_closed(raop->callbacks.cls, (uintptr_t)conn, conn->uxair_epoch);
+#endif
+
+    if (raop->callbacks.video_flush)""")
     source = replace(source, """    /* Validate the callbacks structure */
     if (!callbacks->audio_process ||
         !callbacks->video_process) {

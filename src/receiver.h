@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <array>
 #include <deque>
 #include <mutex>
 #include <set>
@@ -48,6 +49,8 @@ struct Receiver {
     const char *direct_block_reason_locked(bool embedded_audio=false) const;
     bool direct_active = false, direct_cleanup_failed = false; // protected by mutex
     std::atomic<bool> direct_embedded_audio{false};
+    std::array<uintptr_t,8> transport_claims{}; // protected by mutex and transport epoch
+    int64_t transport_reserved_ns=0;
 #endif
     ~Receiver();
     bool start(const std::string& directory, const Settings& settings);

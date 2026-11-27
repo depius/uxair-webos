@@ -17,12 +17,23 @@
 #include <openssl/rand.h>
 
 static Receiver& self(void *p) { return *static_cast<Receiver *>(p); }
-extern "C" unsigned uxair_admit_transport(void *p,const char *id,const char *model,const char *name,bool *admit) {
+static unsigned admit_transport(void *p,const char *id,const char *model,const char *name,bool *admit
+#ifdef UXAIR_DIRECT_BUILD
+                                ,uintptr_t token
+#endif
+) {
     Receiver& r=self(p);
     std::lock_guard<std::mutex> lock(r.mutex);
     *admit=id && !r.ingress.closing && (r.client.empty()||r.client==id);
 #ifdef UXAIR_DIRECT_BUILD
     *admit = *admit && !r.direct_active && !r.direct_cleanup_failed;
+    if(*admit && token) {
+        auto claim=std::find(r.transport_claims.begin(),r.transport_claims.end(),token);
+        if(claim==r.transport_claims.end()) claim=std::find(r.transport_claims.begin(),r.transport_claims.end(),uintptr_t(0));
+        if(claim==r.transport_claims.end()) *admit=false;
+        else *claim=token;
+    }
+    if(*admit && r.client.empty()) r.transport_reserved_ns=now_ns();
 #endif
     fprintf(stderr,"[client] model=%.80s admitted=%d\n",model?model:"unknown",int(*admit));
     if(*admit) {
@@ -35,6 +46,41 @@ extern "C" unsigned uxair_admit_transport(void *p,const char *id,const char *mod
     }
     return r.transport_epoch.load();
 }
+extern "C" unsigned uxair_admit_transport(void *p,const char *id,const char *model,const char *name,bool *admit) {
+    return admit_transport(p,id,model,name,admit
+#ifdef UXAIR_DIRECT_BUILD
+                           ,0
+#endif
+    );
+}
+#ifdef UXAIR_DIRECT_BUILD
+extern "C" unsigned uxair_admit_bound_transport(void *p,const char *id,const char *model,const char *name,bool *admit,uintptr_t token) {
+    return admit_transport(p,id,model,name,admit,token);
+}
+extern "C" void uxair_transport_closed(void *p,uintptr_t token,unsigned epoch) {
+    Receiver& r=self(p);
+    std::lock_guard<std::mutex> lock(r.mutex);
+    if(!token || !r.ingress.accepts(epoch,r.transport_epoch.load())) return;
+    const auto claim=std::find(r.transport_claims.begin(),r.transport_claims.end(),token);
+    if(claim==r.transport_claims.end()) return;
+    *claim=0;
+    if(std::any_of(r.transport_claims.begin(),r.transport_claims.end(),[](uintptr_t value){return value!=0;})) return;
+    if(r.diagnostic_session_open || r.has_audio || r.mirror || !r.packets.empty() || r.resets.failure()) {
+        if(r.record_reset_locked(ResetOrigin::SenderTeardown,RESET_TYPE_RTP_SHUTDOWN,epoch))
+            fprintf(stderr,"[direct-admission] transport=closed epoch=%u transition=teardown\n",epoch);
+        return;
+    }
+    // The last admitted control socket has closed and its RTP objects are
+    // gone. A bare reservation does not require a decoder reset on the UI.
+    r.client.clear();
+    r.client_name.clear();
+    r.transport_reserved_ns=0;
+    r.resets=ResetNotice();
+    ++r.transport_epoch;
+    r.ingress.disconnected();
+    fprintf(stderr,"[direct-admission] transport=closed epoch=%u transition=release-idle\n",epoch);
+}
+#endif
 extern "C" void uxair_sender_video_reset(void *p,int reason,unsigned epoch) {
     self(p).request_reset(ResetOrigin::SenderTeardown,reason,epoch);
 }
@@ -129,6 +175,10 @@ void Receiver::clear() {
     pairing.reset();
     client.clear();
     client_name.clear();
+#ifdef UXAIR_DIRECT_BUILD
+    transport_claims={};
+    transport_reserved_ns=0;
+#endif
     video_timing.reset();
     ingress_to_queue.reset();
     ingress_copy.reset();
@@ -406,10 +456,30 @@ extern "C" int uxair_direct_request(void *context,const char *owner,const char *
         response.type=="text/parameters"?"text/parameters":"text/x-apple-plist+xml";
     if(play) {
         static std::atomic<unsigned> starts{0};
-        if(starts.load()<64 && starts.fetch_add(1)<64)
+        if(starts.load()<128 && starts.fetch_add(1)<128) {
+            const auto owner_state=r.direct.snapshot();
+            size_t claims=0;
+            int64_t age=-1;
+            bool audio=false,mirror=false,pending=false;
+            unsigned epoch=0;
+            {
+                std::lock_guard<std::mutex> lock(r.mutex);
+                claims=std::count_if(r.transport_claims.begin(),r.transport_claims.end(),[](uintptr_t value){return value!=0;});
+                if(r.transport_reserved_ns) age=(now_ns()-r.transport_reserved_ns)/1000000;
+                audio=r.has_audio;
+                mirror=r.mirror;
+                pending=r.resets.pending();
+                epoch=r.transport_epoch;
+            }
             fprintf(stderr,"[direct-protocol] play status=%d admission=%s descriptor=%s queued=%d reason=%s\n",
                 response.status,blocked?blocked:response.queued?"queued":response.status==409?"conflict":"handled",response.descriptor,int(response.queued),
                 response.reason?response.reason:"none");
+            fprintf(stderr,"[direct-admission] conn=%u status=%d reservation=%s owner-generation=%llu owner-state=%s "
+                    "reservation-age-ms=%lld transport-epoch=%u transport-claims=%zu audio-negotiated=%d mirror=%d reset-pending=%d active-backend=%s\n",
+                    connection,response.status,blocked?blocked:"available",(unsigned long long)owner_state.generation,
+                    direct_state_name(owner_state.state),(long long)age,epoch,claims,int(audio),int(mirror),int(pending),
+                    direct_backend_name(owner_state.backend));
+        }
     }
     return response.status;
 }

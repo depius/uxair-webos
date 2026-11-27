@@ -33,8 +33,8 @@ static std::string string_field(plist_t dict, const char *key) {
 int main() {
     Media media;
     media.guard_direct_callbacks(direct_native_json_summary);
-    const auto open = [&](MirrorCodec codec=MirrorCodec::H264) {
-        return media.open(UXAIR_DEV_APP_ID, 1280, 720, true, 44100, 2097152,
+    const auto open = [&](MirrorCodec codec=MirrorCodec::H264,bool audio=true) {
+        return media.open(UXAIR_DEV_APP_ID, 1280, 720, audio, 44100, 2097152,
                           1920, 1080, codec, 60);
     };
     StarfishMediaAPIs::load_exception = "No such node (plugins)";
@@ -102,12 +102,18 @@ int main() {
     auto* replacement_context = StarfishMediaAPIs::context;
     callback(PF_EVENT_TYPE_STR_STATE_UPDATE__LOADCOMPLETED, 0, nullptr, replacement_context);
     assert(media.ready);
+    media.close();
+    assert(open(MirrorCodec::H264,false));
+    assert(StarfishMediaAPIs::payload.find("\"video\":\"H264\"")!=std::string::npos);
+    assert(StarfishMediaAPIs::payload.find("\"audio\":")==std::string::npos);
+    assert(StarfishMediaAPIs::payload.find("\"pcmInfo\":")==std::string::npos);
+    replacement_context=StarfishMediaAPIs::context;
     StarfishMediaAPIs::unload_exception = "unload failed for https://SECRET.invalid/?token=PRIVATE";
     media.close();
     StarfishMediaAPIs::unload_exception = nullptr;
     std::thread late([&] { callback(PF_EVENT_TYPE_STR_STATE_UPDATE__LOADCOMPLETED, 0, nullptr, replacement_context); });
     late.join();
     assert(!media.ready);
-    assert(!media.direct_released() && !open() && StarfishMediaAPIs::unloads == 3);
+    assert(!media.direct_released() && !open() && StarfishMediaAPIs::unloads == 4);
     std::puts("PASS: Starfish BUFFERSTREAM schema, startup pause, delayed callbacks, and unload isolation");
 }

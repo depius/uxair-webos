@@ -1,4 +1,5 @@
 #include "receiver.h"
+#include "receiver_lifecycle.h"
 #include "capabilities.h"
 extern "C" {
 #include "http_request.h"
@@ -389,10 +390,29 @@ int main(int argc, char **argv) {
         }
         printf("UXAIR_PORT=%u\n", port);
         fflush(stdout);
+        unsigned idle_epoch=0;
         for(int step; (step=getchar())!=EOF;) {
             DirectCommand action;
             auto snapshot=receiver.direct.snapshot();
             if(step=='d') receiver.disconnect();
+            else if(step=='u') {
+                bool admitted=false;
+                idle_epoch=uxair_admit_bound_transport(&receiver,"fixture-raop","fixture","fixture",&admitted,1);
+                assert(admitted);
+                assert(uxair_admit_bound_transport(&receiver,"fixture-raop","fixture","fixture",&admitted,2)==idle_epoch && admitted);
+            } else if(step=='j') {
+                uxair_transport_closed(&receiver,1,idle_epoch);
+                assert(!strcmp(receiver.direct_block_reason(true),"transport-reserved"));
+            } else if(step=='l') {
+                uxair_transport_closed(&receiver,2,idle_epoch);
+                assert(!receiver.direct_block_reason(true) && receiver.transport_epoch!=idle_epoch);
+            } else if(step=='y') {
+                bool admitted=true;
+                uxair_admit_bound_transport(&receiver,"fixture-raop","fixture","fixture",&admitted,3);
+                assert(!admitted);
+                uxair_transport_closed(&receiver,2,idle_epoch);
+                assert(receiver.direct_active);
+            }
             else if(step=='b'||step=='i') {
                 receiver.has_audio=true;
                 receiver.last_audio_arrival=step=='b'?1:0;

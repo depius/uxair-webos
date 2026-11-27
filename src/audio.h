@@ -20,3 +20,33 @@ private:
     AVCodecContext *context_ = nullptr;
     SwrContext *resampler_ = nullptr;
 };
+
+#ifdef UXAIR_DIRECT_BUILD
+struct AVPacket;
+struct AVStream;
+struct HlsPcm {
+    std::vector<uint8_t> data;
+    int64_t time_ns=0;
+};
+
+// Owns a single HLS audio track and its sample clock on the download worker.
+// AAC and RAOP continue to use AudioDecoder.
+class HlsAudioDecoder {
+public:
+    ~HlsAudioDecoder();
+    HlsAudioDecoder()=default;
+    HlsAudioDecoder(const HlsAudioDecoder&)=delete;
+    HlsAudioDecoder& operator=(const HlsAudioDecoder&)=delete;
+    const char* decode(const AVStream&,const AVPacket*,std::vector<HlsPcm>&);
+    void reset();
+    int rate=0, channels=0;
+    unsigned frames=0;
+private:
+    AVCodecContext* context_=nullptr;
+    SwrContext* resampler_=nullptr;
+    int format_=-1;
+    uint64_t channel_mask_=0;
+    int64_t origin_=0, input_samples_=0, output_samples_=0;
+    bool clock_started_=false;
+};
+#endif

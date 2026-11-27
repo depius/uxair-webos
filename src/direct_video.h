@@ -43,6 +43,7 @@ struct DirectSnapshot {
     DirectError fallback_reason=DirectError::None;
     bool seekable=false, backend_loaded=false, frame_observed=false, audio_fed=false, natural_end=false;
     bool ready_to_play=false, backend_running=false;
+    bool audio_enabled=false;
     double loaded_start=0, loaded_end=0;
     uint64_t decoder_generation=0;
     int64_t frame_age_ms=-1, feed_age_ms=-1, active_ms=0;
