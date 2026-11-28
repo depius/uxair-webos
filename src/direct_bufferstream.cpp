@@ -37,7 +37,9 @@ void log_segment(const DirectDemuxedSegment& media, DirectError result, size_t n
         "video-codec=%d audio-codec=%d h264-profile=%d pixel-format=%s geometry=%dx%d aac-rate=%d aac-channels=%d "
         "video-packets=%u audio-packets=%u idr=%d first-idr=%d sps-pps=%d first-video-au=%d first-pcm-bytes=%zu aac-without-pcm=%u "
         "timestamps=%s timestamp-problem=%s pts-before-dts=%u tied-dts=%u inferred-first-dts=%u ffmpeg-timestamp-warnings=%u "
-        "tracks=%u fragments=%u video-level=%d video-codec-id=%d video-codec-name=%s hevc-rap=%d\n",
+        "tracks=%u fragments=%u video-level=%d video-codec-id=%d video-codec-name=%s hevc-rap=%d "
+        "source-geometry=%dx%d input-fps-milli=%d hevc-profile=%d hevc-tier=%d hevc-chroma=%d "
+        "hevc-luma-depth=%d hevc-chroma-depth=%d color-primaries=%d color-transfer=%d color-matrix=%d normalized-bytes=%zu\n",
         media.container[0] == 'f' ? "fragment-demux" : "segment-demux",
         number, direct_error_name(result), media.container, media.probe_score, media.video_codec, media.audio_codec,
         media.h264_profile, media.pixel_format, media.width, media.height, media.aac_sample_rate, media.aac_channels,
@@ -46,7 +48,10 @@ void log_segment(const DirectDemuxedSegment& media, DirectError result, size_t n
         result == DirectError::VideoTimestamp || result == DirectError::AudioTimestamp ? "invalid" :
             result == DirectError::None ? "valid" : "incomplete",
         media.timestamp_problem, media.reordered, media.tied_dts, media.inferred_dts, media.ffmpeg_timestamp_warnings,
-        media.tracks, media.fragments, media.h264_level, media.video_codec, media.video_codec_name, media.hevc_rap);
+        media.tracks, media.fragments, media.h264_level, media.video_codec, media.video_codec_name, media.hevc_rap,
+        media.source_width,media.source_height,media.input_fps_milli,media.hevc?media.h264_profile:0,
+        media.hevc_tier,media.hevc_chroma,media.hevc_luma_depth,media.hevc_chroma_depth,
+        media.color_primaries,media.color_transfer,media.color_matrix,media.bytes);
 }
 
 bool fcup_enabled() {
@@ -228,7 +233,9 @@ void DirectBufferstream::download(DirectCommand play) {
                     log_segment(media, result, size_t(segment - playlist.segments.begin()));
                 if (result != DirectError::None) {
                     if (!prepared && !attempt && !alternate.empty() &&
-                        (result==DirectError::VideoCodec || result==DirectError::HevcProfile || result==DirectError::AudioCodec)) {
+                        (result==DirectError::VideoCodec || result==DirectError::HevcProfile ||
+                         result==DirectError::HevcGeometry || result==DirectError::HevcFrameRate ||
+                         result==DirectError::HevcHdr || result==DirectError::AudioCodec)) {
                         fprintf(stderr,"[direct-hls] stage=variant-fallback generation=%llu reason=%s\n",
                                 (unsigned long long)play.generation,direct_error_name(result));
                         play.uri=alternate;
@@ -363,6 +370,7 @@ void DirectBufferstream::backend_pause(bool pause, DirectOrigin origin) {
 
 void DirectBufferstream::progress_log(const char* stage, const char* reason, int64_t now) {
     std::array<size_t, 2> queued{};
+    size_t retained_bytes = current_ ? current_->segment.bytes : 0;
     std::array<int64_t, 2> next_dts{{-1, -1}};
     if (current_) {
         const auto& packets = current_->segment.packets;
@@ -379,6 +387,7 @@ void DirectBufferstream::progress_log(const char* stage, const char* reason, int
         if (pending_) {
             queued[Video] += pending_->segment.video_packets;
             queued[Audio] += pending_->segment.audio_packets;
+            retained_bytes += pending_->segment.bytes;
         }
     }
     const auto frame = media_.last_frame_event_ns.load();
@@ -395,7 +404,7 @@ void DirectBufferstream::progress_log(const char* stage, const char* reason, int
             "frames=%u frame-age-ms=%lld feed-age-ms=%lld active-ms=%lld playhead-ms=%lld video-buffer-ms=%lld audio-buffer-ms=%lld "
             "segments-prepared=%u v-demuxed=%u a-demuxed=%u fetch=%s fetch-done=%d v-queue=%zu a-queue=%zu v-submitted=%u a-submitted=%u v-accepted=%u a-accepted=%u "
             "v-retries=%u a-retries=%u next-v-dts-ns=%lld next-a-dts-ns=%lld last-v-dts-ns=%lld last-v-pts-ns=%lld last-a-pts-ns=%lld "
-            "audio-underruns=%u audio-enabled=%d av-feed-delta-ms=%lld\n",
+            "audio-underruns=%u audio-enabled=%d av-feed-delta-ms=%lld retained-media-bytes=%zu\n",
             stage,reason,(unsigned long long)status_.generation,(unsigned long long)decoder_generation_,
             int(!paused_),direct_origin_name(paused_?pause_origin_:buffering_?DirectOrigin::Buffering:DirectOrigin::None),
             backend_paused?"paused":media_.playing?"playing":media_.ready?"ready":"starting",
@@ -405,7 +414,7 @@ void DirectBufferstream::progress_log(const char* stage, const char* reason, int
             queued[Video],queued[Audio],video.attempts,audio.attempts,video.accepted,audio.accepted,video.retries,audio.retries,
             (long long)next_dts[Video],(long long)next_dts[Audio],
             (long long)video.last_dts,(long long)video.last_pts,(long long)audio.last_pts,audio_underruns_,int(audio_enabled_),
-            video.accepted&&audio.accepted?(long long)(video.last_pts-audio.last_pts)/1000000:-1LL);
+            video.accepted&&audio.accepted?(long long)(video.last_pts-audio.last_pts)/1000000:-1LL,retained_bytes);
 }
 
 void DirectBufferstream::feed_packets(int64_t now) {
@@ -630,13 +639,16 @@ DirectSnapshot DirectBufferstream::tick(int64_t now) {
         status_.codec=media.video_codec_name;
         status_.container=media.container;
         current_->decoder_boundary=false;
-        const auto video_span = media.last_video_dts_ns - media.first_video_dts_ns;
-        const int fps = media.video_packets > 1 && video_span < 25000000LL * (media.video_packets - 1) ? 60 : 30;
-        std::fprintf(stderr, "[direct-player] stage=create owner=ui generation=%llu decoder=%llu video=%s max-fps=%d audio=%s\n",
-                     (unsigned long long)status_.generation,(unsigned long long)decoder_generation_,media.hevc?"H265":"H264",fps,
-                     audio_enabled_?"s16le-stereo-44100":"disabled");
+        const bool uhd = media.hevc && direct_hevc_uhd(media.width,media.height);
+        const int fps = !uhd && media.input_fps_milli>40000 ? 60 : 30;
+        std::fprintf(stderr, "[direct-player] stage=create owner=ui generation=%llu decoder=%llu video=%s "
+                     "geometry=%dx%d input-fps-milli=%d max-fps=%d audio=%s\n",
+                     (unsigned long long)status_.generation,(unsigned long long)decoder_generation_,media.hevc?"H265":"H264",
+                     media.width,media.height,media.input_fps_milli,fps,audio_enabled_?"s16le-stereo-44100":"disabled");
         opened_ = media_.open(UXAIR_APP_ID,status_.width,status_.height,audio_enabled_,44100,
                               2 * 1024 * 1024,1920,1080,media.hevc?MirrorCodec::ExperimentalHevc:MirrorCodec::H264,fps);
+        std::fprintf(stderr,"[direct-player] stage=bufferstream-load generation=%llu decoder=%llu accepted=%d\n",
+                     (unsigned long long)status_.generation,(unsigned long long)decoder_generation_,int(opened_));
         if (!opened_) fail(DirectError::BufferstreamStart);
         // The next tick's time is after the synchronous Load() call.
         update_snapshot(now);

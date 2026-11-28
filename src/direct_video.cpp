@@ -27,7 +27,8 @@ const char *direct_error_name(DirectError e) {
         "missing-sps-pps","unsupported-h264-format","unsupported-aac-adts","aac-decode","video-timestamp","audio-timestamp","corrupt-packet",
         "track-change","download-worker","fetch-cancelled","missing-aac-pcm","startup-fetch-timeout","initial-feed-timeout","first-frame-timeout",
         "init-fetch","invalid-fmp4-boxes","unsupported-fmp4-tracks","invalid-fmp4-codec-config","separate-audio-rendition","encrypted-media","range-response",
-        "http-401","http-403","fetch-timeout","unsupported-hevc-profile","invalid-hevc-configuration"};
+        "http-401","http-403","fetch-timeout","unsupported-hevc-profile","invalid-hevc-configuration",
+        "unsupported-hevc-geometry","unsupported-hevc-frame-rate","unsupported-hdr"};
     const unsigned n=unsigned(e);return n<sizeof(names)/sizeof(*names)?names[n]:"unknown";
 }
 const char *direct_backend_name(DirectBackend backend) {
@@ -523,6 +524,7 @@ void DirectSession::terminal_locked(const DirectSnapshot& status,DirectOrigin or
     terminal_reported_=true;
     const auto error=status.error;
     const bool unsupported=error==DirectError::VideoCodec||error==DirectError::HevcProfile||
+        error==DirectError::HevcGeometry||error==DirectError::HevcFrameRate||error==DirectError::HevcHdr||
         error==DirectError::SeparateAudio||error==DirectError::PlaylistLive||
         error==DirectError::PlaylistEncryption||error==DirectError::EncryptedMedia;
     const char* result=unsupported?"unsupported":error!=DirectError::None?"failed":

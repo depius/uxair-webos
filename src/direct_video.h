@@ -33,7 +33,7 @@ enum class DirectError { None, Busy, RelayStart, Payload, AcbCreate, AcbInitiali
     H264Configuration, H264Format, AacAdts, AacDecode, VideoTimestamp, AudioTimestamp, PacketCorrupt,
     TrackChange, DownloadWorker, FetchCancelled, AacNoPcm, StartupFetchTimeout, InitialFeedTimeout, FirstFrameTimeout,
     InitFetch, Mp4Boxes, Mp4Track, Mp4Config, SeparateAudio, EncryptedMedia, RangeResponse,
-    HttpUnauthorized, HttpForbidden, FetchTimeout, HevcProfile, HevcConfiguration };
+    HttpUnauthorized, HttpForbidden, FetchTimeout, HevcProfile, HevcConfiguration, HevcGeometry, HevcFrameRate, HevcHdr };
 const char *direct_stage_name(DirectStage);
 const char *direct_error_name(DirectError);
 struct DirectSnapshot {

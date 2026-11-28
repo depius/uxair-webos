@@ -2,6 +2,7 @@
 #include "audio.h"
 #include "h264.h"
 #include "hevc_stream.h"
+#include "hevc_sample.h"
 #include "hls_relay.h"
 
 extern "C" {
@@ -24,7 +25,9 @@ extern "C" {
 namespace {
 constexpr int64_t second = 1000000000;
 constexpr size_t max_segment_bytes = 8 * 1024 * 1024;
-constexpr size_t max_packet_bytes = 2 * 1024 * 1024;
+constexpr size_t max_packet_bytes = hevc_probe::kMaxAccessUnit;
+// Allow rounding to ordinary fragmented MP4 timescales at 30 fps.
+constexpr int64_t hevc_uhd_min_frame_ns = int64_t(second / direct_hevc_uhd_max_fps) - 84000;
 constexpr size_t max_segment_packets = 1152;
 thread_local unsigned* timestamp_warnings = nullptr;
 
@@ -73,6 +76,7 @@ std::string attribute(const std::string& line, const char* key) {
 
 double variant_bandwidth(const std::string& tag, unsigned& preference) {
     const auto codecs = attribute(tag, "CODECS");
+    bool hevc_possible = codecs.empty();
     preference=2; // Undeclared codec, confirm from the initialization data.
     const auto range=attribute(tag,"VIDEO-RANGE");
     if(!range.empty() && range!="SDR") return 0;
@@ -93,23 +97,29 @@ double variant_bandwidth(const std::string& tag, unsigned& preference) {
         const auto& video=first_video?first_codec:second_codec;
         const auto& audio=first_video?second_codec:first_codec;
         if(!is_video(video)||is_video(audio)) return 0;
-        const bool supported_audio=audio=="mp4a.40.2"||audio=="mp4a.40.34"||
-            audio=="mp4a.6B"||audio=="mp4a.6b"||audio=="mp4a.69"||audio=="mp3"||audio=="ac-3"||audio=="ec-3";
+        const bool supported_audio=audio=="mp4a.40.2"||audio=="mp4a.40.5"||audio=="mp4a.40.29"||
+            audio=="mp4a.40.34"||audio=="mp4a.6B"||audio=="mp4a.6b"||audio=="mp4a.69"||
+            audio=="mp3"||audio=="ac-3"||audio=="ec-3"||audio=="fLaC"||audio=="alac"||audio=="opus"||audio=="Opus";
+        hevc_possible=starts(video,"hvc1.1.")||starts(video,"hev1.1.");
         if(starts(video,"avc1.")||starts(video,"avc3.")) preference=supported_audio?5:3;
         else if(starts(video,"hvc1.1.")||starts(video,"hev1.1.")) preference=supported_audio?4:1;
         else return 0;
     }
     if (!attribute(tag, "VIDEO").empty()) return 0;
     const auto resolution = attribute(tag, "RESOLUTION");
+    bool uhd = false;
     if (!resolution.empty()) {
         const auto divider = resolution.find('x');
         double width = 0, height = 0;
         if (divider == std::string::npos || !decimal(resolution.substr(0, divider), width) ||
-            !decimal(resolution.substr(divider + 1), height) || width > 1920 || height > 1080) return 0;
+            !decimal(resolution.substr(divider + 1), height) || width < 1 || height < 1 || width != std::floor(width) ||
+            height != std::floor(height) || width > direct_hevc_max_width || height > direct_hevc_max_height) return 0;
+        uhd = direct_hevc_uhd(int(width),int(height));
+        if (uhd && !hevc_possible) return 0;
     }
     const auto frame_rate = attribute(tag, "FRAME-RATE");
     double fps = 0;
-    if (!frame_rate.empty() && (!decimal(frame_rate, fps) || fps > 60)) return 0;
+    if (!frame_rate.empty() && (!decimal(frame_rate, fps) || fps <= 0 || fps > (uhd ? direct_hevc_uhd_max_fps : 60))) return 0;
     double bandwidth = 0;
     return decimal(attribute(tag, "BANDWIDTH"), bandwidth) && bandwidth <= 20000000 ? bandwidth : 0;
 }
@@ -253,8 +263,28 @@ struct Demuxer {
 };
 
 struct AdtsFormat { int sample_rate; int channels; };
-bool compatible_audio(AVCodecID id) {
-    return id==AV_CODEC_ID_AAC||id==AV_CODEC_ID_MP3||id==AV_CODEC_ID_AC3||id==AV_CODEC_ID_EAC3;
+bool compatible_audio(AVCodecID id, bool mp4) {
+    return id==AV_CODEC_ID_AAC||id==AV_CODEC_ID_MP3||id==AV_CODEC_ID_AC3||id==AV_CODEC_ID_EAC3||
+        (mp4 && (id==AV_CODEC_ID_FLAC||id==AV_CODEC_ID_ALAC||id==AV_CODEC_ID_OPUS));
+}
+
+bool mp4_audio_config(const AVCodecParameters& codec) {
+    switch(codec.codec_id) {
+    case AV_CODEC_ID_AAC: {
+        if(codec.codec_tag!=MKTAG('m','p','4','a') || !codec.extradata ||
+           codec.extradata_size<2 || codec.extradata_size>64) return false;
+        const unsigned object_type=codec.extradata[0]>>3;
+        // AOT 2 may still signal SBR or PS in the extension or implicitly in-band.
+        // FFmpeg interprets the full AudioSpecificConfig and owns AAC decoding.
+        return object_type==2 || object_type==5 || object_type==29;
+    }
+    case AV_CODEC_ID_AC3: return codec.codec_tag==MKTAG('a','c','-','3');
+    case AV_CODEC_ID_EAC3: return codec.codec_tag==MKTAG('e','c','-','3');
+    case AV_CODEC_ID_FLAC: return codec.codec_tag==MKTAG('f','L','a','C');
+    case AV_CODEC_ID_ALAC: return codec.codec_tag==MKTAG('a','l','a','c');
+    case AV_CODEC_ID_OPUS: return codec.codec_tag==MKTAG('O','p','u','s');
+    default: return true;
+    }
 }
 constexpr int aac_rates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000,
                              22050, 16000, 12000, 11025, 8000, 7350};
@@ -272,16 +302,6 @@ AdtsFormat adts_aac_lc(const AVPacket& packet) {
         ((data[1] & 1) == 0 && packet.size < 9) ||
         (data[6] & 3) || frame_bytes != packet.size) return {};
     return {aac_rates[rate], int(channels)};
-}
-
-AdtsFormat mp4_aac_lc(const AVCodecParameters& codec) {
-    const auto* asc=codec.extradata;
-    if (!asc||codec.extradata_size<2||codec.extradata_size>64) return {};
-    const unsigned rate=((asc[0]&7)<<1)|(asc[1]>>7), channels=(asc[1]>>3)&15;
-    if ((asc[0]>>3)!=2||(asc[1]&7)||rate>=sizeof(aac_rates)/sizeof(*aac_rates)||
-        (channels!=1&&channels!=2)||codec.sample_rate!=aac_rates[rate]||
-        codec.ch_layout.nb_channels!=int(channels)) return {};
-    return {aac_rates[rate],int(channels)};
 }
 
 // Validate the two resources independently before exposing their virtual
@@ -319,10 +339,11 @@ DirectError inspect_boxes(const uint8_t* at, size_t length, unsigned depth, bool
         case fourcc('s','t','s','d'): skip=8; break;  // full box and entry count
         case fourcc('d','v','c','C'): case fourcc('d','v','v','C'): case fourcc('d','v','w','C'):
         case fourcc('d','v','h','1'): case fourcc('d','v','h','e'):
-        case fourcc('m','d','c','v'): case fourcc('c','l','l','i'): return DirectError::HevcProfile;
+        case fourcc('m','d','c','v'): case fourcc('c','l','l','i'): return DirectError::HevcHdr;
         case fourcc('a','v','c','1'): case fourcc('a','v','c','3'):
         case fourcc('h','v','c','1'): case fourcc('h','e','v','1'): skip=78; break;
-        case fourcc('m','p','4','a'):
+        case fourcc('m','p','4','a'): case fourcc('f','L','a','C'):
+        case fourcc('a','l','a','c'): case fourcc('O','p','u','s'):
             if (child.size<28 || AV_RB16(child.data+8)!=0) return DirectError::Mp4Config;
             skip=28;
             break;
@@ -630,21 +651,35 @@ DirectError direct_demux_segment(const std::string& data,const std::string& init
                 segment.hevc=par.codec_id==AV_CODEC_ID_HEVC;
                 if(segment.hevc) {
                     const auto* conf=par.extradata;
-                    if((par.codec_tag!=MKTAG('h','v','c','1')&&par.codec_tag!=MKTAG('h','e','v','1'))||
-                        par.color_trc==AVCOL_TRC_SMPTE2084||par.color_trc==AVCOL_TRC_ARIB_STD_B67)
+                    segment.source_width=par.width;
+                    segment.source_height=par.height;
+                    segment.color_primaries=par.color_primaries;
+                    segment.color_transfer=par.color_trc;
+                    segment.color_matrix=par.color_space;
+                    if(par.codec_tag!=MKTAG('h','v','c','1')&&par.codec_tag!=MKTAG('h','e','v','1'))
                         return DirectError::HevcProfile;
                     if(!conf||par.extradata_size<23||par.extradata_size>65536||conf[0]!=1)
                         return DirectError::HevcConfiguration;
                     segment.h264_profile=conf[1]&31;
                     segment.h264_level=conf[12];
-                    if((conf[1]&0xdf)!=1||(conf[16]&3)!=1||(conf[17]&7)||(conf[18]&7)||!conf[12]||conf[12]>153)
+                    segment.hevc_tier=(conf[1]>>5)&1;
+                    segment.hevc_chroma=conf[16]&3;
+                    segment.hevc_luma_depth=8+(conf[17]&7);
+                    segment.hevc_chroma_depth=8+(conf[18]&7);
+                    if(par.color_trc==AVCOL_TRC_SMPTE2084||par.color_trc==AVCOL_TRC_ARIB_STD_B67)
+                        return DirectError::HevcHdr;
+                    if((conf[1]&0xdf)!=1||segment.hevc_chroma!=1||segment.hevc_luma_depth!=8||
+                       segment.hevc_chroma_depth!=8||!conf[12]||conf[12]>153)
                         return DirectError::HevcProfile;
                     if(!demux.init_video(stream)) return DirectError::HevcConfiguration;
                     const auto& annex=*demux.annex_b->par_out;
                     const auto config=hevc.inspect(annex.extradata,size_t(annex.extradata_size));
                     if(!config.configuration_complete) return DirectError::HevcConfiguration;
-                    if(config.profile!=1||config.bit_depth!=8||config.width>1920||config.height>1080)
-                        return DirectError::HevcProfile;
+                    segment.source_width=config.width;
+                    segment.source_height=config.height;
+                    if(config.profile!=1||config.bit_depth!=8) return DirectError::HevcProfile;
+                    if(config.width<=0||config.height<=0||config.width>direct_hevc_max_width||
+                       config.height>direct_hevc_max_height) return DirectError::HevcGeometry;
                     segment.h264_profile=config.profile;
                     segment.pixel_format="yuv420p";
                     continue;
@@ -657,12 +692,8 @@ DirectError direct_demux_segment(const std::string& data,const std::string& init
             } else if(par.codec_type==AVMEDIA_TYPE_AUDIO) {
                 ++audios;segment.audio_codec=par.codec_id;
                 segment.audio_codec_name=avcodec_get_name(par.codec_id);
-                if(!compatible_audio(par.codec_id)) segment.audio_fallback="unsupported-audio-codec";
-                else if((par.codec_id==AV_CODEC_ID_AAC &&
-                         (par.codec_tag!=MKTAG('m','p','4','a')||!mp4_aac_lc(par).sample_rate)) ||
-                        (par.codec_id==AV_CODEC_ID_AC3&&par.codec_tag!=MKTAG('a','c','-','3')) ||
-                        (par.codec_id==AV_CODEC_ID_EAC3&&par.codec_tag!=MKTAG('e','c','-','3')))
-                    segment.audio_fallback="invalid-audio-config";
+                if(!compatible_audio(par.codec_id,true)) segment.audio_fallback="unsupported-audio-codec";
+                else if(!mp4_audio_config(par)) segment.audio_fallback="invalid-audio-config";
             }
         }
         if(videos!=1||audios>1) return DirectError::Mp4Track;
@@ -672,6 +703,8 @@ DirectError direct_demux_segment(const std::string& data,const std::string& init
     segment.height = height;
     int video_index = -1, audio_index = -1, result = 0;
     unsigned packets = 0;
+    int64_t shortest_decode_step = 0;
+    int64_t first_packet_duration = 0;
     // Reuse the active decoder across continuous segments. A new decoder
     // needs in-band parameter sets and an IDR, which may follow leading AUs.
     std::vector<uint8_t> configuration;
@@ -732,7 +765,9 @@ DirectError direct_demux_segment(const std::string& data,const std::string& init
             if(!segment.audio_fallback) {
                 if(new_config) segment.audio_fallback="audio-track-change";
                 else if(oversized||corrupt) segment.audio_fallback="invalid-audio-packet";
-                else if(!compatible_audio(stream.codecpar->codec_id)) segment.audio_fallback="unsupported-audio-codec";
+                else if(!compatible_audio(stream.codecpar->codec_id,mp4))
+                    segment.audio_fallback=compatible_audio(stream.codecpar->codec_id,true)?
+                        "unsupported-audio-container":"unsupported-audio-codec";
             }
             if(segment.audio_fallback) {av_packet_unref(&packet);continue;}
         }
@@ -754,8 +789,9 @@ DirectError direct_demux_segment(const std::string& data,const std::string& init
                 }
                 if(!info.valid) return DirectError::HevcConfiguration;
                 if(info.parameter_sets_updated) return DirectError::TrackChange;
-                if(!supported_hevc_mirror_profile(info)||info.width>1920||info.height>1080)
-                    return DirectError::HevcProfile;
+                if(!supported_hevc_mirror_profile(info)) return DirectError::HevcProfile;
+                if(info.width<=0||info.height<=0||info.width>direct_hevc_max_width||
+                   info.height>direct_hevc_max_height) return DirectError::HevcGeometry;
                 if(segment.width&&(segment.width!=info.width||segment.height!=info.height))
                     return DirectError::TrackChange;
                 segment.width=info.width;
@@ -820,10 +856,17 @@ DirectError direct_demux_segment(const std::string& data,const std::string& init
                 unit.dts_ns = av_rescale_q(packet.dts, stream.time_base, ns);
             }
             unit.duration_ns = av_rescale_q(packet.duration, stream.time_base, ns);
+            if (unit.pts_ns < -second || unit.pts_ns > max_timestamp || unit.dts_ns < -second ||
+                unit.dts_ns > max_timestamp || unit.duration_ns < 0 || unit.duration_ns > second)
+                return timestamp_error(true, "out-of-range");
             if (segment.video_packets && unit.dts_ns < segment.last_video_dts_ns)
                 return timestamp_error(true, "decode-order");
             if (segment.video_packets && unit.dts_ns == segment.last_video_dts_ns) ++segment.tied_dts;
-            if (!segment.video_packets) {
+            if (segment.video_packets) {
+                const auto step=unit.dts_ns-segment.last_video_dts_ns;
+                if(segment.video_packets==1||step<shortest_decode_step) shortest_decode_step=step;
+            } else {
+                first_packet_duration=unit.duration_ns;
                 segment.first_video_dts_ns = unit.dts_ns;
                 segment.starts_with_idr = keyframe;
                 first_video_pts = unit.pts_ns;
@@ -839,7 +882,7 @@ DirectError direct_demux_segment(const std::string& data,const std::string& init
             if (!segment.hevc || unit.data.empty())
                 unit.data.insert(unit.data.end(), packet.data, packet.data + packet.size);
         } else {
-            if(stream.codecpar->codec_id!=AV_CODEC_ID_AAC) {
+            if(mp4 || stream.codecpar->codec_id!=AV_CODEC_ID_AAC) {
                 decoded_stream=&stream;
                 segment.audio_fallback=audio.decode(stream,&packet,pcm_blocks);
                 segment.aac_sample_rate=audio.rate;
@@ -852,9 +895,9 @@ DirectError direct_demux_segment(const std::string& data,const std::string& init
                 av_packet_unref(&packet);
                 continue;
             }
-            const auto adts = mp4?mp4_aac_lc(*stream.codecpar):adts_aac_lc(packet);
+            const auto adts = adts_aac_lc(packet);
             if (!adts.sample_rate) {
-                segment.audio_fallback=mp4?"invalid-audio-config":"invalid-adts";
+                segment.audio_fallback="invalid-adts";
                 av_packet_unref(&packet);
                 continue;
             }
@@ -869,48 +912,23 @@ DirectError direct_demux_segment(const std::string& data,const std::string& init
             const AVRational sample_time = {1, adts.sample_rate};
             // MPEG-TS timestamps the PES. Splitting ADTS access units can leave
             // subsequent frames without a timestamp until the next PES anchor.
-            if(mp4 && packet.pts==AV_NOPTS_VALUE) return timestamp_error(false,"missing-pts");
             if (packet.pts != AV_NOPTS_VALUE) {
                 audio_pts_anchor = av_rescale_q(packet.pts, stream.time_base, ns);
                 audio_samples = 0;
             }
             if (audio_pts_anchor == AV_NOPTS_VALUE) return timestamp_error(false, "missing-anchor");
-            if (mp4 && (audio_pts_anchor < -second || audio_pts_anchor > max_timestamp))
-                return timestamp_error(false, "out-of-range");
             unit.pts_ns = unit.dts_ns = audio_pts_anchor + av_rescale_q(audio_samples, sample_time, ns);
             if (unit.pts_ns <= last_audio_pts) return timestamp_error(false, "presentation-order");
             last_audio_pts = unit.pts_ns;
             audio_samples += 1024;
             unit.duration_ns = av_rescale_q(1024, sample_time, ns);
-            const auto& par=*stream.codecpar;
-            const bool decoded=mp4?aac.decode_mp4_aac(packet.data,size_t(packet.size),par.extradata,
-                size_t(par.extradata_size),adts.sample_rate,adts.channels,unit.data):
-                aac.decode_adts(packet.data,size_t(packet.size),unit.data);
+            const bool decoded=aac.decode_adts(packet.data,size_t(packet.size),unit.data);
             if (!decoded) {
                 segment.audio_fallback="aac-decode";
                 av_packet_unref(&packet);
                 continue;
             }
             ++segment.audio_decoded_packets;
-            // MOV can attach leading and trailing AAC trim for priming and
-            // edits. The shared decoder takes raw bytes, so apply it to PCM.
-            size_t trim_size = 0;
-            const auto* trim = mp4 ? av_packet_get_side_data(&packet, AV_PKT_DATA_SKIP_SAMPLES, &trim_size) : nullptr;
-            if (trim) {
-                if (trim_size != 10) return DirectError::Mp4Config;
-                const auto leading = AV_RL32(trim), trailing = AV_RL32(trim + 4);
-                if (leading > 1024 || trailing > 1024 - leading)
-                    return timestamp_error(false, "aac-trim");
-                const auto trim_bytes = [&](uint32_t samples) {
-                    return size_t(av_rescale(samples, 44100, adts.sample_rate)) * 4;
-                };
-                const size_t front = std::min(trim_bytes(leading), unit.data.size());
-                const size_t back = std::min(trim_bytes(trailing), unit.data.size() - front);
-                unit.data.resize(unit.data.size() - back);
-                unit.data.erase(unit.data.begin(), unit.data.begin() + front);
-                unit.pts_ns += av_rescale_q(leading, sample_time, ns);
-                unit.dts_ns = unit.pts_ns;
-            }
             if (unit.data.empty()) {
                 // The first Mux ADTS packet carries encoder data and consumes
                 // a timestamp slot, while AAC returns success with no frame.
@@ -939,6 +957,13 @@ DirectError direct_demux_segment(const std::string& data,const std::string& init
     if (video_index < 0) return DirectError::MissingH264;
     if (!segment.video_packets) return segment.hevc?DirectError::HevcConfiguration:
         segment.idr?DirectError::H264Configuration:DirectError::H264Keyframe;
+    const auto mean_frame_ns=segment.video_packets>1?
+        (segment.last_video_dts_ns-segment.first_video_dts_ns)/(segment.video_packets-1):first_packet_duration;
+    if(mean_frame_ns>0)
+        segment.input_fps_milli=int(std::min<int64_t>(240000,(second*1000+mean_frame_ns/2)/mean_frame_ns));
+    const auto frame_step=segment.video_packets>1?shortest_decode_step:first_packet_duration;
+    if(segment.hevc && direct_hevc_uhd(segment.width,segment.height) && frame_step<hevc_uhd_min_frame_ns)
+        return DirectError::HevcFrameRate;
     if(drain && decoded_stream && !segment.audio_fallback) {
         segment.audio_fallback=audio.decode(*decoded_stream,nullptr,pcm_blocks);
         if(!segment.audio_fallback)

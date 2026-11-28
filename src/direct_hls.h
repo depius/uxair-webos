@@ -38,6 +38,11 @@ struct DirectAccessUnit {
     bool video = false;
 };
 
+// Larger pictures use the UHD policy even if only one dimension exceeds HD.
+constexpr int direct_hevc_max_width = 3840, direct_hevc_max_height = 2160;
+constexpr double direct_hevc_uhd_max_fps = 30.0;
+constexpr bool direct_hevc_uhd(int width, int height) { return width > 1920 || height > 1080; }
+
 struct DirectDemuxedSegment {
     std::vector<DirectAccessUnit> packets;
     int width = 0;
@@ -55,6 +60,10 @@ struct DirectDemuxedSegment {
     const char* audio_fallback = nullptr;
     bool hevc = false;
     int hevc_rap = -1;
+    int source_width = 0, source_height = 0;
+    int hevc_tier = -1, hevc_chroma = -1, hevc_luma_depth = 0, hevc_chroma_depth = 0;
+    int color_primaries = -1, color_transfer = -1, color_matrix = -1;
+    int input_fps_milli = 0;
     const char* timestamp_problem = "none";
     int probe_score = 0, video_codec = -1, audio_codec = -1, h264_profile = 0, h264_level = 0;
     unsigned video_packets = 0, audio_packets = 0, reordered = 0, tied_dts = 0, inferred_dts = 0;

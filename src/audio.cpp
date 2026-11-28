@@ -115,7 +115,7 @@ const char* HlsAudioDecoder::decode(const AVStream& stream,const AVPacket* packe
         context_=avcodec_alloc_context3(codec);
         if(!context_ || avcodec_parameters_to_context(context_,&parameters)<0) return "decoder-init";
         context_->pkt_timebase=stream.time_base;
-        context_->max_samples=32768;
+        context_->max_samples=65536;
         context_->err_recognition=AV_EF_CRCCHECK|AV_EF_EXPLODE;
         if(avcodec_open2(context_,codec,nullptr)<0) return "decoder-init";
     }
@@ -151,7 +151,7 @@ const char* HlsAudioDecoder::decode(const AVStream& stream,const AVPacket* packe
         if(result<0 || (frame->flags&AV_FRAME_FLAG_CORRUPT)) {error="decode-error";break;}
         auto& layout=frame->ch_layout;
         const int incoming_rate=frame->sample_rate;
-        if(frame->nb_samples<=0 || frame->nb_samples>4096 || incoming_rate<8000 || incoming_rate>96000 ||
+        if(frame->nb_samples<=0 || frame->nb_samples>8192 || incoming_rate<8000 || incoming_rate>96000 ||
            layout.nb_channels<1 || layout.nb_channels>8 || !av_channel_layout_check(&layout)) {
             error="unsupported-audio-layout";break;
         }

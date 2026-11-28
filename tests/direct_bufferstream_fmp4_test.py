@@ -1,6 +1,7 @@
 """Generate clear HLS and exercise real HTTP, FFmpeg and simulated BUFFERSTREAM."""
 from collections import Counter
 import functools
+import hashlib
 import http.server
 import json
 import os
@@ -13,17 +14,21 @@ import tempfile
 import threading
 import time
 from urllib.parse import urlsplit
+from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:2\n#EXT-X-PLAYLIST-TYPE:VOD\n'
 
 
 def generate(directory, rate, seconds, video=True, split_tracks=False, silent_1080p=False, codec='avc',
-             audio_codec='aac', channels=2, container='fmp4'):
+             audio_codec='aac', channels=2, container='fmp4', size=None, fps=30,
+             transfer=None, audio_source=None):
     directory.mkdir()
     audio = f'anullsrc=cl=stereo:r={rate}' if silent_1080p else f'sine=frequency=440:sample_rate={rate}'
     command = ['ffmpeg', '-nostdin', '-v', 'error']
-    if audio_codec != 'none':
+    if audio_source:
+        command += ['-i', str(audio_source), '-c:a', 'copy']
+    elif audio_codec != 'none':
         if channels == 6:
             # Put the signal in the center channel to exercise downmixing.
             audio = f'aevalsrc=0|0|0.2*sin(2*PI*440*t)|0|0|0:s={rate}:c=5.1'
@@ -32,12 +37,15 @@ def generate(directory, rate, seconds, video=True, split_tracks=False, silent_10
         if audio_codec == 'aac':
             command += ['-profile:a', 'aac_low']
     if video:
-        geometry = '160x96' if codec == 'av1' else '1920x1080' if silent_1080p else '640x480'
-        command[4:4] = ['-f', 'lavfi', '-i', f'testsrc2=size={geometry}:rate=30']
+        geometry = size or ('160x96' if codec == 'av1' else '1920x1080' if silent_1080p else '640x480')
+        pattern = 'color=c=blue:' if size else 'testsrc2='
+        command[4:4] = ['-f', 'lavfi', '-i', f'{pattern}size={geometry}:rate={fps}']
+        if transfer:
+            command += ['-color_primaries', 'bt2020', '-color_trc', transfer, '-colorspace', 'bt2020nc']
         if codec in ('hevc', 'cra', 'main10'):
             open_gop = int(codec == 'cra')
             command += ['-c:v', 'libx265', '-preset', 'ultrafast', '-tag:v', 'hvc1',
-                        '-x265-params', f'log-level=error:pools=none:frame-threads=1:keyint=60:min-keyint=60:scenecut=0:open-gop={open_gop}:bframes=2',
+                        '-x265-params', f'log-level=error:pools=none:frame-threads=1:keyint={2*fps}:min-keyint={2*fps}:scenecut=0:open-gop={open_gop}:bframes=2',
                         '-profile:v', 'main10' if codec == 'main10' else 'main',
                         '-pix_fmt', 'yuv420p10le' if codec == 'main10' else 'yuv420p']
         elif codec == 'av1':
@@ -51,7 +59,25 @@ def generate(directory, rate, seconds, video=True, split_tracks=False, silent_10
     command += ['media.m3u8']
     if split_tracks:
         command[-1:-1] = ['-hls_segment_options', 'movflags=+separate_moof']
-    subprocess.run(command, cwd=directory, check=True, timeout=25)
+    if audio_codec == 'flac':
+        command[-1:-1] = ['-strict', '-2', '-hls_segment_options', 'strict=-2']
+    subprocess.run(command, cwd=directory, check=True, timeout=35)
+
+
+def aac_sample(root, profile, fixture, digest):
+    source = root / (profile + '.mp4')
+    local = os.environ.get('UXAIR_AAC_FIXTURES')
+    if local:
+        data = (Path(local) / Path(fixture).name).read_bytes()
+    else:
+        with urlopen('https://fate-suite.ffmpeg.org/aac/' + fixture, timeout=18) as response:
+            data = response.read(1024 * 1024)
+    assert hashlib.sha256(data).hexdigest() == digest
+    source.write_bytes(data)
+    info = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', 'a:0',
+                                               '-show_entries', 'stream=profile', '-of', 'json', str(source)]))
+    assert info['streams'][0]['profile'] == profile
+    return source
 
 
 def entry(path):
@@ -139,6 +165,25 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     generate(root / 'eac3', 48000, 8, audio_codec='eac3', channels=6)
     generate(root / 'video-only', 44100, 8, audio_codec='none')
     generate(root / 'opus', 48000, 8, audio_codec='opus')
+    generate(root / 'opus-ts', 48000, 4, audio_codec='opus', container='mpegts')
+    generate(root / 'flac', 48000, 8, audio_codec='flac', channels=6)
+    generate(root / 'alac', 32000, 8, audio_codec='alac', channels=1)
+    generate(root / 'heaac', 48000, 7, audio_source=aac_sample(
+        root, 'HE-AAC', 'al_sbr_sr_48_2_fsaac48.mp4',
+        'd0b286c5f9bdb47ee1722ab64775cc507de27744c6a21143ce41fc7410cdbceb'))
+    generate(root / 'heaac2', 44100, 7, audio_source=aac_sample(
+        root, 'HE-AACv2', 'CT_DecoderCheck/File5.mp4',
+        '49595c57f80deae34c2570bc227658a8d856babd978cd8151f74d43054a63ba5'))
+    generate(root / 'heaac2-implicit', 44100, 7, audio_source=aac_sample(
+        root, 'HE-AACv2', 'CT_DecoderCheck/File2.mp4',
+        'dcd2e94da030f048938c412f6f2025468628fbf33e6e3dcf427e443bd163d2bd'))
+    generate(root / 'uhd', 44100, 4, codec='hevc', size='3840x2160')
+    generate(root / 'uhd-fast', 44100, 1, codec='hevc', size='3840x2160', fps=60)
+    generate(root / 'uhd-hdr', 44100, 1, codec='hevc', size='3840x2160', transfer='smpte2084')
+    generate(root / 'uhd-main10', 44100, 1, codec='main10', size='3840x2160')
+    generate(root / 'hevc-720', 44100, 4, codec='hevc', size='1280x720')
+    generate(root / 'hevc-1080', 44100, 4, codec='hevc', size='1920x1080')
+    generate(root / 'hevc-1080-fast', 44100, 4, codec='hevc', size='1920x1080', fps=60)
     clock_source = root / 'clock.mp3'
     subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(root / 'mp3/media.m3u8'),
                     '-map', '0:a:0', '-c', 'copy', str(clock_source)], check=True, timeout=12)
@@ -163,6 +208,22 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
                                      '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="muxed",NAME="Embedded"\n')
     (root / 'separate.m3u8').write_text('#EXTM3U\n' + variant('external', 'clip/media.m3u8') + external)
     (root / 'eac3/master.m3u8').write_text('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=950000,CODECS="avc1.64001f,ec-3"\nmedia.m3u8\n')
+    (root / 'uhd-master.m3u8').write_text(
+        '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=4500000,RESOLUTION=3840x2160,FRAME-RATE=30,'
+        'VIDEO-RANGE=SDR,CODECS="hvc1.1.6.L150.B0,mp4a.40.2"\nuhd/media.m3u8\n')
+    (root / 'uhd-rejected-master.m3u8').write_text(
+        (root / 'uhd-master.m3u8').read_text().replace('FRAME-RATE=30', 'FRAME-RATE=60'))
+    bad_hvcc = bytearray((root / 'uhd/init.mp4').read_bytes())
+    hvcc = bad_hvcc.index(b'hvcC') + 4
+    bad_hvcc[hvcc] = 0
+    (root / 'uhd/bad-init.mp4').write_bytes(bad_hvcc)
+    playlist('uhd-malformed', init('uhd/bad-init.mp4') + entry('uhd/part0.m4s'))
+    for audio in ('heaac', 'heaac2', 'flac', 'alac', 'opus'):
+        codec = {'heaac': 'mp4a.40.5', 'heaac2': 'mp4a.40.29', 'flac': 'fLaC',
+                 'alac': 'alac', 'opus': 'Opus'}[audio]
+        (root / audio / 'master.m3u8').write_text(
+            f'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1600000,CODECS="avc1.64001f,{codec}"\nmedia.m3u8\n')
+
     eac3 = root / 'eac3'
     prefix_length = (eac3 / 'init.mp4').stat().st_size
     sample = eac3 / 'packet-probe.mp4'
@@ -176,6 +237,18 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     (eac3 / 'bad.m4s').write_bytes(damaged)
     playlist('bad-eac3', init('eac3/init.mp4') + entry('eac3/part0.m4s') + entry('eac3/bad.m4s') +
              entry('eac3/part2.m4s') + entry('eac3/part3.m4s'))
+    flac = root / 'flac'
+    flac_segment = bytearray((flac / 'part1.m4s').read_bytes())
+    flac_init = (flac / 'init.mp4').read_bytes()
+    sample.write_bytes(flac_init + flac_segment)
+    packets = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', 'a:0',
+                                                  '-show_entries', 'packet=pos,size', '-of', 'json', str(sample)]))
+    packet = packets['packets'][2]
+    at = int(packet['pos']) - len(flac_init)
+    flac_segment[at:at+int(packet['size'])] = bytes(int(packet['size']))
+    (flac / 'bad.m4s').write_bytes(flac_segment)
+    playlist('bad-flac', init('flac/init.mp4') + entry('flac/part0.m4s') + entry('flac/bad.m4s') +
+             entry('flac/part2.m4s') + entry('flac/part3.m4s'))
     eac3_pair=entry('eac3/part0.m4s')+entry('eac3/part1.m4s')
     playlist('eac3-boundary', init('eac3/init.mp4') + eac3_pair + '#EXT-X-DISCONTINUITY\n' + eac3_pair)
     (root / 'cookie-media.m3u8').write_text((clip / 'media.m3u8').read_text().replace('"init.mp4"', '"clip/init.mp4"').replace('\npart', '\nclip/part'))
@@ -247,7 +320,7 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
         try:
             checked = subprocess.run(['build/tests/direct-bufferstream-test',
                                       f'http://{ip}:{server.server_port}', '--fmp4'],
-                                     timeout=65, cwd=ROOT, env=dict(os.environ, UXAIR_DIRECT_LAN=ip),
+                                     timeout=105, cwd=ROOT, env=dict(os.environ, UXAIR_DIRECT_LAN=ip),
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         finally:
             server.shutdown()
@@ -270,7 +343,13 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     assert 'stage=manifest-fetch error=http-401' in checked.stdout and 'stage=manifest-fetch error=http-403' in checked.stdout
     for codec, channels, rate in [('mp3', 1, 32000), ('ac3', 6, 48000), ('eac3', 6, 48000)]:
         assert re.search(rf'source-codec={codec} source-channels={channels} source-rate={rate} .*conversion=decode-pcm', checked.stdout)
-    assert re.search(r'source-codec=opus .*fallback=video-only reason=unsupported-audio-codec', checked.stdout)
+    for codec, channels, rate in [('aac', 2, 48000), ('flac', 6, 48000), ('alac', 1, 32000), ('opus', 2, 48000)]:
+        assert re.search(rf'source-codec={codec} source-channels={channels} source-rate={rate} .*conversion=decode-pcm', checked.stdout)
+    assert re.search(r'source-codec=opus .*fallback=video-only reason=unsupported-audio-container', checked.stdout)
+    assert re.search(r'source-codec=flac .*fallback=video-only reason=decode-error', checked.stdout)
+    assert re.search(r'geometry=3840x2160 input-fps-milli=30000 max-fps=30', checked.stdout)
+    assert re.search(r'geometry=1920x1080 input-fps-milli=60000 max-fps=60', checked.stdout)
+    assert 'reason=unsupported-hevc-frame-rate' in checked.stdout and 'reason=unsupported-hdr' in checked.stdout
     assert re.search(r'source-codec=eac3 .*fallback=video-only reason=decode-error', checked.stdout)
     assert 'audio=disabled' in checked.stdout
     assert 'PRIVATE' not in checked.stdout and 'SECRET' not in checked.stdout and 'http://' not in checked.stdout

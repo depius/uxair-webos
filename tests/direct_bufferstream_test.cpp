@@ -22,13 +22,13 @@ bool native_open = false, native_releases = true;
 unsigned native_attempts = 0;
 bool inject_retry = true;
 bool reordered_pts = false, allow_reordering = false;
-bool pcm_signal = false;
+bool pcm_signal = false, pcm_stereo = false;
 bool decoder_audio = true, expect_audio = true, allow_audio_loss = false;
-int expected_width = 1280, expected_height = 720;
+int expected_width = 1280, expected_height = 720, expected_fps = 0;
 MirrorCodec expected_codec = MirrorCodec::H264;
 HevcStream hevc_feed;
 int64_t last_video_pts = -1, last_audio_pts = -1;
-enum class Startup { AfterPreroll, CallbackFirst, NoLoadCallback, NoPlaying, NoFrame, RejectVideo, NoFeed, PauseReplay };
+enum class Startup { AfterPreroll, CallbackFirst, NoLoadCallback, NoPlaying, NoFrame, RejectLoad, RejectVideo, NoFeed, PauseReplay };
 Startup mode = Startup::AfterPreroll;
 int64_t mock_opened_at = 0;
 bool saw_early_video = false, saw_early_audio = false;
@@ -60,16 +60,18 @@ bool DirectPlayer::close() { native_open=false; return native_releases; }
 Media::Media() : impl_(nullptr) {}
 Media::~Media() { close(); }
 
-bool Media::open(const char*, int width, int height, bool audio, int rate, int, int, int, MirrorCodec codec, int, bool) {
+bool Media::open(const char*, int width, int height, bool audio, int rate, int, int, int, MirrorCodec codec, int fps, bool) {
     assert(!native_open && !decoder_open && width == expected_width && height == expected_height &&
-           (allow_audio_loss || audio==expect_audio) && rate == 44100 && codec == expected_codec);
+           (allow_audio_loss || audio==expect_audio) && rate == 44100 && codec == expected_codec &&
+           (!expected_fps || fps == expected_fps));
+    if (mode == Startup::RejectLoad) return false;
     decoder_audio=audio;
     hevc_feed.reset();
     decoder_open = true;
     ++opens;
     last_video_pts = last_audio_pts = -1;
     reordered_pts = false;
-    pcm_signal = false;
+    pcm_signal = pcm_stereo = false;
     feed_audio_accepted = feed_video_accepted = frames = 0;
     failed = ended = ready = playing = false;
     direct_backend_paused_ = false;
@@ -126,6 +128,11 @@ FeedResult Media::feed(const void* bytes, size_t size, int64_t pts, bool video) 
         if (!pcm_signal) {
             const auto* pcm = static_cast<const uint8_t*>(bytes);
             pcm_signal = std::any_of(pcm, pcm + size, [](uint8_t byte) { return byte != 0; });
+        }
+        if (!pcm_stereo) {
+            const auto* pcm = static_cast<const uint8_t*>(bytes);
+            for (size_t i = 0; i < size; i += 4)
+                pcm_stereo |= pcm[i] != pcm[i+2] || pcm[i+1] != pcm[i+3];
         }
         last_audio_pts = pts;
         ++feed_audio_accepted;
@@ -419,7 +426,8 @@ static void fmp4_samples(const std::string& base) {
     allow_reordering = true;
     inject_retry = false;
     DirectBufferstream player;
-    const auto run = [&](const char* path, DirectError error, unsigned expected_opens, bool seek = false) {
+    const auto run = [&](const char* path, DirectError error, unsigned expected_opens, bool seek = false, double duration = 8,
+                         bool distinct_stereo = false) {
         const unsigned before = opens;
         bool played = false, sought = false;
         DirectCommand command;
@@ -449,10 +457,11 @@ static void fmp4_samples(const std::string& base) {
             }
             if (snapshot.state == DirectState::Error || snapshot.state == DirectState::Ended) {
                 if (error == DirectError::None) {
-                    assert(snapshot.state == DirectState::Ended && played && snapshot.position >= 7.9);
+                    assert(snapshot.state == DirectState::Ended && played && snapshot.position >= duration - .1);
                     assert(reordered_pts && snapshot.audio_enabled==expect_audio);
                     if(expect_audio) assert(pcm_signal && std::llabs(last_video_pts - last_audio_pts) < 180000000);
                     else assert(!snapshot.audio_fed && !pcm_signal);
+                    if(distinct_stereo) assert(pcm_stereo && "PS must reconstruct stereo");
                 } else {
                     assert(snapshot.state == DirectState::Error && snapshot.error == error);
                 }
@@ -495,19 +504,47 @@ static void fmp4_samples(const std::string& base) {
     run("/hevc/media.m3u8", DirectError::None, 2, true);
     run("/cra/media.m3u8", DirectError::None, 2, true);
     run("/hevc-boundary.m3u8", DirectError::None, 2);
+    expected_width=3840; expected_height=2160; expected_fps=30;
+    run("/uhd-master.m3u8",DirectError::None,1,false,4);
+    run("/uhd-rejected-master.m3u8",DirectError::PlaylistVariant,0);
+    run("/uhd-fast/media.m3u8",DirectError::HevcFrameRate,0);
+    run("/uhd-hdr/media.m3u8",DirectError::HevcHdr,0);
+    run("/uhd-main10/media.m3u8",DirectError::HevcProfile,0);
+    run("/uhd-malformed.m3u8",DirectError::HevcConfiguration,0);
+    mode=Startup::RejectLoad;
+    run("/uhd/media.m3u8",DirectError::BufferstreamStart,0);
+    mode=Startup::RejectVideo;
+    run("/uhd/media.m3u8",DirectError::BufferstreamFeed,1);
+    mode=Startup::AfterPreroll;
+    run("/uhd/media.m3u8",DirectError::None,1,false,4);
+    expected_width=1280; expected_height=720;
+    run("/hevc-720/media.m3u8",DirectError::None,1,false,4);
+    expected_width=1920; expected_height=1080;
+    run("/hevc-1080/media.m3u8",DirectError::None,1,false,4);
+    expected_fps=60;
+    run("/hevc-1080-fast/media.m3u8",DirectError::None,1,false,4);
+    expected_width=640; expected_height=480; expected_fps=0;
     expected_codec=MirrorCodec::H264;
     run("/mp3/media.m3u8",DirectError::None,2,true);
     run("/ac3/media.m3u8",DirectError::None,1);
     run("/eac3/master.m3u8",DirectError::None,2,true);
     run("/eac3-boundary.m3u8",DirectError::None,2);
+    run("/heaac/master.m3u8",DirectError::None,2,true,7);
+    run("/heaac2/master.m3u8",DirectError::None,2,true,7,true);
+    run("/heaac2-implicit/media.m3u8",DirectError::None,2,true,7,true);
+    run("/flac/master.m3u8",DirectError::None,2,true);
+    run("/alac/master.m3u8",DirectError::None,2,true);
+    run("/opus/master.m3u8",DirectError::None,2,true);
     expect_audio=false;
     run("/video-only/media.m3u8",DirectError::None,1);
-    run("/opus/media.m3u8",DirectError::None,1);
+    run("/opus-ts/media.m3u8",DirectError::None,1,false,4);
     allow_audio_loss=true;
     run("/bad-eac3.m3u8",DirectError::None,2);
+    run("/bad-flac.m3u8",DirectError::None,2);
     allow_audio_loss=false;
     expect_audio=true;
-    puts("PASS: fMP4 H.264/AAC-LC, B-frames, byte ranges, pause, seek, discontinuity, map change and rejection paths");
+    run("/flac/master.m3u8",DirectError::None,1);
+    puts("PASS: HLS fMP4 HEVC UHD/HD, AAC/HE-AAC/PS, FLAC, ALAC, Opus, PCM sync, cleanup and fallback");
     replacement_samples(base);
 }
 
