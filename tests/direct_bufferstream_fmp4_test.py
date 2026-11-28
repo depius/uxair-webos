@@ -239,18 +239,27 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     (eac3 / 'bad.m4s').write_bytes(damaged)
     playlist('bad-eac3', init('eac3/init.mp4') + entry('eac3/part0.m4s') + entry('eac3/bad.m4s') +
              entry('eac3/part2.m4s') + entry('eac3/part3.m4s'))
-    flac = root / 'flac'
-    flac_segment = bytearray((flac / 'part1.m4s').read_bytes())
-    flac_init = (flac / 'init.mp4').read_bytes()
-    sample.write_bytes(flac_init + flac_segment)
-    packets = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', 'a:0',
-                                                  '-show_entries', 'packet=pos,size', '-of', 'json', str(sample)]))
-    packet = packets['packets'][2]
-    at = int(packet['pos']) - len(flac_init)
-    flac_segment[at:at+int(packet['size'])] = bytes(int(packet['size']))
-    (flac / 'bad.m4s').write_bytes(flac_segment)
-    playlist('bad-flac', init('flac/init.mp4') + entry('flac/part0.m4s') + entry('flac/bad.m4s') +
-             entry('flac/part2.m4s') + entry('flac/part3.m4s'))
+    # Invalidate a compressed packet inside the second fragment, keeping its
+    # MP4 sample size and positions so the decoder owns the failure.
+    bad_audio = {
+        'heaac': b'\xff', 'heaac2': b'\xff', 'flac': b'\0',
+        'alac': b'\x20', 'opus': b'\xff\0',
+    }
+    for audio, invalid_header in bad_audio.items():
+        source = root / audio
+        fragment = bytearray((source / 'part1.m4s').read_bytes())
+        init_data = (source / 'init.mp4').read_bytes()
+        sample.write_bytes(init_data + fragment)
+        packets = json.loads(subprocess.check_output([
+            'ffprobe', '-v', 'error', '-select_streams', 'a:0',
+            '-show_entries', 'packet=pos,size', '-of', 'json', str(sample)]))
+        packet = packets['packets'][2]
+        at, size = int(packet['pos']) - len(init_data), int(packet['size'])
+        assert 0 <= at and at + size <= len(fragment) and len(invalid_header) <= size
+        padding = b'\xff' if audio in ('heaac', 'heaac2', 'alac') else b'\0'
+        fragment[at:at+size] = invalid_header + padding * (size - len(invalid_header))
+        (source / 'bad.m4s').write_bytes(fragment)
+        (source / 'bad.m3u8').write_text((source / 'media.m3u8').read_text().replace('part1.m4s', 'bad.m4s'))
     eac3_pair=entry('eac3/part0.m4s')+entry('eac3/part1.m4s')
     playlist('eac3-boundary', init('eac3/init.mp4') + eac3_pair + '#EXT-X-DISCONTINUITY\n' + eac3_pair)
     (root / 'cookie-media.m3u8').write_text((clip / 'media.m3u8').read_text().replace('"init.mp4"', '"clip/init.mp4"').replace('\npart', '\nclip/part'))
@@ -348,7 +357,9 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     for codec, channels, rate in [('aac', 2, 48000), ('flac', 6, 48000), ('alac', 1, 32000), ('opus', 2, 48000)]:
         assert re.search(rf'source-codec={codec} source-channels={channels} source-rate={rate} .*conversion=decode-pcm', checked.stdout)
     assert re.search(r'source-codec=opus .*fallback=video-only reason=unsupported-audio-container', checked.stdout)
-    assert re.search(r'source-codec=flac .*fallback=video-only reason=decode-error', checked.stdout)
+    for codec in ('flac', 'alac', 'opus'):
+        assert re.search(rf'source-codec={codec} .*fallback=video-only reason=decode-error', checked.stdout)
+    assert len(re.findall(r'source-codec=aac .*fallback=video-only reason=decode-error', checked.stdout)) >= 2
     assert re.search(r'geometry=3840x2160 input-fps-milli=30000 max-fps=30', checked.stdout)
     assert re.search(r'geometry=1920x1080 input-fps-milli=60000 max-fps=60', checked.stdout)
     assert 'reason=unsupported-hevc-frame-rate' in checked.stdout and 'reason=unsupported-hdr' in checked.stdout

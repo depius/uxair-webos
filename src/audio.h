@@ -33,6 +33,7 @@ struct HlsPcm {
 // AAC and RAOP continue to use AudioDecoder.
 class HlsAudioDecoder {
 public:
+    static constexpr int max_frame_samples = 8192;
     ~HlsAudioDecoder();
     HlsAudioDecoder()=default;
     HlsAudioDecoder(const HlsAudioDecoder&)=delete;

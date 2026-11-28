@@ -540,7 +540,11 @@ static void fmp4_samples(const std::string& base) {
     run("/opus-ts/media.m3u8",DirectError::None,1,false,4);
     allow_audio_loss=true;
     run("/bad-eac3.m3u8",DirectError::None,2);
-    run("/bad-flac.m3u8",DirectError::None,2);
+    run("/heaac/bad.m3u8",DirectError::None,2,false,7);
+    run("/heaac2/bad.m3u8",DirectError::None,2,false,7);
+    run("/flac/bad.m3u8",DirectError::None,2);
+    run("/alac/bad.m3u8",DirectError::None,2);
+    run("/opus/bad.m3u8",DirectError::None,2);
     allow_audio_loss=false;
     expect_audio=true;
     run("/flac/master.m3u8",DirectError::None,1);

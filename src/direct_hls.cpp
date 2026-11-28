@@ -281,7 +281,10 @@ bool mp4_audio_config(const AVCodecParameters& codec) {
     case AV_CODEC_ID_AC3: return codec.codec_tag==MKTAG('a','c','-','3');
     case AV_CODEC_ID_EAC3: return codec.codec_tag==MKTAG('e','c','-','3');
     case AV_CODEC_ID_FLAC: return codec.codec_tag==MKTAG('f','L','a','C');
-    case AV_CODEC_ID_ALAC: return codec.codec_tag==MKTAG('a','l','a','c');
+    case AV_CODEC_ID_ALAC:
+        // The cookie describes the allocation before libavcodec sees a packet.
+        return codec.codec_tag==MKTAG('a','l','a','c') && codec.extradata && codec.extradata_size>=36 &&
+            AV_RB32(codec.extradata+12)>0 && AV_RB32(codec.extradata+12)<=HlsAudioDecoder::max_frame_samples;
     case AV_CODEC_ID_OPUS: return codec.codec_tag==MKTAG('O','p','u','s');
     default: return true;
     }
@@ -325,7 +328,8 @@ bool encryption_box(uint32_t type) {
         type==fourcc('e','n','c','v')||type==fourcc('e','n','c','a');
 }
 
-DirectError inspect_boxes(const uint8_t* at, size_t length, unsigned depth, bool& mvex) {
+DirectError inspect_boxes(const uint8_t* at, size_t length, unsigned depth, bool& mvex,
+                          bool sample_descriptions = false) {
     if (depth>8) return DirectError::Mp4Boxes;
     Box child;
     while (length) {
@@ -344,13 +348,16 @@ DirectError inspect_boxes(const uint8_t* at, size_t length, unsigned depth, bool
         case fourcc('h','v','c','1'): case fourcc('h','e','v','1'): skip=78; break;
         case fourcc('m','p','4','a'): case fourcc('f','L','a','C'):
         case fourcc('a','l','a','c'): case fourcc('O','p','u','s'):
+            // The ALAC sample entry and its codec-specific child both use alac.
+            if (!sample_descriptions) continue;
             if (child.size<28 || AV_RB16(child.data+8)!=0) return DirectError::Mp4Config;
             skip=28;
             break;
         default: continue;
         }
         if (child.size<skip) return DirectError::Mp4Boxes;
-        const auto error=inspect_boxes(child.data+skip,child.size-skip,depth+1,mvex);
+        const auto error=inspect_boxes(child.data+skip,child.size-skip,depth+1,mvex,
+                                       child.type==fourcc('s','t','s','d'));
         if (error!=DirectError::None) return error;
     }
     return DirectError::None;
