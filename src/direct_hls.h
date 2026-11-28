@@ -77,6 +77,6 @@ struct DirectDemuxedSegment {
 
 DirectError direct_demux_segment(const std::string& data, const std::string& init, const std::atomic<bool>& cancelled,
                                 AudioDecoder& aac,HlsAudioDecoder& audio,int width,int height,
-                                bool mute,bool drain,DirectDemuxedSegment& segment);
+                                bool mute,bool drain,bool continuing_init,DirectDemuxedSegment& segment);
 // Install before starting playback threads. Unrelated FFmpeg logs retain the default callback.
 void direct_hls_log_setup();

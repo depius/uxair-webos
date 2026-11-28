@@ -36,6 +36,8 @@ def generate(directory, rate, seconds, video=True, split_tracks=False, silent_10
         command += ['-f', 'lavfi', '-i', audio, '-ac', str(channels), '-c:a', encoders.get(audio_codec, audio_codec)]
         if audio_codec == 'aac':
             command += ['-profile:a', 'aac_low']
+    if audio_codec == 'flac':
+        command += ['-frame_size', '4608']
     if video:
         geometry = size or ('160x96' if codec == 'av1' else '1920x1080' if silent_1080p else '640x480')
         pattern = 'color=c=blue:' if size else 'testsrc2='
@@ -169,8 +171,8 @@ with tempfile.TemporaryDirectory(prefix='uxair-fmp4-') as folder:
     generate(root / 'flac', 48000, 8, audio_codec='flac', channels=6)
     generate(root / 'alac', 32000, 8, audio_codec='alac', channels=1)
     generate(root / 'heaac', 48000, 7, audio_source=aac_sample(
-        root, 'HE-AAC', 'al_sbr_sr_48_2_fsaac48.mp4',
-        'd0b286c5f9bdb47ee1722ab64775cc507de27744c6a21143ce41fc7410cdbceb'))
+        root, 'HE-AAC', 'al_sbr_cm_48_2.mp4',
+        '7e7c0390c950eda21775d1a193e05ee703257bed85602884e7d30a8b3c65be90'))
     generate(root / 'heaac2', 44100, 7, audio_source=aac_sample(
         root, 'HE-AACv2', 'CT_DecoderCheck/File5.mp4',
         '49595c57f80deae34c2570bc227658a8d856babd978cd8151f74d43054a63ba5'))

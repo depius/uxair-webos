@@ -599,7 +599,7 @@ DirectError direct_parse_playlist(const std::string& text, const std::string& ba
 
 DirectError direct_demux_segment(const std::string& data,const std::string& init,const std::atomic<bool>& cancelled,
                                AudioDecoder& aac,HlsAudioDecoder& audio,int width,int height,
-                               bool mute,bool drain,DirectDemuxedSegment& segment) {
+                               bool mute,bool drain,bool continuing_init,DirectDemuxedSegment& segment) {
     segment = DirectDemuxedSegment();
     const TimestampWarnings warnings(segment.ffmpeg_timestamp_warnings);
     if (cancelled) return DirectError::FetchCancelled;
@@ -884,6 +884,15 @@ DirectError direct_demux_segment(const std::string& data,const std::string& init
         } else {
             if(mp4 || stream.codecpar->codec_id!=AV_CODEC_ID_AAC) {
                 decoded_stream=&stream;
+                if(continuing_init && segment.audio_input_packets==1 && stream.codecpar->codec_id==AV_CODEC_ID_OPUS) {
+                    // MOV emits the dOps pre-skip at the start of each separately
+                    // opened resource. It belongs to this track's first fragment.
+                    size_t trim_size=0;
+                    auto* trim=av_packet_get_side_data(&packet,AV_PKT_DATA_SKIP_SAMPLES,&trim_size);
+                    const int initial_padding=stream.codecpar->initial_padding;
+                    if(trim && trim_size==10 && initial_padding>0 && AV_RL32(trim)==unsigned(initial_padding))
+                        AV_WL32(trim,0);
+                }
                 segment.audio_fallback=audio.decode(stream,&packet,pcm_blocks);
                 segment.aac_sample_rate=audio.rate;
                 segment.aac_channels=audio.channels;
@@ -961,9 +970,12 @@ DirectError direct_demux_segment(const std::string& data,const std::string& init
         (segment.last_video_dts_ns-segment.first_video_dts_ns)/(segment.video_packets-1):first_packet_duration;
     if(mean_frame_ns>0)
         segment.input_fps_milli=int(std::min<int64_t>(240000,(second*1000+mean_frame_ns/2)/mean_frame_ns));
-    const auto frame_step=segment.video_packets>1?shortest_decode_step:first_packet_duration;
-    if(segment.hevc && direct_hevc_uhd(segment.width,segment.height) && frame_step<hevc_uhd_min_frame_ns)
-        return DirectError::HevcFrameRate;
+    if(segment.hevc && direct_hevc_uhd(segment.width,segment.height)) {
+        const auto tick_ns=av_rescale_q(1,demux.format->streams[video_index]->time_base,AVRational{1,int(second)});
+        const auto rounding_ns=std::max<int64_t>(0,std::min<int64_t>(tick_ns,1000000));
+        const auto frame_step=segment.video_packets>1?shortest_decode_step:first_packet_duration;
+        if(frame_step<hevc_uhd_min_frame_ns-rounding_ns) return DirectError::HevcFrameRate;
+    }
     if(drain && decoded_stream && !segment.audio_fallback) {
         segment.audio_fallback=audio.decode(*decoded_stream,nullptr,pcm_blocks);
         if(!segment.audio_fallback)

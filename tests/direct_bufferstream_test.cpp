@@ -609,7 +609,8 @@ int main(int argc, char** argv) {
         "#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720,CODECS=\"avc1.42c01f,mp4a.40.29\"\n"
         "he-aac.m3u8\n";
     assert(direct_parse_playlist(master, base + "/master.m3u8", selected) == DirectError::None);
-    assert(selected.variant == base + "/variants/main.m3u8?token=PRIVATE");
+    assert(selected.variant == base + "/he-aac.m3u8");
+    assert(selected.alternate == base + "/variants/main.m3u8?token=PRIVATE");
     assert(direct_parse_playlist("#EXTM3U\n#EXT-X-DISCONTINUITY\n", base + "/media.m3u8", selected)
            == DirectError::PlaylistDiscontinuity);
     assert(direct_parse_playlist("#EXTM3U\n#EXT-X-DATERANGE:ID=\"PRIVATE\"\n#EXT-X-DISCONTINUITY-SEQUENCE:0\n"

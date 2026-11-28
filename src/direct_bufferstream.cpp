@@ -195,7 +195,10 @@ void DirectBufferstream::download(DirectCommand play) {
                 const auto next=segment+1;
                 const bool final_segment=next==playlist.segments.end();
                 const bool drain=final_segment || next->period!=segment->period;
-                auto result=direct_demux_segment(response.data,init,cancelled_,aac,audio,width,height,mute,drain,job->segment);
+                const bool continuing_init=segment!=playlist.segments.begin() &&
+                    (segment-1)->period==segment->period && (segment-1)->init==segment->init;
+                auto result=direct_demux_segment(response.data,init,cancelled_,aac,audio,width,height,
+                                                 mute,drain,continuing_init,job->segment);
                 if (cancelled_) return;
                 const auto& detected=job->segment;
                 const char* audio_failure=detected.audio_fallback;
@@ -215,7 +218,7 @@ void DirectBufferstream::download(DirectCommand play) {
                     if(width) {
                         boundary=true;
                         width=height=0;
-                        result=direct_demux_segment(response.data,init,cancelled_,aac,audio,0,0,true,false,job->segment);
+                        result=direct_demux_segment(response.data,init,cancelled_,aac,audio,0,0,true,false,continuing_init,job->segment);
                     }
                     aac.reset();
                     audio.reset();
